@@ -1,0 +1,25 @@
+{
+  "data": {
+    "missing_bars": 0,
+    "qc": "OK",
+    "stale_quotes": false,
+    "timestamp_drift_ms": 0
+  },
+  "exec": {
+    "kill_switch": false
+  },
+  "market": {
+    "liquidity": 1.0
+  },
+  "risk": {
+    "margin_usage": 0.0
+  },
+  "state": {
+    "confidence": 1.0,
+    "regime": "UNKNOWN",
+    "tail_risk": "UNKNOWN"
+  },
+  "stats": {
+    "correlation": 0.0
+  }
+}

@@ -109,3 +109,13 @@ Control Panel improvements:
 - Open folders: repo / logs / snapshots parent
 - Log filtering by filename substring
 - Safer output rendering with `st.text` (prevents UI artifacts)
+
+## Contracts (Stage 17B)
+
+Goal: define and validate MA input schema from policy-as-code.
+
+### Path inventory from policy
+Extracts all `path` atoms and ops used in the baseline policy:
+
+```powershell
+py -3.11 -m args.contracts.paths_from_policy
