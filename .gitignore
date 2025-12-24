@@ -10,3 +10,4 @@ args/data/events.jsonl
 args/logs/
 args/audit/archive/
 args/demo/archive/
+.streamlit/

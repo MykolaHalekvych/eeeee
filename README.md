@@ -93,4 +93,11 @@ Run one command to reset copy-policy, run sanity suite, save logs, and create a 
 cd C:\Users\mukol\ARGS-Core-v1
 powershell -ExecutionPolicy Bypass -File .\scripts\checkpoint.ps1 -Tag "stage15"
 
+## Streamlit UI (Control Panel)
+
+Install UI dependencies:
+
+```powershell
+cd C:\Users\mukol\ARGS-Core-v1
+py -3.11 -m pip install -r .\requirements_ui.txt
 
