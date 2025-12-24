@@ -10,7 +10,7 @@
     "stale_quotes": false,
     "missing_bars": 0,
     "timestamp_drift_ms": 0,
-    "kill_switch": false,
+    "kill_switch": false
     "liquidity": 1.0,
     "margin_usage": 0.40,
     "confidence": 0.55,

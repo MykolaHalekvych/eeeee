@@ -4,13 +4,14 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from args.asys.as_v0_adapter import parse_bar_row, derive_ma_input_from_bar
 from args.contracts.paths_from_policy import inventory_from_policy_yaml
 from args.contracts.ma_input_contract import validate_ma_input
 from args.ma.policy_loader import load_policy
 from args.ma.ma_runtime import eval_ma
+from args.run.live_safety_v0 import evaluate_live_safety
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class RunConfig:
     out_events: Path
     max_steps: int = 0  # 0 = all rows
     start_index: int = 0
+    defaults: Dict[str, Any] = None
 
 
 def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
@@ -41,54 +43,114 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
     if cfg.start_index < 0 or cfg.start_index > total_rows:
         raise ValueError("start_index out of range")
 
-    # limit rows if max_steps > 0
     end_index = total_rows
     if cfg.max_steps and cfg.max_steps > 0:
         end_index = min(total_rows, cfg.start_index + cfg.max_steps)
 
     slice_rows = rows[cfg.start_index:end_index]
 
-    # prepare policy + contract inventory once
     policy = load_policy(str(cfg.policy_path))
     inv = inventory_from_policy_yaml(str(cfg.policy_path))
 
-    summary = {
+    summary: Dict[str, Any] = {
         "total_rows": total_rows,
         "processed": 0,
         "contract_fail": 0,
         "ma_decisions": {},
         "out_events": str(cfg.out_events),
+        "halted": False,
+        "halt_reason": "",
     }
 
     _append_jsonl(
         cfg.out_events,
-        {"kind": "RUN_START", "csv": str(cfg.csv_path), "policy": str(cfg.policy_path), "start_index": cfg.start_index, "end_index": end_index},
+        {
+            "kind": "RUN_START",
+            "csv": str(cfg.csv_path),
+            "policy": str(cfg.policy_path),
+            "start_index": cfg.start_index,
+            "end_index": end_index,
+        },
     )
+
+    defaults = cfg.defaults or {}
 
     for i, r in enumerate(slice_rows, start=cfg.start_index):
         bar = parse_bar_row(r)
 
         ma_input = derive_ma_input_from_bar(
             bar,
-            qc="OK",
-            stale_quotes=False,
-            missing_bars=0,
-            timestamp_drift_ms=0,
-            kill_switch=False,
-            liquidity=1.0,
-            margin_usage=0.40,
-            confidence=0.55,
-            regime="UNKNOWN",
-            tail_risk="UNKNOWN",
-            correlation=0.10,
+            qc=defaults.get("qc", "OK"),
+            stale_quotes=bool(defaults.get("stale_quotes", False)),
+            missing_bars=int(defaults.get("missing_bars", 0)),
+            timestamp_drift_ms=int(defaults.get("timestamp_drift_ms", 0)),
+            kill_switch=bool(defaults.get("kill_switch", False)),
+            liquidity=float(defaults.get("liquidity", 1.0)),
+            margin_usage=float(defaults.get("margin_usage", 0.40)),
+            confidence=float(defaults.get("confidence", 0.55)),
+            regime=str(defaults.get("regime", "UNKNOWN")),
+            tail_risk=str(defaults.get("tail_risk", "UNKNOWN")),
+            correlation=float(defaults.get("correlation", 0.10)),
         )
 
-        # required fields gate
-        ma_input["instrument"] = "HG"
-        ma_input["timeframe"] = "5m"
-        ma_input["env"] = "IBKR_PAPER_LABEL"
+        # Required fields gate
+        ma_input["instrument"] = str(defaults.get("instrument", "HG"))
+        ma_input["timeframe"] = str(defaults.get("timeframe", "5m"))
+        ma_input["env"] = str(defaults.get("env", "IBKR_PAPER_LABEL"))
 
-        # contract check
+        # ---- Live safety gate (BEFORE MA, BEFORE WA)
+        safety = evaluate_live_safety(ma_input)
+
+        if safety.decision == "HALT":
+            summary["halted"] = True
+            summary["halt_reason"] = safety.reason
+
+            _append_jsonl(
+                cfg.out_events,
+                {
+                    "kind": "SAFETY_HALT",
+                    "index": i,
+                    "ts": bar.ts,
+                    "safety": safety.to_dict(),
+                },
+            )
+            break
+
+        if safety.decision == "NO_DECISION":
+            summary["processed"] += 1
+            summary["ma_decisions"]["NO_DECISION"] = summary["ma_decisions"].get("NO_DECISION", 0) + 1
+
+            _append_jsonl(
+                cfg.out_events,
+                {
+                    "kind": "SAFETY_NO_DECISION",
+                    "index": i,
+                    "ts": bar.ts,
+                    "safety": safety.to_dict(),
+                },
+            )
+            _append_jsonl(
+                cfg.out_events,
+                {
+                    "kind": "TICK",
+                    "index": i,
+                    "ts": bar.ts,
+                    "bar": {
+                        "ts": bar.ts,
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume,
+                    },
+                    "ma_decision": "NO_DECISION",
+                    "violations": [],
+                    "safety": safety.to_dict(),
+                },
+            )
+            continue
+
+        # ---- Contract check
         res = validate_ma_input(ma_input, inv.paths)
         if not res.ok:
             summary["contract_fail"] += 1
@@ -104,6 +166,7 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
             )
             continue
 
+        # ---- MA eval
         report = eval_ma(policy, ma_input)
         decision = report.get("ma_decision", "UNKNOWN")
 
@@ -116,9 +179,17 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                 "kind": "TICK",
                 "index": i,
                 "ts": bar.ts,
-                "bar": {"ts": bar.ts, "open": bar.open, "high": bar.high, "low": bar.low, "close": bar.close, "volume": bar.volume},
+                "bar": {
+                    "ts": bar.ts,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                },
                 "ma_decision": decision,
                 "violations": report.get("violations", []),
+                "safety": safety.to_dict(),
             },
         )
 
@@ -128,12 +199,23 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
+    cfg_path = repo_root / "args" / "data" / "run_config_v0.json"
+    cfg_obj = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    csv_path = repo_root / cfg_obj["csv_path"]
+    policy_path = repo_root / cfg_obj["policy_path"]
+    out_events = repo_root / cfg_obj["out_events"]
+    max_steps = int(cfg_obj.get("max_steps", 0))
+    start_index = int(cfg_obj.get("start_index", 0))
+    defaults = cfg_obj.get("defaults", {})
+
     cfg = RunConfig(
-        csv_path=repo_root / "args" / "data" / "hg_5m_bars_sample.csv",
-        policy_path=repo_root / "args" / "data" / "invariants_hg_v0.yaml",
-        out_events=repo_root / "args" / "data" / "events_run.jsonl",
-        max_steps=0,
-        start_index=0,
+        csv_path=csv_path,
+        policy_path=policy_path,
+        out_events=out_events,
+        max_steps=max_steps,
+        start_index=start_index,
+        defaults=defaults,
     )
 
     summary = run_harness(cfg)
