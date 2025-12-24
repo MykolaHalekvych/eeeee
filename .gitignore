@@ -12,3 +12,4 @@ args/audit/archive/
 args/demo/archive/
 .streamlit/
 .streamlit/
+args/data/events_run.jsonl
