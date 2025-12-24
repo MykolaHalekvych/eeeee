@@ -101,3 +101,11 @@ Install UI dependencies:
 cd C:\Users\mukol\ARGS-Core-v1
 py -3.11 -m pip install -r .\requirements_ui.txt
 
+## UI Polishing (Stage 17A)
+
+Control Panel improvements:
+- Refresh UI state / Clear results
+- Tabs: Dashboard / Logs / Events / About
+- Open folders: repo / logs / snapshots parent
+- Log filtering by filename substring
+- Safer output rendering with `st.text` (prevents UI artifacts)
