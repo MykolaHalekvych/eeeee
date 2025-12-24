@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import datetime as _dt
@@ -67,6 +66,7 @@ div[data-testid="stSidebar"] > div:first-child {
   padding: 16px 18px;
   box-shadow: 0 14px 35px rgba(0,0,0,0.35);
 }
+
 .args-title {
   font-size: 38px;
   font-weight: 800;
@@ -74,6 +74,7 @@ div[data-testid="stSidebar"] > div:first-child {
   margin: 0;
   line-height: 1.0;
 }
+
 .args-subtitle {
   font-size: 14px;
   color: rgba(203,213,225,0.85);
@@ -597,6 +598,120 @@ def _infer_active_blocks(violations: Any) -> List[str]:
                 blocks.add("Tail Risk Gates")
     return sorted(blocks)
 
+def _decision_to_css(decision: str) -> str:
+    d = (decision or "UNKNOWN").upper().replace("-", "_")
+    if d == "ALLOW":
+        return "dec-allow"
+    if d == "REDUCE":
+        return "dec-reduce"
+    return "dec-no"
+
+
+def render_events_view() -> None:
+    st.subheader("Event Stream (structured)")
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button("Open events.jsonl"):
+            open_path(EVENTS_PATH)
+    with c2:
+        if st.button("Open data folder"):
+            open_path(EVENTS_PATH.parent)
+
+    events = _load_events_jsonl(EVENTS_PATH)
+    if not events:
+        st.info("No events found in args/data/events.jsonl")
+        return
+
+    f1, f2, f3 = st.columns([1, 2, 1])
+    with f1:
+        decision_filter = st.selectbox(
+            "Decision",
+            ["All", "ALLOW", "REDUCE", "NO_TRADE", "UNKNOWN", "EXIT"],
+            index=0,
+        )
+    with f2:
+        q = st.text_input("Search (reason/policy/instrument)", value="").strip().lower()
+    with f3:
+        limit = st.number_input("Rows", min_value=10, max_value=500, value=80, step=10)
+
+    filtered: List[Dict[str, Any]] = []
+    for e in events:
+        d = str(e.get("ma_decision") or "UNKNOWN").upper().replace("-", "_")
+        if decision_filter != "All" and d != decision_filter:
+            continue
+
+        mu, ml, tail, _, _ = _extract_snapshot(e)
+        reason = str(e.get("top_reason") or _pick_top_reason(e, mu, ml, tail))
+        pol = str(e.get("policy_name") or e.get("policy_file") or "")
+        inst = str(e.get("instrument") or "")
+
+        if q:
+            blob = f"{reason} {pol} {inst}".lower()
+            if q not in blob:
+                continue
+
+        ee = dict(e)
+        ee["_reason"] = reason
+        ee["_policy"] = pol
+        ee["_decision_norm"] = d
+        filtered.append(ee)
+
+    if not filtered:
+        st.warning("No events match the current filters.")
+        return
+
+    rows = filtered[: int(limit)]
+
+    trs = ""
+    for e in rows:
+        ts = str(e.get("ts_utc") or e.get("ts") or "")
+        tshort = ts.split("T")[-1].replace("Z", "")[:8] if "T" in ts else ts[:8]
+
+        d = str(e.get("_decision_norm") or "UNKNOWN")
+        d_show = d.replace("_", "-")
+        dcls = _decision_to_css(d)
+
+        reason = str(e.get("_reason") or "")
+        pol = str(e.get("_policy") or "")
+
+        trs += (
+            "<tr>"
+            f"<td>{_html_escape(tshort)}</td>"
+            f"<td class='event-decision {dcls}'>{_html_escape(d_show)}</td>"
+            f"<td>{_html_escape(reason)}</td>"
+            f"<td>{_html_escape(pol)}</td>"
+            "</tr>"
+        )
+
+    table_html = (
+        '<div class="event-wrap">'
+        '<div class="event-title">EVENT STREAM</div>'
+        '<table class="event-table">'
+        "<thead><tr>"
+        '<th style="width:120px;">Time</th>'
+        '<th style="width:140px;">Decision</th>'
+        "<th>Reason</th>"
+        '<th style="width:260px;">Policy</th>'
+        "</tr></thead>"
+        f"<tbody>{trs}</tbody>"
+        "</table>"
+        "</div>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    st.markdown("### Event details")
+
+    def _label(e: Dict[str, Any]) -> str:
+        ts = str(e.get("ts_utc") or "")
+        d = str(e.get("_decision_norm") or "UNKNOWN").replace("_", "-")
+        r = str(e.get("_reason") or "")
+        return f"{ts} | {d} | {r[:60]}"
+
+    pick = st.selectbox("Select event", rows, format_func=_label, index=0)
+    st.code(json.dumps(pick, ensure_ascii=False, indent=2), language="json")
+
+
 
 def _pick_top_reason(event: Dict[str, Any], mu: float | None, ml: float | None, tail: str) -> str:
     vv = event.get("violations")
@@ -665,7 +780,7 @@ def render_args_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
-    # Violations (screenshot-like)
+    # Violations
     vv = last.get("violations") if isinstance(last.get("violations"), list) else []
     if not isinstance(vv, list):
         vv = []
@@ -699,7 +814,7 @@ def render_args_dashboard() -> None:
     if tail == "UNKNOWN":
         v_lines.append("tail_unknown_gate: Tail Risk = UNKNOWN")
     else:
-        v_lines.append(f"tail_unknown_gate: Tail Risk = {_html_escape(tail)}")
+        v_lines.append(f"tail_unknown_gate: Tail Risk = {tail}")
 
     v_rows = ""
     for line in v_lines[:2]:
@@ -732,11 +847,20 @@ def render_args_dashboard() -> None:
     # Cards
     c1, c2, c3 = st.columns(3, gap="medium")
     with c1:
-        st.markdown(f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>',
+            unsafe_allow_html=True,
+        )
     with c2:
-        st.markdown(f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>',
+            unsafe_allow_html=True,
+        )
     with c3:
-        st.markdown(f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>',
+            unsafe_allow_html=True,
+        )
 
     # EVAL button
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
@@ -750,7 +874,6 @@ def render_args_dashboard() -> None:
             decision2, vv2, risk_env2 = _normalize_eval_result(res)
             system_mode2 = _derive_system_mode(decision2)
 
-            # Create dashboard-friendly event while keeping compatibility
             ev = {
                 "event_id": uuid.uuid4().hex,
                 "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
@@ -935,7 +1058,8 @@ def main() -> None:
             st.info("No logs found in args/logs (or filtered to none).")
 
     with tab_events:
-        st.subheader("events.jsonl (tail)")
+        render_events_view()
+
         events_path = REPO_ROOT / "args" / "data" / "events.jsonl"
         n2 = st.slider("Tail lines (events)", min_value=10, max_value=200, value=40, step=10)
         st.text(tail_lines(events_path, n2))
