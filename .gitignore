@@ -1,0 +1,12 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.env
+args/data/events.jsonl
+args/logs/
+args/audit/archive/
+args/demo/archive/

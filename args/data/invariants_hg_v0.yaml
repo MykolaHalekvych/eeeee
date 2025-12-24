@@ -1,0 +1,113 @@
+schema_version: "args.ma.policy.v0"
+policy_name: "HG_5m_IBKR_PAPER_LABEL_v0"
+
+instrument: "HG"
+timeframe: "5m"
+environment: "IBKR_PAPER_LABEL"
+
+decision_set:
+  allowed: ["ALLOW", "REDUCE", "NO_TRADE", "UNKNOWN", "EXIT"]
+
+risk_envelope:
+  limits:
+    conf_min: 0.60
+    margin_max: 0.35
+    timestamp_drift_ms_max: 1000
+    missing_bars_max: 0
+
+blocks:
+  hard_gates:
+    rules:
+      - rule_id: "data_integrity_gate"
+        enabled: true
+        reason: "Data integrity is not provable."
+        decision: "UNKNOWN"
+        enforce: ["NO_TRADE"]
+        when:
+          any:
+            - { path: "data.qc", op: "eq", value: "FAIL" }
+            - { path: "data.missing_bars", op: "gt", value: 0 }
+            - { path: "data.stale_quotes", op: "eq", value: true }
+            - { path: "data.timestamp_drift_ms", op: "gt", value: 1000 }
+
+      - rule_id: "state_unknown_gate"
+        enabled: true
+        reason: "State is UNKNOWN or confidence is too low."
+        decision: "UNKNOWN"
+        enforce: ["NO_TRADE"]
+        when:
+          any:
+            - { path: "state.regime", op: "eq", value: "UNKNOWN" }
+            - { path: "state.confidence", op: "lt", value: 0.60 }
+
+
+  kill_switch.triggers:
+    rules:
+      - rule_id: "manual_kill_switch"
+        enabled: true
+        reason: "Manual kill-switch requested."
+        decision: "EXIT"
+        enforce: ["NO_TRADE"]
+        when:
+          all:
+            - { path: "exec.kill_switch", op: "eq", value: true }
+
+
+  margin_gates:
+    rules:
+      - rule_id: "margin_usage_gate"
+        enabled: true
+        reason: "Margin usage above safe threshold."
+        decision: "NO_TRADE"
+        enforce: []
+        when:
+          all:
+            - { path: "risk.margin_usage", op: "gt", value: 0.35 }
+
+  tail_risk_gates:
+    rules:
+      - rule_id: "tail_unknown_gate"
+        enabled: true
+        reason: "Tail risk is UNKNOWN or UNRESOLVED."
+        decision: "NO_TRADE"
+        enforce: []
+        when:
+          all:
+            - { path: "state.tail_risk", op: "in", value: ["UNKNOWN", "UNRESOLVED"] }
+
+  liquidity_gates:
+    rules:
+      - rule_id: "liquidity_floor"
+        enabled: true
+        reason: "Liquidity below minimum threshold."
+        decision: "NO_TRADE"
+        enforce: []
+        when:
+          all:
+            - { path: "market.liquidity", op: "lt", value: 1.0 }
+
+  correlation_gates:
+    rules:
+      - rule_id: "correlation_stub"
+        enabled: false
+        reason: "Stub correlation gate (disabled in v0)."
+        decision: "NO_TRADE"
+        enforce: []
+        when:
+          all:
+            - { path: "stats.correlation", op: "gt", value: 0.9 }
+
+    kill_switch:
+    triggers:
+      rules:
+        - rule_id: "manual_kill_switch"
+          enabled: true
+          reason: "Manual kill-switch requested."
+          decision: "EXIT"
+          enforce: ["NO_TRADE"]
+          when:
+            all:
+              - { path: "exec.kill_switch", op: "eq", value: true }
+
+
+

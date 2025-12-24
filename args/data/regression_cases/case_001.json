@@ -1,0 +1,18 @@
+{
+  "case_name": "case_001_margin_and_tail_no_trade",
+  "ctx": {
+    "instrument": "HG",
+    "timeframe": "5m",
+    "env": "IBKR_PAPER_LABEL",
+    "data": { "qc": "OK", "missing_bars": 0, "stale_quotes": false, "timestamp_drift_ms": 0 },
+    "state": { "regime": "TREND", "confidence": 0.62, "tail_risk": "UNKNOWN", "liquidity": "NORMAL" },
+    "risk": { "margin_usage": 0.41 },
+    "exec": { "kill_switch": false },
+    "pnl": {},
+    "stats": {}
+  },
+  "expected": {
+    "ma_decision": "NO_TRADE",
+    "enforced_no_trade": true
+  }
+}
