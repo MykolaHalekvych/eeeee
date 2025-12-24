@@ -84,3 +84,13 @@ It is designed to detect **dangerous or permissive modifications** to policy-as-
 ```bash
 py -3.11 -m args.demo.demo_meta_audit
 
+## Hardening Pack (Stage 15)
+
+### Checkpoint script (snapshot + logs + sanity)
+Run one command to reset copy-policy, run sanity suite, save logs, and create a repo snapshot:
+
+```powershell
+cd C:\Users\mukol\ARGS-Core-v1
+powershell -ExecutionPolicy Bypass -File .\scripts\checkpoint.ps1 -Tag "stage15"
+
+
