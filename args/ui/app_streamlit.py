@@ -1,4 +1,5 @@
 from __future__ import annotations
+from args.ui.run_explorer_tab import render_run_explorer_tab
 
 import datetime as _dt
 import inspect
@@ -32,6 +33,10 @@ header {visibility: hidden;}
 div[data-testid="stExpander"] span.material-icons,
 div[data-testid="stExpander"] i.material-icons,
 div[data-testid="stExpander"] [data-testid="stExpanderToggleIcon"] {
+  display: none !important;
+}
+/* Fix: material-icons fallback text in JSON views (e.g., "keyboard_arrow_right") */
+span.material-icons, i.material-icons {
   display: none !important;
 }
 
@@ -987,12 +992,16 @@ def main() -> None:
         key="mode_operator",
     )
 
-    tab_args, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
-        ["ARGS Dashboard", "Control Panel", "Logs", "Events", "About"]
+    # NOTE: Added "Run Explorer" tab for Stage 19A/19B per-run artifacts.
+    tab_args, tab_runexp, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
+        ["ARGS Dashboard", "Run Explorer", "Control Panel", "Logs", "Events", "About"]
     )
 
     with tab_args:
         render_args_dashboard()
+
+    with tab_runexp:
+        render_run_explorer_tab()
 
     with tab_dashboard:
         header_status()
@@ -1103,7 +1112,7 @@ def main() -> None:
             """
 - Sanity suite: runs regression / policy diff / replay / meta-audit
 - Operator mode hides negative test + checkpoint actions
-- Events tab provides structured browsing + details
+- Run Explorer tab shows per-run artifacts (events_run_*, orders_paper_*, run_report_*)
 
 Run UI:
 - `py -3.11 -m streamlit run .\\args\\ui\\app_streamlit.py`
