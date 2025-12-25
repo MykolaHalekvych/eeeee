@@ -276,7 +276,6 @@ def _html_escape(x: Any) -> str:
 
 
 def run_cmd(args: List[str], cwd: Path = REPO_ROOT) -> Tuple[int, str]:
-    """Run command and capture combined stdout/stderr."""
     try:
         p = subprocess.run(
             args,
@@ -292,7 +291,6 @@ def run_cmd(args: List[str], cwd: Path = REPO_ROOT) -> Tuple[int, str]:
 
 
 def open_path(path: Path) -> Tuple[int, str]:
-    """Open folder/file in Windows Explorer."""
     try:
         p = Path(path)
         if not p.exists():
@@ -304,17 +302,11 @@ def open_path(path: Path) -> Tuple[int, str]:
 
 
 def tail_lines(path: Path, n: int) -> str:
-    """
-    Robust tail for Windows logs:
-    - PowerShell often writes UTF-16 LE
-    - Some files are UTF-8 / UTF-8-SIG
-    """
     if not path.exists():
         return f"(missing) {path}"
     try:
         data = path.read_bytes()
 
-        # BOM detection
         if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
             text = data.decode("utf-16", errors="replace")
         elif data.startswith(b"\xef\xbb\xbf"):
@@ -322,7 +314,6 @@ def tail_lines(path: Path, n: int) -> str:
         else:
             text = data.decode("utf-8", errors="replace")
 
-        # Heuristic: if many NULs, it was UTF-16 read as UTF-8
         if "\x00" in text[:200]:
             text = data.decode("utf-16", errors="replace")
 
@@ -398,14 +389,14 @@ def run_checkpoint(tag: str) -> Tuple[int, str]:
 
 
 # -----------------------------
-# ARGS Dashboard helpers
+# Dashboard helpers
 # -----------------------------
 
 def _badge_html(text: str) -> str:
     t = (text or "UNKNOWN").upper()
     key = t.replace("-", "_").replace(" ", "_")
     cls = "no_trade"
-    if key in ("ALLOW",):
+    if key == "ALLOW":
         cls = "allow"
     elif key in ("REDUCE", "RESTRICTED"):
         cls = "reduce"
@@ -493,10 +484,6 @@ def _normalize_eval_result(res: Any) -> Tuple[str, List[Dict[str, Any]], Dict[st
 
 
 def _append_event_safe(event: Dict[str, Any]) -> Tuple[int, str]:
-    """
-    Try repo's event_store.append_event first (signature may vary),
-    fallback to direct JSONL append.
-    """
     fn = getattr(_event_store, "append_event", None)
     if callable(fn):
         try:
@@ -525,7 +512,6 @@ def _append_event_safe(event: Dict[str, Any]) -> Tuple[int, str]:
 
 
 def _demo_ctx(policy_meta: Dict[str, Any]) -> Dict[str, Any]:
-    # Matches target screenshot values.
     return {
         "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
         "instrument": policy_meta.get("instrument", "HG"),
@@ -539,11 +525,6 @@ def _demo_ctx(policy_meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None, str, str, float | None]:
-    """
-    Support both shapes:
-    A) ctx_snapshot.margin_usage / margin_limit / tail_risk_state / liquidity / regime_confidence
-    B) ctx_snapshot.risk.margin_usage + risk_envelope.limits.margin_max + ctx_snapshot.state.tail_risk/liquidity/confidence
-    """
     ctx = event.get("ctx_snapshot")
     ctx = ctx if isinstance(ctx, dict) else {}
 
@@ -554,7 +535,6 @@ def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None
     if not isinstance(mu, (int, float)):
         mu = risk.get("margin_usage") if isinstance(risk.get("margin_usage"), (int, float)) else None
 
-    # limit: from ctx or from risk_envelope.limits
     ml = ctx.get("margin_limit")
     if not isinstance(ml, (int, float)):
         ml = ctx.get("margin_max") if isinstance(ctx.get("margin_max"), (int, float)) else None
@@ -598,6 +578,19 @@ def _infer_active_blocks(violations: Any) -> List[str]:
                 blocks.add("Tail Risk Gates")
     return sorted(blocks)
 
+
+def _pick_top_reason(event: Dict[str, Any], mu: float | None, ml: float | None, tail: str) -> str:
+    vv = event.get("violations")
+    if isinstance(vv, list) and vv:
+        v0 = vv[0] if isinstance(vv[0], dict) else {}
+        return str(v0.get("reason") or v0.get("message") or v0.get("rule_id") or "Violation")
+    if mu is not None and ml is not None and mu > ml:
+        return "Margin usage above safe threshold."
+    if tail == "UNKNOWN":
+        return "Tail risk is UNKNOWN/UNRESOLVED."
+    return "No violations"
+
+
 def _decision_to_css(decision: str) -> str:
     d = (decision or "UNKNOWN").upper().replace("-", "_")
     if d == "ALLOW":
@@ -605,6 +598,212 @@ def _decision_to_css(decision: str) -> str:
     if d == "REDUCE":
         return "dec-reduce"
     return "dec-no"
+
+
+def render_args_dashboard() -> None:
+    policy_meta = _read_yaml(POLICY_PATH)
+    events = _load_events_jsonl(EVENTS_PATH)
+    last = events[0] if events else {}
+
+    policy_name = str(last.get("policy_name") or last.get("policy_file") or policy_meta.get("policy_name") or "HG_MA_v0")
+    schema_version = str(last.get("schema_version") or policy_meta.get("schema_version") or policy_meta.get("schema") or "0.1")
+
+    decision = str(last.get("ma_decision") or last.get("decision") or "NO_TRADE").upper().replace("-", "_")
+    system_mode = _derive_system_mode(decision)
+
+    mu, ml, tail, liq, conf = _extract_snapshot(last)
+    conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "0.62"
+
+    decision_display = decision.replace("_", "-")
+    if tail == "UNKNOWN" and decision in ("NO_TRADE", "UNKNOWN", "EXIT"):
+        decision_display = "UNKNOWN → NO-TRADE"
+
+    mu_pct = f"{mu * 100:.0f}%" if isinstance(mu, (int, float)) else "41%"
+    ml_pct = f"{ml * 100:.0f}%" if isinstance(ml, (int, float)) else "35%"
+
+    mu_emph = "emph-yellow"
+    if isinstance(mu, (int, float)) and isinstance(ml, (int, float)):
+        mu_emph = "emph-red" if mu > ml else "emph-green"
+
+    tail_emph = "emph-yellow" if tail == "UNKNOWN" else "emph-blue"
+    liq_emph = "emph-blue" if liq == "NORMAL" else "emph-yellow"
+
+    st.markdown(
+        '<div class="args-hero">'
+        '<div class="args-title">ARGS</div>'
+        '<div class="args-subtitle">Autonomous Risk Governance System</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        (
+            '<div class="metric-strip">'
+            '<div class="metric-pill"><div class="metric-label">SYSTEM MODE</div>'
+            f'<div class="metric-value">{_badge_html(system_mode)}</div></div>'
+            '<div class="metric-pill"><div class="metric-label">MA DECISION</div>'
+            f'<div class="metric-value">{_badge_html(decision_display)}</div></div>'
+            '<div class="metric-pill"><div class="metric-label">POLICY</div>'
+            f'<div class="metric-value" style="font-weight:900;letter-spacing:0.06em;">'
+            f'{_html_escape(policy_name)} | SCHEMA {_html_escape(schema_version)}'
+            "</div></div></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    vv = last.get("violations") if isinstance(last.get("violations"), list) else []
+    if not isinstance(vv, list):
+        vv = []
+
+    active_blocks = _infer_active_blocks(vv)
+    if not active_blocks:
+        active_blocks = ["Margin Gates", "Tail Risk Gates"]
+
+    blocks_rows = ""
+    for b in active_blocks:
+        blocks_rows += (
+            '<div style="display:flex;align-items:center;justify-content:space-between;'
+            'padding:8px 10px;border-radius:12px;'
+            'border:1px solid rgba(51,65,85,0.35);'
+            'background:rgba(2,6,23,0.25);margin-bottom:8px;">'
+            f'<div style="font-weight:800;color:rgba(226,232,240,0.92);">{_html_escape(b)}: '
+            '<span style="color:rgba(248,113,113,1);font-weight:900;">ACTIVE</span></div>'
+            '<div style="width:16px;height:16px;border-radius:999px;background:rgba(239,68,68,0.18);'
+            'border:1px solid rgba(239,68,68,0.45);display:flex;align-items:center;justify-content:center;'
+            'color:rgba(248,113,113,1);font-weight:900;">!</div>'
+            "</div>"
+        )
+
+    v_lines: List[str] = []
+    if mu is not None and ml is not None:
+        v_lines.append(f"margin_usage_gate: {mu:.2f} > {ml:.2f} LIMIT")
+    else:
+        v_lines.append("margin_usage_gate: 0.41 > 0.35 LIMIT")
+
+    if tail == "UNKNOWN":
+        v_lines.append("tail_unknown_gate: Tail Risk = UNKNOWN")
+    else:
+        v_lines.append(f"tail_unknown_gate: Tail Risk = {tail}")
+
+    v_rows = ""
+    for line in v_lines[:2]:
+        v_rows += (
+            '<div class="violation-row">'
+            '<div class="vi-dot"></div>'
+            f'<div class="vi-text">{_html_escape(line)}</div>'
+            "</div>"
+        )
+
+    enforced_html = (
+        f'<div style="margin-top:6px;font-weight:900;letter-spacing:0.10em;'
+        f'color:rgba(251,191,36,1);text-transform:uppercase;">ENFORCED: {_html_escape(system_mode)}</div>'
+    )
+
+    snapshot_html = (
+        '<div class="kv">'
+        '<div class="k">Margin Usage</div>'
+        f'<div class="v {mu_emph}">{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>'
+        '<div class="k">Tail Risk State</div>'
+        f'<div class="v {tail_emph}">{_html_escape(tail)}</div>'
+        '<div class="k">Liquidity</div>'
+        f'<div class="v {liq_emph}">{_html_escape(liq)}</div>'
+        '<div class="k">Regime Confidence</div>'
+        f'<div class="v emph-blue">{_html_escape(conf_str)}</div>'
+        "</div>"
+    )
+
+    c1, c2, c3 = st.columns(3, gap="medium")
+    with c1:
+        st.markdown(
+            f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>',
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+    cc1, cc2, cc3 = st.columns([1, 1, 1])
+    with cc2:
+        if st.button("EVAL MA", use_container_width=True):
+            policy = load_policy(POLICY_PATH)
+            ctx = _demo_ctx(policy_meta)
+            res = eval_ma(policy, ctx)
+
+            decision2, vv2, risk_env2 = _normalize_eval_result(res)
+            system_mode2 = _derive_system_mode(decision2)
+
+            ev = {
+                "event_id": uuid.uuid4().hex,
+                "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "policy_name": str(policy_meta.get("policy_name") or policy_name),
+                "schema_version": str(policy_meta.get("schema_version") or schema_version),
+                "instrument": ctx.get("instrument"),
+                "timeframe": ctx.get("timeframe"),
+                "environment": ctx.get("environment"),
+                "ma_decision": decision2,
+                "system_mode": system_mode2,
+                "violations": vv2,
+                "risk_envelope": risk_env2,
+                "ctx_snapshot": ctx.get("ctx_snapshot", {}),
+            }
+
+            mu2, ml2, tail2, _, _ = _extract_snapshot(ev)
+            ev["top_reason"] = _pick_top_reason(ev, mu2, ml2, tail2)
+
+            code, out = _append_event_safe(ev)
+            if code != 0:
+                st.error(f"append_event failed: {out}")
+            st.rerun()
+
+    events2 = _load_events_jsonl(EVENTS_PATH)
+    rows = events2[:8]
+    if rows:
+        trs = ""
+        for e in rows:
+            ts = str(e.get("ts_utc") or e.get("ts") or "")
+            tshort = ts.split("T")[-1].replace("Z", "")[:8] if "T" in ts else ts[:8]
+
+            d = str(e.get("ma_decision") or "UNKNOWN").upper().replace("-", "_")
+            d_show = d.replace("_", "-")
+
+            mu_e, ml_e, tail_e, _, _ = _extract_snapshot(e)
+            reason = str(e.get("top_reason") or _pick_top_reason(e, mu_e, ml_e, tail_e))
+            pol = str(e.get("policy_name") or e.get("policy_file") or "")
+
+            dcls = _decision_to_css(d)
+
+            trs += (
+                "<tr>"
+                f"<td>{_html_escape(tshort)}</td>"
+                f"<td class='event-decision {dcls}'>{_html_escape(d_show)}</td>"
+                f"<td>{_html_escape(reason)}</td>"
+                f"<td>{_html_escape(pol)}</td>"
+                "</tr>"
+            )
+
+        table_html = (
+            '<div class="event-wrap">'
+            '<div class="event-title">EVENT STREAM</div>'
+            '<table class="event-table">'
+            "<thead><tr>"
+            '<th style="width:120px;">Time</th>'
+            '<th style="width:140px;">Decision</th>'
+            "<th>Reason</th>"
+            '<th style="width:260px;">Policy</th>'
+            "</tr></thead>"
+            f"<tbody>{trs}</tbody>"
+            "</table>"
+            "</div>"
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
 
 
 def render_events_view() -> None:
@@ -712,246 +911,16 @@ def render_events_view() -> None:
     st.code(json.dumps(pick, ensure_ascii=False, indent=2), language="json")
 
 
-
-def _pick_top_reason(event: Dict[str, Any], mu: float | None, ml: float | None, tail: str) -> str:
-    vv = event.get("violations")
-    if isinstance(vv, list) and vv:
-        v0 = vv[0] if isinstance(vv[0], dict) else {}
-        return str(v0.get("reason") or v0.get("message") or v0.get("rule_id") or "Violation")
-    if mu is not None and ml is not None and mu > ml:
-        return "Margin Usage > Limit"
-    if tail == "UNKNOWN":
-        return "Tail Risk = UNKNOWN"
-    return "No violations"
-
-
-def render_args_dashboard() -> None:
-    policy_meta = _read_yaml(POLICY_PATH)
-    events = _load_events_jsonl(EVENTS_PATH)
-    last = events[0] if events else {}
-
-    # Names
-    policy_name = str(last.get("policy_name") or last.get("policy_file") or policy_meta.get("policy_name") or "HG_MA_v0")
-    schema_version = str(last.get("schema_version") or policy_meta.get("schema_version") or policy_meta.get("schema") or "0.1")
-
-    decision = str(last.get("ma_decision") or last.get("decision") or "NO_TRADE").upper().replace("-", "_")
-    system_mode = _derive_system_mode(decision)
-
-    mu, ml, tail, liq, conf = _extract_snapshot(last)
-    conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "0.62"
-
-    # display
-    decision_display = decision.replace("_", "-")
-    if tail == "UNKNOWN" and decision in ("NO_TRADE", "UNKNOWN", "EXIT"):
-        decision_display = "UNKNOWN → NO-TRADE"
-
-    mu_pct = f"{mu * 100:.0f}%" if isinstance(mu, (int, float)) else "41%"
-    ml_pct = f"{ml * 100:.0f}%" if isinstance(ml, (int, float)) else "35%"
-
-    mu_emph = "emph-yellow"
-    if isinstance(mu, (int, float)) and isinstance(ml, (int, float)):
-        mu_emph = "emph-red" if mu > ml else "emph-green"
-
-    tail_emph = "emph-yellow" if tail == "UNKNOWN" else "emph-blue"
-    liq_emph = "emph-blue" if liq == "NORMAL" else "emph-yellow"
-
-    # HERO
-    st.markdown(
-        '<div class="args-hero">'
-        '<div class="args-title">ARGS</div>'
-        '<div class="args-subtitle">Autonomous Risk Governance System</div>'
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    # METRICS
-    st.markdown(
-        (
-            '<div class="metric-strip">'
-            '<div class="metric-pill"><div class="metric-label">SYSTEM MODE</div>'
-            f'<div class="metric-value">{_badge_html(system_mode)}</div></div>'
-            '<div class="metric-pill"><div class="metric-label">MA DECISION</div>'
-            f'<div class="metric-value">{_badge_html(decision_display)}</div></div>'
-            '<div class="metric-pill"><div class="metric-label">POLICY</div>'
-            f'<div class="metric-value" style="font-weight:900;letter-spacing:0.06em;">'
-            f'{_html_escape(policy_name)} | SCHEMA {_html_escape(schema_version)}'
-            "</div></div></div>"
-        ),
-        unsafe_allow_html=True,
-    )
-
-    # Violations
-    vv = last.get("violations") if isinstance(last.get("violations"), list) else []
-    if not isinstance(vv, list):
-        vv = []
-
-    active_blocks = _infer_active_blocks(vv)
-    if not active_blocks:
-        active_blocks = ["Margin Gates", "Tail Risk Gates"]
-
-    blocks_rows = ""
-    for b in active_blocks:
-        blocks_rows += (
-            '<div style="display:flex;align-items:center;justify-content:space-between;'
-            'padding:8px 10px;border-radius:12px;'
-            'border:1px solid rgba(51,65,85,0.35);'
-            'background:rgba(2,6,23,0.25);margin-bottom:8px;">'
-            f'<div style="font-weight:800;color:rgba(226,232,240,0.92);">{_html_escape(b)}: '
-            '<span style="color:rgba(248,113,113,1);font-weight:900;">ACTIVE</span></div>'
-            '<div style="width:16px;height:16px;border-radius:999px;background:rgba(239,68,68,0.18);'
-            'border:1px solid rgba(239,68,68,0.45);display:flex;align-items:center;justify-content:center;'
-            'color:rgba(248,113,113,1);font-weight:900;">!</div>'
-            "</div>"
-        )
-
-    # Top violations (two lines)
-    v_lines: List[str] = []
-    if mu is not None and ml is not None:
-        v_lines.append(f"margin_usage_gate: {mu:.2f} > {ml:.2f} LIMIT")
-    else:
-        v_lines.append("margin_usage_gate: 0.41 > 0.35 LIMIT")
-
-    if tail == "UNKNOWN":
-        v_lines.append("tail_unknown_gate: Tail Risk = UNKNOWN")
-    else:
-        v_lines.append(f"tail_unknown_gate: Tail Risk = {tail}")
-
-    v_rows = ""
-    for line in v_lines[:2]:
-        v_rows += (
-            '<div class="violation-row">'
-            '<div class="vi-dot"></div>'
-            f'<div class="vi-text">{_html_escape(line)}</div>'
-            "</div>"
-        )
-
-    enforced_html = (
-        f'<div style="margin-top:6px;font-weight:900;letter-spacing:0.10em;'
-        f'color:rgba(251,191,36,1);text-transform:uppercase;">ENFORCED: {_html_escape(system_mode)}</div>'
-    )
-
-    # Snapshot HTML
-    snapshot_html = (
-        '<div class="kv">'
-        '<div class="k">Margin Usage</div>'
-        f'<div class="v {mu_emph}">{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>'
-        '<div class="k">Tail Risk State</div>'
-        f'<div class="v {tail_emph}">{_html_escape(tail)}</div>'
-        '<div class="k">Liquidity</div>'
-        f'<div class="v {liq_emph}">{_html_escape(liq)}</div>'
-        '<div class="k">Regime Confidence</div>'
-        f'<div class="v emph-blue">{_html_escape(conf_str)}</div>'
-        "</div>"
-    )
-
-    # Cards
-    c1, c2, c3 = st.columns(3, gap="medium")
-    with c1:
-        st.markdown(
-            f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>',
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>',
-            unsafe_allow_html=True,
-        )
-    with c3:
-        st.markdown(
-            f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>',
-            unsafe_allow_html=True,
-        )
-
-    # EVAL button
-    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-    cc1, cc2, cc3 = st.columns([1, 1, 1])
-    with cc2:
-        if st.button("EVAL MA", use_container_width=True):
-            policy = load_policy(POLICY_PATH)
-            ctx = _demo_ctx(policy_meta)
-            res = eval_ma(policy, ctx)
-
-            decision2, vv2, risk_env2 = _normalize_eval_result(res)
-            system_mode2 = _derive_system_mode(decision2)
-
-            ev = {
-                "event_id": uuid.uuid4().hex,
-                "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                "policy_name": str(policy_meta.get("policy_name") or policy_name),
-                "schema_version": str(policy_meta.get("schema_version") or schema_version),
-                "instrument": ctx.get("instrument"),
-                "timeframe": ctx.get("timeframe"),
-                "environment": ctx.get("environment"),
-                "ma_decision": decision2,
-                "system_mode": system_mode2,
-                "violations": vv2,
-                "risk_envelope": risk_env2,
-                "ctx_snapshot": ctx.get("ctx_snapshot", {}),
-            }
-
-            mu2, ml2, tail2, _, _ = _extract_snapshot(ev)
-            ev["top_reason"] = _pick_top_reason(ev, mu2, ml2, tail2)
-
-            code, out = _append_event_safe(ev)
-            if code != 0:
-                st.error(f"append_event failed: {out}")
-            st.rerun()
-
-    # Event Stream (HTML table)
-    events2 = _load_events_jsonl(EVENTS_PATH)
-    rows = events2[:8]
-    if rows:
-        trs = ""
-        for e in rows:
-            ts = str(e.get("ts_utc") or e.get("ts") or "")
-            tshort = ts.split("T")[-1].replace("Z", "")[:8] if "T" in ts else ts[:8]
-
-            d = str(e.get("ma_decision") or "UNKNOWN").upper().replace("-", "_")
-            d_show = d.replace("_", "-")
-
-            mu_e, ml_e, tail_e, _, _ = _extract_snapshot(e)
-            reason = str(e.get("top_reason") or _pick_top_reason(e, mu_e, ml_e, tail_e))
-            pol = str(e.get("policy_name") or e.get("policy_file") or "")
-
-            dcls = "dec-no"
-            if d == "ALLOW":
-                dcls = "dec-allow"
-            elif d == "REDUCE":
-                dcls = "dec-reduce"
-
-            trs += (
-                "<tr>"
-                f"<td>{_html_escape(tshort)}</td>"
-                f"<td class='event-decision {dcls}'>{_html_escape(d_show)}</td>"
-                f"<td>{_html_escape(reason)}</td>"
-                f"<td>{_html_escape(pol)}</td>"
-                "</tr>"
-            )
-
-        table_html = (
-            '<div class="event-wrap">'
-            '<div class="event-title">EVENT STREAM</div>'
-            '<table class="event-table">'
-            "<thead><tr>"
-            '<th style="width:120px;">Time</th>'
-            '<th style="width:140px;">Decision</th>'
-            "<th>Reason</th>"
-            '<th style="width:260px;">Policy</th>'
-            "</tr></thead>"
-            f"<tbody>{trs}</tbody>"
-            "</table>"
-            "</div>"
-        )
-        st.markdown(table_html, unsafe_allow_html=True)
-
-
-# -----------------------------
-# Main
-# -----------------------------
-
 def main() -> None:
     st.set_page_config(page_title="ARGS", layout="wide")
     st.markdown(UI_CSS, unsafe_allow_html=True)
+
+    st.sidebar.markdown("### Mode")
+    operator_mode = st.sidebar.checkbox(
+        "Operator mode (safe)",
+        value=True,
+        help="ON = hide dev/destructive actions (negative test, checkpoint). OFF = Dev mode.",
+    )
 
     tab_args, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
         ["ARGS Dashboard", "Control Panel", "Logs", "Events", "About"]
@@ -963,12 +932,10 @@ def main() -> None:
     with tab_dashboard:
         header_status()
 
-        # Quick controls (only in Control Panel)
         cA, cB = st.columns(2)
         with cA:
             if st.button("Refresh UI state"):
                 st.rerun()
-
         with cB:
             if st.button("Clear results"):
                 for k in ("sanity_results", "sanity_ts", "neg_result", "neg_ts", "chk_result", "chk_ts"):
@@ -985,14 +952,17 @@ def main() -> None:
                 st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                 st.session_state["sanity_results"] = run_sanity_suite()
 
-            if st.button("Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)"):
-                st.session_state["neg_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
-                st.session_state["neg_result"] = run_negative_test()
+            if operator_mode:
+                st.info("Operator mode: Negative test and Checkpoint are hidden.")
+            else:
+                if st.button("Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)"):
+                    st.session_state["neg_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
+                    st.session_state["neg_result"] = run_negative_test()
 
-            tag = st.text_input("Checkpoint tag", value="ui")
-            if st.button("Run checkpoint.ps1"):
-                st.session_state["chk_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
-                st.session_state["chk_result"] = run_checkpoint(tag)
+                tag = st.text_input("Checkpoint tag", value="ui_polish")
+                if st.button("Run checkpoint.ps1"):
+                    st.session_state["chk_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
+                    st.session_state["chk_result"] = run_checkpoint(tag)
 
             st.subheader("Open folders")
             if st.button("Open repo folder"):
@@ -1003,11 +973,9 @@ def main() -> None:
                 code, out = open_path(REPO_ROOT / "args" / "logs")
                 st.text(out or f"exit_code={code}")
 
-            if st.button("Open snapshots parent"):
-                code, out = open_path(REPO_ROOT.parent)
+            if st.button("Open data folder"):
+                code, out = open_path(REPO_ROOT / "args" / "data")
                 st.text(out or f"exit_code={code}")
-
-            st.info("Note: demo_ma_eval appends to args/data/events.jsonl. Not run by default in Control Panel.")
 
         with col2:
             st.subheader("Results")
@@ -1022,25 +990,29 @@ def main() -> None:
                     with st.expander(f"Output: {name}", expanded=False):
                         st.text(out or "(no output)")
 
-            if "neg_result" in st.session_state:
-                code, out = st.session_state["neg_result"]
-                st.write(f"Negative test: {st.session_state.get('neg_ts', '')}")
-                if code == 2:
-                    st.success("Negative test: FAIL detected as expected (exit_code=2).")
-                elif code == 0:
-                    st.error("Negative test: expected exit_code=2 but got 0.")
-                else:
-                    st.error(f"Negative test: error (code={code}).")
-                st.text(out or "(no output)")
+            if not operator_mode:
+                if "neg_result" in st.session_state:
+                    code, out = st.session_state["neg_result"]
+                    st.write(f"Negative test: {st.session_state.get('neg_ts', '')}")
+                    if code == 2:
+                        st.success("Negative test: FAIL detected as expected (exit_code=2).")
+                    elif code == 0:
+                        st.error("Negative test: expected exit_code=2 but got 0.")
+                    else:
+                        st.error(f"Negative test: error (code={code}).")
+                    st.text(out or "(no output)")
 
-            if "chk_result" in st.session_state:
-                code, out = st.session_state["chk_result"]
-                st.write(f"Checkpoint: {st.session_state.get('chk_ts', '')}")
-                if code == 0:
-                    st.success("Checkpoint OK")
-                else:
-                    st.error(f"Checkpoint FAIL (code={code})")
-                st.text(out or "(no output)")
+                if "chk_result" in st.session_state:
+                    code, out = st.session_state["chk_result"]
+                    st.write(f"Checkpoint: {st.session_state.get('chk_ts', '')}")
+                    if code == 0:
+                        st.success("Checkpoint OK")
+                    else:
+                        st.error(f"Checkpoint FAIL (code={code})")
+                    st.text(out or "(no output)")
+            else:
+                if ("neg_result" in st.session_state) or ("chk_result" in st.session_state):
+                    st.caption("Dev outputs are hidden in Operator mode.")
 
     with tab_logs:
         st.subheader("Logs & Evidence")
@@ -1060,10 +1032,6 @@ def main() -> None:
     with tab_events:
         render_events_view()
 
-        events_path = REPO_ROOT / "args" / "data" / "events.jsonl"
-        n2 = st.slider("Tail lines (events)", min_value=10, max_value=200, value=40, step=10)
-        st.text(tail_lines(events_path, n2))
-
     with tab_about:
         st.subheader("About / Commands")
         st.markdown(
@@ -1071,14 +1039,6 @@ def main() -> None:
 - Sanity suite: runs regression / policy diff / replay / meta-audit
 - Negative test: flips data_integrity_gate decision to ALLOW in copy-policy and expects exit_code=2, then resets copy-policy back
 - Checkpoint: resets copy-policy, runs sanity, saves logs, makes snapshot
-
-Key commands:
-- `py -3.11 -m args.demo.demo_regression`
-- `py -3.11 -m args.demo.demo_policy_diff`
-- `py -3.11 -m args.demo.demo_replay`
-- `py -3.11 -m args.demo.demo_meta_audit`
-- `py -3.11 -m args.demo.demo_meta_audit_negative`
-- `powershell -ExecutionPolicy Bypass -File .\\scripts\\checkpoint.ps1 -Tag "ui"`
 
 Run UI:
 - `py -3.11 -m streamlit run .\\args\\ui\\app_streamlit.py`
