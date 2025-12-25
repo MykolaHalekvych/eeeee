@@ -18,3 +18,6 @@ args/data/events_run_*.jsonl
 args/data/orders_paper_*.jsonl
 args/logs/run_report_*.json
 args/data/*_ibkr.csv
+# Local IBKR contract resolution outputs
+args/data/ibkr_*_contract_*.json
+args/data/*.meta.json

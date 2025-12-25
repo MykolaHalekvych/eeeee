@@ -1,4 +1,6 @@
 from __future__ import annotations
+from args.run.csv_meta_v1 import attach_csv_meta
+
 
 import json
 import uuid
