@@ -21,3 +21,5 @@ args/data/*_ibkr.csv
 # Local IBKR contract resolution outputs
 args/data/ibkr_*_contract_*.json
 args/data/*.meta.json
+# WA intents artifacts
+args/data/orders_intent_*.jsonl
