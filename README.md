@@ -119,3 +119,11 @@ Extracts all `path` atoms and ops used in the baseline policy:
 
 ```powershell
 py -3.11 -m args.contracts.paths_from_policy
+
+## Paper Loop v0 (Stage 19A)
+
+One-command deterministic run that produces per-run artifacts (no accumulation):
+
+```powershell
+py -3.11 -m args.demo.demo_paper_loop_v0
+

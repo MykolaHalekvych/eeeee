@@ -4,22 +4,21 @@
   "out_events": "args/data/events_run.jsonl",
   "max_steps": 0,
   "start_index": 0,
-
   "defaults": {
     "qc": "OK",
     "stale_quotes": false,
     "missing_bars": 0,
     "timestamp_drift_ms": 0,
-    "kill_switch": false
+    "kill_switch": false,
     "liquidity": 1.0,
     "margin_usage": 0.40,
     "confidence": 0.55,
     "regime": "UNKNOWN",
     "tail_risk": "UNKNOWN",
     "correlation": 0.10,
-
     "instrument": "HG",
     "timeframe": "5m",
     "env": "IBKR_PAPER_LABEL"
   }
 }
+
