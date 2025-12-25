@@ -23,3 +23,5 @@ args/data/ibkr_*_contract_*.json
 args/data/*.meta.json
 # WA intents artifacts
 args/data/orders_intent_*.jsonl
+# WA payload artifacts (dry-run)
+args/data/orders_payload_*.jsonl
