@@ -25,3 +25,5 @@ args/data/*.meta.json
 args/data/orders_intent_*.jsonl
 # WA payload artifacts (dry-run)
 args/data/orders_payload_*.jsonl
+# Sender dry-run artifacts
+args/data/orders_sendplan_*.jsonl
