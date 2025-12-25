@@ -24,7 +24,6 @@ EVENTS_PATH = REPO_ROOT / "args" / "data" / "events.jsonl"
 
 UI_CSS = """
 <style>
-/* Hide Streamlit chrome */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
@@ -45,7 +44,6 @@ div[data-testid="stExpander"] [data-testid="stExpanderToggleIcon"] {
   color: #e5e7eb;
 }
 
-/* Layout width / padding */
 div.block-container {
   padding-top: 1.2rem;
   padding-bottom: 1.6rem;
@@ -66,7 +64,6 @@ div[data-testid="stSidebar"] > div:first-child {
   padding: 16px 18px;
   box-shadow: 0 14px 35px rgba(0,0,0,0.35);
 }
-
 .args-title {
   font-size: 38px;
   font-weight: 800;
@@ -74,7 +71,6 @@ div[data-testid="stSidebar"] > div:first-child {
   margin: 0;
   line-height: 1.0;
 }
-
 .args-subtitle {
   font-size: 14px;
   color: rgba(203,213,225,0.85);
@@ -267,7 +263,7 @@ div.stButton > button {
 
 
 # -----------------------------
-# Generic helpers
+# Helpers (generic)
 # -----------------------------
 
 def _html_escape(x: Any) -> str:
@@ -306,17 +302,14 @@ def tail_lines(path: Path, n: int) -> str:
         return f"(missing) {path}"
     try:
         data = path.read_bytes()
-
         if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
             text = data.decode("utf-16", errors="replace")
         elif data.startswith(b"\xef\xbb\xbf"):
             text = data.decode("utf-8-sig", errors="replace")
         else:
             text = data.decode("utf-8", errors="replace")
-
         if "\x00" in text[:200]:
             text = data.decode("utf-16", errors="replace")
-
         lines = text.splitlines()
         return "\n".join(lines[-n:])
     except Exception as e:
@@ -333,6 +326,10 @@ def list_logs() -> List[Path]:
 def git_porcelain() -> Tuple[int, str]:
     return run_cmd(["git", "status", "--porcelain"], cwd=REPO_ROOT)
 
+
+# -----------------------------
+# Control Panel actions
+# -----------------------------
 
 def header_status() -> None:
     st.title("ARGS Core v1 — Control Panel")
@@ -435,7 +432,7 @@ def _load_events_jsonl(path: Path) -> List[Dict[str, Any]]:
                 out.append(obj)
         except Exception:
             continue
-    out.sort(key=lambda e: str(e.get("ts_utc") or e.get("ts") or ""), reverse=True)
+    out.sort(key=lambda e: str(e.get("ts_utc") or e.get("ts") or e.get("ts_utc") or ""), reverse=True)
     return out
 
 
@@ -512,14 +509,17 @@ def _append_event_safe(event: Dict[str, Any]) -> Tuple[int, str]:
 
 
 def _demo_ctx(policy_meta: Dict[str, Any]) -> Dict[str, Any]:
+    # Shape consistent with your existing events.jsonl / contract expectations
     return {
         "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
         "instrument": policy_meta.get("instrument", "HG"),
         "timeframe": policy_meta.get("timeframe", "5m"),
-        "environment": policy_meta.get("environment", "IBKR_PAPER"),
+        "environment": policy_meta.get("environment", "IBKR_PAPER_LABEL"),
         "ctx_snapshot": {
+            "env": {"session": "RTH"},
+            "data": {"qc": "OK", "missing_bars": 0, "stale_quotes": False, "timestamp_drift_ms": 0},
             "risk": {"margin_usage": 0.41},
-            "state": {"tail_risk": "UNKNOWN", "liquidity": "NORMAL", "confidence": 0.62},
+            "state": {"regime": "TREND", "confidence": 0.62, "liquidity": "NORMAL", "tail_risk": "UNKNOWN"},
         },
     }
 
@@ -546,7 +546,13 @@ def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None
     if ml is None:
         ml = limits.get("margin_usage_limit") if isinstance(limits.get("margin_usage_limit"), (int, float)) else None
 
-    tail = ctx.get("tail_risk_state") or ctx.get("tail_risk") or state.get("tail_risk") or state.get("tail_risk_state") or "UNKNOWN"
+    tail = (
+        ctx.get("tail_risk_state")
+        or ctx.get("tail_risk")
+        or state.get("tail_risk")
+        or state.get("tail_risk_state")
+        or "UNKNOWN"
+    )
     liq = ctx.get("liquidity") or state.get("liquidity") or "NORMAL"
 
     conf = ctx.get("regime_confidence")
@@ -600,6 +606,10 @@ def _decision_to_css(decision: str) -> str:
     return "dec-no"
 
 
+# -----------------------------
+# ARGS Dashboard
+# -----------------------------
+
 def render_args_dashboard() -> None:
     policy_meta = _read_yaml(POLICY_PATH)
     events = _load_events_jsonl(EVENTS_PATH)
@@ -628,6 +638,7 @@ def render_args_dashboard() -> None:
     tail_emph = "emph-yellow" if tail == "UNKNOWN" else "emph-blue"
     liq_emph = "emph-blue" if liq == "NORMAL" else "emph-yellow"
 
+    # Hero
     st.markdown(
         '<div class="args-hero">'
         '<div class="args-title">ARGS</div>'
@@ -636,6 +647,7 @@ def render_args_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
+    # Top strip
     st.markdown(
         (
             '<div class="metric-strip">'
@@ -651,6 +663,38 @@ def render_args_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
+    # --- Micro-UX strip (Dashboard) ---
+    now_local = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    events_total = len(events) if isinstance(events, list) else 0
+    last_ts = str(last.get("ts_utc") or last.get("ts") or "—")
+    last_dec = str(last.get("ma_decision") or "UNKNOWN").upper().replace("_", "-")
+
+    mini_html = (
+        '<div class="metric-strip" style="grid-template-columns: 1fr 1fr 1fr 1fr;">'
+        '<div class="metric-pill"><div class="metric-label">Last refresh</div>'
+        f'<div class="metric-value">{_html_escape(now_local)}</div></div>'
+        '<div class="metric-pill"><div class="metric-label">Events total</div>'
+        f'<div class="metric-value">{events_total}</div></div>'
+        '<div class="metric-pill"><div class="metric-label">Last event</div>'
+        f'<div class="metric-value">{_html_escape(last_ts)}</div></div>'
+        '<div class="metric-pill"><div class="metric-label">Last decision</div>'
+        f'<div class="metric-value">{_html_escape(last_dec)}</div></div>'
+        '</div>'
+    )
+    st.markdown(mini_html, unsafe_allow_html=True)
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("Open policy YAML", key="dash_open_policy"):
+            open_path(POLICY_PATH)
+    with b2:
+        if st.button("Open events.jsonl", key="dash_open_events"):
+            open_path(EVENTS_PATH)
+    with b3:
+        if st.button("Refresh dashboard", key="dash_refresh"):
+            st.rerun()
+
+    # Violations
     vv = last.get("violations") if isinstance(last.get("violations"), list) else []
     if not isinstance(vv, list):
         vv = []
@@ -729,10 +773,11 @@ def render_args_dashboard() -> None:
             unsafe_allow_html=True,
         )
 
+    # EVAL
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     cc1, cc2, cc3 = st.columns([1, 1, 1])
     with cc2:
-        if st.button("EVAL MA", use_container_width=True):
+        if st.button("EVAL MA", use_container_width=True, key="dash_eval_ma"):
             policy = load_policy(POLICY_PATH)
             ctx = _demo_ctx(policy_meta)
             res = eval_ma(policy, ctx)
@@ -763,8 +808,8 @@ def render_args_dashboard() -> None:
                 st.error(f"append_event failed: {out}")
             st.rerun()
 
-    events2 = _load_events_jsonl(EVENTS_PATH)
-    rows = events2[:8]
+    # Event stream table
+    rows = events[:8]
     if rows:
         trs = ""
         for e in rows:
@@ -779,7 +824,6 @@ def render_args_dashboard() -> None:
             pol = str(e.get("policy_name") or e.get("policy_file") or "")
 
             dcls = _decision_to_css(d)
-
             trs += (
                 "<tr>"
                 f"<td>{_html_escape(tshort)}</td>"
@@ -806,15 +850,19 @@ def render_args_dashboard() -> None:
         st.markdown(table_html, unsafe_allow_html=True)
 
 
+# -----------------------------
+# Events (structured)
+# -----------------------------
+
 def render_events_view() -> None:
     st.subheader("Event Stream (structured)")
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        if st.button("Open events.jsonl"):
+        if st.button("Open events.jsonl", key="ev_open_events_jsonl"):
             open_path(EVENTS_PATH)
     with c2:
-        if st.button("Open data folder"):
+        if st.button("Open data folder", key="ev_open_data_folder"):
             open_path(EVENTS_PATH.parent)
 
     events = _load_events_jsonl(EVENTS_PATH)
@@ -828,11 +876,23 @@ def render_events_view() -> None:
             "Decision",
             ["All", "ALLOW", "REDUCE", "NO_TRADE", "UNKNOWN", "EXIT"],
             index=0,
+            key="ev_decision_filter",
         )
     with f2:
-        q = st.text_input("Search (reason/policy/instrument)", value="").strip().lower()
+        q = st.text_input(
+            "Search (reason/policy/instrument)",
+            value="",
+            key="ev_search",
+        ).strip().lower()
     with f3:
-        limit = st.number_input("Rows", min_value=10, max_value=500, value=80, step=10)
+        limit = st.number_input(
+            "Rows",
+            min_value=10,
+            max_value=500,
+            value=80,
+            step=10,
+            key="ev_rows",
+        )
 
     filtered: List[Dict[str, Any]] = []
     for e in events:
@@ -907,9 +967,13 @@ def render_events_view() -> None:
         r = str(e.get("_reason") or "")
         return f"{ts} | {d} | {r[:60]}"
 
-    pick = st.selectbox("Select event", rows, format_func=_label, index=0)
+    pick = st.selectbox("Select event", rows, format_func=_label, index=0, key="ev_select_event")
     st.code(json.dumps(pick, ensure_ascii=False, indent=2), language="json")
 
+
+# -----------------------------
+# Main
+# -----------------------------
 
 def main() -> None:
     st.set_page_config(page_title="ARGS", layout="wide")
@@ -920,6 +984,7 @@ def main() -> None:
         "Operator mode (safe)",
         value=True,
         help="ON = hide dev/destructive actions (negative test, checkpoint). OFF = Dev mode.",
+        key="mode_operator",
     )
 
     tab_args, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
@@ -934,10 +999,10 @@ def main() -> None:
 
         cA, cB = st.columns(2)
         with cA:
-            if st.button("Refresh UI state"):
+            if st.button("Refresh UI state", key="cp_refresh_ui"):
                 st.rerun()
         with cB:
-            if st.button("Clear results"):
+            if st.button("Clear results", key="cp_clear_results"):
                 for k in ("sanity_results", "sanity_ts", "neg_result", "neg_ts", "chk_result", "chk_ts"):
                     if k in st.session_state:
                         del st.session_state[k]
@@ -948,32 +1013,32 @@ def main() -> None:
         with col1:
             st.subheader("Actions")
 
-            if st.button("Run sanity suite (regression/diff/replay/meta_audit)"):
+            if st.button("Run sanity suite (regression/diff/replay/meta_audit)", key="cp_run_sanity"):
                 st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                 st.session_state["sanity_results"] = run_sanity_suite()
 
             if operator_mode:
                 st.info("Operator mode: Negative test and Checkpoint are hidden.")
             else:
-                if st.button("Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)"):
+                if st.button("Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)", key="cp_run_negative"):
                     st.session_state["neg_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                     st.session_state["neg_result"] = run_negative_test()
 
-                tag = st.text_input("Checkpoint tag", value="ui_polish")
-                if st.button("Run checkpoint.ps1"):
+                tag = st.text_input("Checkpoint tag", value="ui_polish", key="cp_checkpoint_tag")
+                if st.button("Run checkpoint.ps1", key="cp_run_checkpoint"):
                     st.session_state["chk_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                     st.session_state["chk_result"] = run_checkpoint(tag)
 
             st.subheader("Open folders")
-            if st.button("Open repo folder"):
+            if st.button("Open repo folder", key="cp_open_repo"):
                 code, out = open_path(REPO_ROOT)
                 st.text(out or f"exit_code={code}")
 
-            if st.button("Open logs folder"):
+            if st.button("Open logs folder", key="cp_open_logs"):
                 code, out = open_path(REPO_ROOT / "args" / "logs")
                 st.text(out or f"exit_code={code}")
 
-            if st.button("Open data folder"):
+            if st.button("Open data folder", key="cp_open_data_folder"):
                 code, out = open_path(REPO_ROOT / "args" / "data")
                 st.text(out or f"exit_code={code}")
 
@@ -1017,14 +1082,14 @@ def main() -> None:
     with tab_logs:
         st.subheader("Logs & Evidence")
 
-        prefix = st.text_input("Filter logs by filename contains", value="")
+        prefix = st.text_input("Filter logs by filename contains", value="", key="logs_filter")
         logs = list_logs()
         if prefix.strip():
             logs = [p for p in logs if prefix.strip().lower() in p.name.lower()]
 
         if logs:
-            pick = st.selectbox("Select log file", logs, format_func=lambda p: p.name)
-            n = st.slider("Tail lines", min_value=20, max_value=400, value=120, step=20)
+            pick = st.selectbox("Select log file", logs, format_func=lambda p: p.name, key="logs_select")
+            n = st.slider("Tail lines", min_value=20, max_value=400, value=120, step=20, key="logs_tail")
             st.text(tail_lines(pick, n))
         else:
             st.info("No logs found in args/logs (or filtered to none).")
@@ -1037,8 +1102,8 @@ def main() -> None:
         st.markdown(
             """
 - Sanity suite: runs regression / policy diff / replay / meta-audit
-- Negative test: flips data_integrity_gate decision to ALLOW in copy-policy and expects exit_code=2, then resets copy-policy back
-- Checkpoint: resets copy-policy, runs sanity, saves logs, makes snapshot
+- Operator mode hides negative test + checkpoint actions
+- Events tab provides structured browsing + details
 
 Run UI:
 - `py -3.11 -m streamlit run .\\args\\ui\\app_streamlit.py`
@@ -1048,3 +1113,4 @@ Run UI:
 
 if __name__ == "__main__":
     main()
+
