@@ -1,0 +1,8 @@
+{
+  "session_flags": { "is_rth": null, "is_globex": null, "minutes_to_close": null, "is_holiday": null },
+  "roll_flags": { "days_to_expiry": null, "in_roll_window": null },
+  "position_state": { "size": 0, "avg_price": null, "unrealized_pnl": null, "last_action_utc": null },
+  "risk_caps": { "risk_per_trade_cap": null, "daily_heat_cap": null, "heat_used_today": null },
+  "liquidity_l0": { "spread": null, "top_size_bid": null, "top_size_ask": null, "thin_book": null }
+}
+
