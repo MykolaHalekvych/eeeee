@@ -5,6 +5,8 @@ import json
 import os
 import re
 import time
+import socket
+import subprocess
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -75,6 +77,128 @@ def safe_open_folder(path: Path) -> None:
             st.warning("Open folder is supported on Windows only in this UI.")
     except Exception as e:
         st.error(f"Failed to open folder: {e}")
+def _fmt_age(age_s: float) -> str:
+    age_s = max(0.0, float(age_s))
+    if age_s < 60:
+        return f"{int(age_s)}s"
+    if age_s < 3600:
+        m = int(age_s // 60)
+        s = int(age_s % 60)
+        return f"{m}m {s}s"
+    h = int(age_s // 3600)
+    m = int((age_s % 3600) // 60)
+    return f"{h}h {m}m"
+def _fmt_task_dt(v: Any) -> str:
+    # v may be "/Date(1766714666000)/" from PowerShell JSON
+    if v is None:
+        return "n/a"
+    s = str(v)
+    m = re.search(r"/Date\((\d+)\)/", s)
+    if m:
+        ms = int(m.group(1))
+        dt = datetime.utcfromtimestamp(ms / 1000.0)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return s
+
+def _mtime_info(path: Path) -> Dict[str, Any]:
+    try:
+        mt = path.stat().st_mtime
+        return {
+            "exists": True,
+            "mtime_utc": datetime.utcfromtimestamp(mt).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "age_s": float(time.time() - mt),
+        }
+    except Exception as e:
+        return {"exists": False, "error": str(e)}
+
+
+def _latest_matching(dir_path: Path, prefix: str, suffix: str) -> Optional[Path]:
+    try:
+        if not dir_path.exists():
+            return None
+        best: Optional[Path] = None
+        best_mt = -1.0
+        for p in dir_path.iterdir():
+            if not p.is_file():
+                continue
+            n = p.name
+            if not (n.startswith(prefix) and n.endswith(suffix)):
+                continue
+            mt = p.stat().st_mtime
+            if mt > best_mt:
+                best_mt = mt
+                best = p
+        return best
+    except Exception:
+        return None
+
+
+def _read_ibkr_connection(data_dir: Path) -> Dict[str, Any]:
+    cfg_path = data_dir / "ibkr_connection_v0.json"
+    if not cfg_path.exists():
+        return {"ok": False, "error": "ibkr_connection_v0.json missing", "path": str(cfg_path)}
+    obj = read_json_safe(cfg_path)
+    if obj.get("_ok") is False:
+        return {"ok": False, "error": obj.get("_error"), "path": str(cfg_path)}
+    host = str(obj.get("host", "localhost"))
+    port = int(obj.get("port", 7497))
+    return {"ok": True, "host": host, "port": port, "path": str(cfg_path)}
+
+
+
+
+
+def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
+    # Robust on Windows: try IPv4 loopback and IPv6 loopback explicitly
+    targets = []
+    h = str(host).strip().lower()
+    if h in ("localhost", "127.0.0.1", "::1"):
+        targets = [("127.0.0.1", int(port)), ("::1", int(port))]
+    else:
+        targets = [(host, int(port))]
+
+    for (hh, pp) in targets:
+        try:
+            with socket.create_connection((hh, pp), timeout=timeout_s):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+    ps = (
+        f"$t=Get-ScheduledTask -TaskName '{task_name}';"
+        f"$ti=$t | Get-ScheduledTaskInfo;"
+        f"[pscustomobject]@{{"
+        f"TaskName=$t.TaskName;"
+        f"State=$t.State;"
+        f"LastRunTime=$ti.LastRunTime;"
+        f"NextRunTime=$ti.NextRunTime;"
+        f"LastTaskResult=$ti.LastTaskResult;"
+        f"NumberOfMissedRuns=$ti.NumberOfMissedRuns;"
+        f"Arguments=$t.Actions[0].Arguments;"
+        f"}} | ConvertTo-Json -Compress"
+    )
+
+    try:
+        cp = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=2.5,
+        )
+        if cp.returncode != 0:
+            return {
+                "ok": False,
+                "error": (cp.stderr or cp.stdout or "").strip(),
+                "returncode": cp.returncode,
+            }
+        raw = (cp.stdout or "").strip()
+        if not raw:
+            return {"ok": False, "error": "empty output"}
+        return {"ok": True, "data": json.loads(raw)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # -----------------------------
@@ -312,6 +436,68 @@ def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, An
 # -----------------------------
 def render_run_explorer_tab() -> None:
     st.subheader("Run Explorer (read-only)")
+    # -----------------------------
+    # Ops status (read-only)
+    # -----------------------------
+    data_dir, logs_dir = default_dirs()
+
+    with st.expander("Ops status (read-only)", expanded=True):
+        # Scheduled Task status
+        task = _get_task_info("ARGS_AutoLoop_5m")
+        c1, c2, c3, c4 = st.columns(4)
+
+        if task.get("ok"):
+            d = task["data"]
+            last_result = d.get("LastTaskResult")
+            try:
+                last_hex = f"0x{int(last_result):08X}"
+            except Exception:
+                last_hex = str(last_result)
+
+            c1.metric("Task state", str(d.get("State", "n/a")))
+            c2.metric("LastTaskResult", f"{last_hex}")
+            c3.metric("Missed runs", str(d.get("NumberOfMissedRuns", "n/a")))
+            c4.metric("Args", "… -Once" if "-Once" in str(d.get("Arguments", "")) else str(d.get("Arguments", ""))[:16] + "…")
+
+            st.caption(f"LastRunTime: {_fmt_task_dt(d.get('LastRunTime'))} | NextRunTime: {_fmt_task_dt(d.get('NextRunTime'))}")
+
+        else:
+            st.warning(f"ScheduledTask read failed: {task.get('error')}")
+
+        # auto_loop.log freshness
+        latest_log = _latest_matching(logs_dir, prefix="auto_loop_", suffix=".log")
+        if latest_log:
+            li = _mtime_info(latest_log)
+            st.caption(f"Latest auto_loop log: {latest_log.name} | {li.get('mtime_utc')} | age { _fmt_age(li.get('age_s', 0)) }")
+        else:
+            st.caption("Latest auto_loop log: n/a")
+
+        # lock status
+        lock_path = logs_dir / "auto_loop.lock"
+        lock = _mtime_info(lock_path) if lock_path.exists() else {"exists": False}
+        if lock.get("exists"):
+            st.warning(f"LOCK present: {lock_path} | {lock.get('mtime_utc')} | age {_fmt_age(lock.get('age_s', 0))}")
+        else:
+            st.caption("LOCK: not present (OK)")
+
+        # IBKR CSV freshness
+        csv_path = data_dir / "hg_5m_bars_ibkr.csv"
+        csv_i = _mtime_info(csv_path) if csv_path.exists() else {"exists": False}
+        if csv_i.get("exists"):
+            st.caption(f"IBKR CSV: {csv_i.get('mtime_utc')} | age {_fmt_age(csv_i.get('age_s', 0))}")
+        else:
+            st.caption("IBKR CSV: missing")
+
+        # TWS socket (host:port) status (from config)
+        conn = _read_ibkr_connection(data_dir)
+        if conn.get("ok"):
+            host = conn["host"]
+            port = conn["port"]
+            ok = _tcp_check(host, port)
+            st.caption(f"TWS socket: {host}:{port} -> {'OK' if ok else 'DOWN'}")
+        else:
+            st.caption(f"TWS socket: config read failed ({conn.get('error')})")
+
 
     operator_mode = bool(st.session_state.get("operator_mode", True))
 
@@ -362,6 +548,46 @@ def render_run_explorer_tab() -> None:
     with col_b:
         if st.button("Open data folder", key="runexp_btn_open_data"):
             safe_open_folder(data_dir)
+def _get_task_info(task_name: str) -> Dict[str, Any]:
+    """
+    Read-only Scheduled Task status via PowerShell -> JSON.
+    """
+    if os.name != "nt":
+        return {"ok": False, "error": "windows-only"}
+
+    ps = (
+        f"$t=Get-ScheduledTask -TaskName '{task_name}';"
+        f"$ti=$t | Get-ScheduledTaskInfo;"
+        f"[pscustomobject]@{{"
+        f"TaskName=$t.TaskName;"
+        f"State=$t.State;"
+        f"LastRunTime=$ti.LastRunTime;"
+        f"NextRunTime=$ti.NextRunTime;"
+        f"LastTaskResult=$ti.LastTaskResult;"
+        f"NumberOfMissedRuns=$ti.NumberOfMissedRuns;"
+        f"Arguments=$t.Actions[0].Arguments;"
+        f"}} | ConvertTo-Json -Compress"
+    )
+
+    try:
+        cp = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=2.5,
+        )
+        if cp.returncode != 0:
+            return {
+                "ok": False,
+                "error": (cp.stderr or cp.stdout or "").strip(),
+                "returncode": cp.returncode,
+            }
+        raw = (cp.stdout or "").strip()
+        if not raw:
+            return {"ok": False, "error": "empty output"}
+        return {"ok": True, "data": json.loads(raw)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
     with col_c:
         if st.button("Open logs folder", key="runexp_btn_open_logs"):
