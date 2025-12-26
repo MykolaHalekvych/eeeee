@@ -16,6 +16,8 @@ DATA_DIR = REPO_ROOT / "args" / "data"
 
 # Roll window policy (v0.1 scaffold)
 ROLL_WINDOW_DAYS = 7
+VOL_WINDOW = 50          # bars
+THIN_BOOK_Z = -1.0       # z-score threshold (low volume)
 
 # Simple caches (avoid re-reading JSON per bar)
 _EXPIRY_CACHE: Optional[str] = None
@@ -34,6 +36,28 @@ def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
         data_dir / "ibkr_hg_contract_v1.json",
         data_dir / "hg_5m_bars_ibkr.meta.json",
     ]
+def _volume_stats(bars: List[Bar5m], window: int = VOL_WINDOW) -> Dict[str, Any]:
+    """
+    Compute simple volume z-score on last N bars.
+    Deterministic, no numpy.
+    """
+    if not bars:
+        return {"vol_mean": None, "vol_std": None, "vol_z": None}
+
+    w = int(max(5, window))
+    seq = [float(b.volume) for b in bars[-w:] if b and b.volume is not None]
+    if len(seq) < 5:
+        return {"vol_mean": None, "vol_std": None, "vol_z": None}
+
+    mean = sum(seq) / len(seq)
+    var = sum((x - mean) ** 2 for x in seq) / max(1, (len(seq) - 1))
+    std = var ** 0.5
+    if std <= 1e-9:
+        return {"vol_mean": mean, "vol_std": std, "vol_z": 0.0}
+
+    z = (float(seq[-1]) - mean) / std
+    return {"vol_mean": mean, "vol_std": std, "vol_z": z}
+
 
     for p in candidates:
         if not p.exists():
@@ -189,6 +213,7 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def derive_ma_input_from_bar(
     bar: Bar5m,
+    bars: Optional[List[Bar5m]] = None,
     *,
     # Optional knobs for offline scaffolding:
     qc: str = "OK",
@@ -247,6 +272,37 @@ def derive_ma_input_from_bar(
 
     # Ensure optional v1 keys exist (backward compatible)
     ma_input = ensure_optional_v1(ma_input)
+        # Liquidity L0 scaffold (read-only, no order book yet)
+        vol_stats = _volume_stats(bars or [])
+    vol_z = vol_stats.get("vol_z")
+
+    thin_book = None
+    note = "no_order_book"
+
+    if bars and len(bars) >= 5:
+        if isinstance(vol_z, (int, float)):
+            thin_book = bool(vol_z <= THIN_BOOK_Z)
+            note = f"volume_z={vol_z:.2f} (window={VOL_WINDOW})"
+        else:
+            thin_book = False
+            note = "volume_stats_insufficient"
+
+    if isinstance(vol_z, (int, float)):
+        thin_book = bool(vol_z <= THIN_BOOK_Z)
+        note = f"volume_z={vol_z:.2f} (window={VOL_WINDOW})"
+
+    if not isinstance(ma_input.get("liquidity_l0"), dict):
+        ma_input["liquidity_l0"] = {}
+
+    ma_input["liquidity_l0"].update(
+        {
+            "spread": None,
+            "top_size_bid": None,
+            "top_size_ask": None,
+            "thin_book": thin_book,
+            "note": note,
+        }
+    )
 
     # Populate roll flags (real values)
     roll = _get_roll_flags_cached()
