@@ -16,10 +16,66 @@ $logDir = Join-Path $repoRoot "args\logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $lockPath = Join-Path $logDir "auto_loop.lock"
-if (Test-Path $lockPath) {
-  Write-Host "auto_loop.lock exists -> another scheduler may be running. Exiting with code 0 (no-op)." -ForegroundColor Yellow
-  Write-Host "Lock: $lockPath"
-  exit 0
+
+# -----------------------------
+# Lock hardening (stale recovery)
+# - If lock has PID and that PID is alive => active lock => exit 0 (no-op)
+# - If lock has PID but PID not alive => stale => remove and continue
+# - If lock has no PID => TTL fallback (minutes)
+# Supports both:
+#   JSON:  {"pid":123, ...}
+#   Legacy: "pid=123 started_utc=..."
+# -----------------------------
+$LockTtlMinutes = 20
+$Now = Get-Date
+
+if (Test-Path -LiteralPath $lockPath) {
+  $lockItem = Get-Item -LiteralPath $lockPath
+  $ageMin = (New-TimeSpan -Start $lockItem.LastWriteTime -End $Now).TotalMinutes
+
+  $lockPid = $null
+  try {
+    $raw = Get-Content -LiteralPath $lockPath -Raw -ErrorAction Stop
+
+    # JSON first
+    try {
+      $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+      if ($obj.pid) { $lockPid = [int]$obj.pid }
+    } catch {
+      # Legacy "pid=123 ..."
+      if ($raw -match 'pid\s*=\s*(\d+)') { $lockPid = [int]$Matches[1] }
+    }
+  } catch {
+    $lockPid = $null
+  }
+
+  if ($lockPid -ne $null) {
+    $alive = $false
+    try {
+      Get-Process -Id $lockPid -ErrorAction Stop | Out-Null
+      $alive = $true
+    } catch {
+      $alive = $false
+    }
+
+    if ($alive) {
+      Write-Host ("auto_loop.lock exists -> active lock (pid={0}, age={1}m). Exiting with code 0 (no-op)." -f $lockPid, ([math]::Round($ageMin,1))) -ForegroundColor Yellow
+      Write-Host "Lock: $lockPath"
+      exit 0
+    } else {
+      Write-Host ("auto_loop.lock exists -> stale lock (pid={0} not running, age={1}m). Removing and continuing." -f $lockPid, ([math]::Round($ageMin,1))) -ForegroundColor Yellow
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    }
+  } else {
+    if ($ageMin -gt $LockTtlMinutes) {
+      Write-Host ("auto_loop.lock exists -> stale lock (no pid, age={0}m > {1}m). Removing and continuing." -f ([math]::Round($ageMin,1)), $LockTtlMinutes) -ForegroundColor Yellow
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    } else {
+      Write-Host ("auto_loop.lock exists -> lock present (no pid, age={0}m <= {1}m). Exiting with code 0 (no-op)." -f ([math]::Round($ageMin,1)), $LockTtlMinutes) -ForegroundColor Yellow
+      Write-Host "Lock: $lockPath"
+      exit 0
+    }
+  }
 }
 
 function Run-Step([string]$name, [string]$module, [string]$logFile) {
@@ -42,8 +98,15 @@ function Run-Step([string]$name, [string]$module, [string]$logFile) {
 }
 
 try {
-  $lockBody = "pid=$PID started_utc=$([DateTime]::UtcNow.ToString('s'))Z"
-  Set-Content -Path $lockPath -Value $lockBody -Encoding UTF8
+  # Acquire lock (write JSON for reliability + PID)
+  $lockObj = @{
+    pid         = $PID
+    started_utc = (Get-Date).ToUniversalTime().ToString("o")
+    machine     = $env:COMPUTERNAME
+    user        = $env:USERNAME
+  }
+  $lockJson = $lockObj | ConvertTo-Json -Compress
+  Set-Content -Path $lockPath -Value $lockJson -Encoding UTF8
 
   $cycle = 0
 
@@ -86,7 +149,7 @@ try {
   }
 
 } finally {
-  Remove-Item -Force -ErrorAction SilentlyContinue $lockPath
+  Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
 }
-exit 0
 
+exit 0
