@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -86,6 +86,63 @@ def _get_roll_flags_cached() -> Dict[str, Any]:
 
     _ROLL_FLAGS_CACHE = _compute_roll_flags(_EXPIRY_CACHE)
     return dict(_ROLL_FLAGS_CACHE)
+def _parse_ts_utc(ts_str: str) -> Optional[datetime]:
+    s = (ts_str or "").strip()
+    if not s:
+        return None
+    try:
+        # ISO with optional Z
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            # treat naive as UTC
+            return dt
+        # normalize to naive UTC
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _compute_session_flags(ts_utc: Optional[datetime]) -> Dict[str, Any]:
+    """
+    Minimal, deterministic scaffold for futures session flags (UTC-based).
+    This is intentionally conservative and simple for Stage 3.5.
+    """
+    if ts_utc is None:
+        return {
+            "is_rth": None,
+            "is_globex": None,
+            "minutes_to_close": None,
+            "is_holiday": None,
+        }
+
+    wd = ts_utc.weekday()  # Mon=0 ... Sun=6
+    # Minimal "holiday/closed" signal:
+    # - Saturday: closed
+    # - Sunday: closed until approx weekly open (roughly 22:00 UTC)
+    is_holiday = False
+    if wd == 5:  # Saturday
+        is_holiday = True
+    if wd == 6 and ts_utc.hour < 22:  # Sunday before rough open
+        is_holiday = True
+
+    # Minimal globex open heuristic
+    if wd == 5:
+        is_globex = False
+    elif wd == 6:
+        is_globex = ts_utc.hour >= 22
+    else:
+        is_globex = True
+
+    return {
+        "is_rth": None,
+        "is_globex": bool(is_globex),
+        "minutes_to_close": None,
+        "is_holiday": bool(is_holiday),
+    }
+
 
 
 @dataclass(frozen=True)
@@ -170,6 +227,10 @@ def derive_ma_input_from_bar(
     roll = _get_roll_flags_cached()
     if isinstance(ma_input.get("roll_flags"), dict):
         ma_input["roll_flags"].update(roll)
+    sess = _compute_session_flags(_parse_ts_utc(bar.ts))
+    if isinstance(ma_input.get("session_flags"), dict):
+        ma_input["session_flags"].update(sess)
+
 
     return ma_input
 
