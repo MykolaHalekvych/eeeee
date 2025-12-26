@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from args.wa.wa_order_gateway_v1 import decide_intent, iter_jsonl, append_jsonl
 from args.ibkr.ibkr_order_payload_v1 import build_contract_ref, intent_to_payload
+from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
@@ -16,7 +16,13 @@ def _latest_report() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
     reports = sorted(
-        [p for p in LOGS_DIR.iterdir() if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")],
+        [
+            p
+            for p in LOGS_DIR.iterdir()
+            if p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
+        ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
@@ -87,7 +93,7 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
         intents_path.unlink()
 
     if halted:
-        intent = decide_intent(
+        intent_obj = decide_intent(
             run_id=run_id,
             index=None,
             ts=None,
@@ -98,16 +104,18 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
             halted=True,
             halt_reason=halt_reason,
         )
-        append_jsonl(intents_path, intent.to_dict())
+        append_jsonl(intents_path, intent_obj.to_dict())
         return run_id, intents_path
 
     for row in iter_jsonl(orders_file):
         if row.get("kind") != "ORDER_PAPER":
             continue
+
         wa_action = row.get("wa_action")
         if not isinstance(wa_action, dict):
             wa_action = {}
-        intent = decide_intent(
+
+        intent_obj = decide_intent(
             run_id=run_id,
             index=row.get("index"),
             ts=row.get("ts"),
@@ -118,7 +126,7 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
             halted=False,
             halt_reason="",
         )
-        append_jsonl(intents_path, intent.to_dict())
+        append_jsonl(intents_path, intent_obj.to_dict())
 
     return run_id, intents_path
 
@@ -143,10 +151,26 @@ def main() -> int:
     n_none = 0
     n_order = 0
     n_cancel = 0
+    n_gated = 0
 
     for intent in iter_jsonl(intents_path):
         n_total += 1
+
+        # Stage 4.2: enforce mode-gating INSIDE payload pipeline (defense-in-depth)
+        intent = enforce_mode_gate(intent, report)
+        if intent.get("kind") == "INTENT_NONE" and intent.get("gate_reason"):
+            n_gated += 1
+
         payload = intent_to_payload(intent, contract_ref, dry_run=True)
+
+        # Attach audit fields (safe extra keys)
+        payload["mode"] = intent.get("mode")
+        payload["position_size"] = intent.get("position_size")
+        payload["intent_kind_raw"] = intent.get("kind_raw")
+        payload["intent_kind"] = intent.get("kind")
+        if intent.get("gate_reason"):
+            payload["gate_reason"] = intent.get("gate_reason")
+
         append_jsonl(out_payload, payload)
 
         k = payload.get("payload_kind")
@@ -166,7 +190,11 @@ def main() -> int:
         "payload_none": n_none,
         "payload_order": n_order,
         "payload_cancel_all": n_cancel,
-        "contract": {"conId": contract_ref.get("conId"), "localSymbol": contract_ref.get("localSymbol")},
+        "gated_total": n_gated,
+        "contract": {
+            "conId": contract_ref.get("conId"),
+            "localSymbol": contract_ref.get("localSymbol"),
+        },
     }
 
     print("WA_V1_PAYLOAD_DRYRUN")

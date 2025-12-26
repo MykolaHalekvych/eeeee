@@ -218,3 +218,14 @@ def generate_intents(
         "intent_cancel_all": n_cancel,
         "out_intents": str(out_intents),
     }
+# --- Stage 4.2: mode gating moved into WA core (not demo) ---
+from args.wa.mode_gate_v1 import apply_mode_gate_from_report
+
+def enforce_mode_gate(intent: dict, run_report: dict) -> dict:
+    # fail-safe: if shapes are wrong -> no trade
+    if not isinstance(intent, dict):
+        return {"kind": "INTENT_NONE", "kind_raw": str(intent), "gate_reason": "intent_not_dict"}
+    if not isinstance(run_report, dict):
+        run_report = {}
+    return apply_mode_gate_from_report(intent, run_report)
+

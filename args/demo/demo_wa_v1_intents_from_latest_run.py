@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+from args.wa.wa_order_gateway_v1 import enforce_mode_gate
+
 
 from args.wa.wa_order_gateway_v1 import decide_intent, iter_jsonl, append_jsonl
 
