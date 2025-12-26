@@ -31,3 +31,6 @@ args/data/orders_sendplan_*.jsonl
 args/data/position_state_v0.json
 args/data/position_state_v0.json
 args/data/order_intents_*.jsonl
+# runtime policy copy (must never be tracked)
+args/data/invariants_hg_v0_copy.yaml
+args/data/invariants_*_copy.yaml
