@@ -39,6 +39,19 @@ blocks:
           any:
             - { path: "state.regime", op: "eq", value: "UNKNOWN" }
             - { path: "state.confidence", op: "lt", value: 0.60 }
+      - rule_id: "roll_expiry_gate"
+        enabled: true
+        when:
+          any:
+            - path: "roll_flags.in_roll_window"
+              op: "=="
+              value: true
+            - path: "roll_flags.days_to_expiry"
+              op: "<="
+              value: 7
+        decision: "NO_TRADE"
+        enforce: ["NO_TRADE"]
+        reason: "Contract is in roll/expiry window (days_to_expiry<=7 or in_roll_window=true). New entries are forbidden."
 
 
   kill_switch.triggers:
