@@ -29,6 +29,16 @@ THIN_BOOK_Z = -1.0
 _EXPIRY_CACHE: Optional[str] = None
 _ROLL_FLAGS_CACHE: Optional[Dict[str, Any]] = None
 
+def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any]]:
+    p = data_dir / "position_state_v0.json"
+    if not p.exists():
+        return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
 
 def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
     """
@@ -68,7 +78,16 @@ def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
                 return m.group(1)
 
     return None
-
+def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any]]:
+    p = data_dir / "position_state_v0.json"
+    if not p.exists():
+        return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
 
 def _compute_roll_flags(expiry_yyyymmdd: Optional[str]) -> Dict[str, Any]:
     if not expiry_yyyymmdd:
@@ -296,6 +315,16 @@ def derive_ma_input_from_bar(
 
     # Ensure optional v1 keys exist (backward compatible)
     ma_input = ensure_optional_v1(ma_input)
+    pos = _read_position_state_v0()
+    if isinstance(pos, dict) and isinstance(ma_input.get("position_state"), dict):
+        if "size" in pos:
+            try:
+                ma_input["position_state"]["size"] = int(pos.get("size", 0) or 0)
+            except Exception:
+                ma_input["position_state"]["size"] = 0
+        ma_input["position_state"]["avg_price"] = pos.get("avg_price")
+        ma_input["position_state"]["unrealized_pnl"] = pos.get("unrealized_pnl")
+        ma_input["position_state"]["last_action_utc"] = pos.get("last_action_utc")
 
     # Populate roll flags (real values)
     roll = _get_roll_flags_cached()
@@ -341,7 +370,6 @@ def derive_ma_input_from_bar(
     )
 
     return ma_input
-
 
 def parse_bar_row(row: Dict[str, str]) -> Bar5m:
     """
