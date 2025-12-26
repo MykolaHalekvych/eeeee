@@ -254,7 +254,16 @@ def derive_ma_input_from_bar(
         ma_input["roll_flags"].update(roll)
     sess = _compute_session_flags(_parse_ts_utc(bar.ts))
     if isinstance(ma_input.get("session_flags"), dict):
+            sess = _compute_session_flags(_parse_ts_utc(bar.ts))
+    if sess is None:
+        sess = {}
+
+    if not isinstance(ma_input.get("session_flags"), dict):
+        ma_input["session_flags"] = {}
+
+    if isinstance(sess, dict):
         ma_input["session_flags"].update(sess)
+
 
 
     return ma_input
