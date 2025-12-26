@@ -27,3 +27,6 @@ args/data/orders_intent_*.jsonl
 args/data/orders_payload_*.jsonl
 # Sender dry-run artifacts
 args/data/orders_sendplan_*.jsonl
+# ARGS runtime position state (do not commit)
+args/data/position_state_v0.json
+args/data/position_state_v0.json

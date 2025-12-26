@@ -5,7 +5,7 @@ Key properties:
 - Deterministic: same input => same output
 - No side-effects
 - Evaluates ALL rules (no short-circuit), collects violations, then decides
-- UNKNOWN is valid and safety-first
+- UNKNOWN is valid and safety-first (but hard-gates are now deterministic NO_TRADE)
 """
 
 from dataclasses import dataclass
@@ -92,8 +92,8 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """
     Evaluate MA policy on ctx and return:
     {
-      "ma_decision": str,           # effective decision (3.4A)
-      "ma_decision_raw": str,       # raw strictest vote (before 3.4A adjustment)
+      "ma_decision": str,           # effective decision
+      "ma_decision_raw": str,       # raw strictest vote
       "violations": list[dict],
       "risk_envelope": dict
     }
@@ -160,15 +160,34 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
     else:
         ma_decision_raw = "UNKNOWN"
 
-    # 3) Risk envelope (kept compatible with existing semantics)
+    # 3) Risk envelope core
     enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"})
+
+    # Stage 4.0 — position_state -> ONLY_EXITS mode
+    pos_size = 0
+    try:
+        ps = ctx.get("position_state", {})
+        if isinstance(ps, dict):
+            pos_size = int(ps.get("size", 0) or 0)
+    except Exception:
+        pos_size = 0
+
+    has_position = (pos_size != 0)
+    if enforced_no_trade:
+        mode = "ONLY_EXITS" if has_position else "NO_TRADE"
+    else:
+        mode = "ALLOW_NEW_ENTRIES"
+
     risk_envelope = {
         "limits": dict(policy.risk_limits),
         "enforced_no_trade": enforced_no_trade,
+        "mode": mode,
+        "has_position": has_position,
+        "position_size": pos_size,
     }
 
     # 4) Effective decision (3.4A)
-    # If decision is UNKNOWN but NO_TRADE is explicitly enforced -> report NO_TRADE as final decision.
+    # If raw decision is UNKNOWN but NO_TRADE is explicitly enforced -> report NO_TRADE as final decision.
     # Do NOT override EXIT.
     ma_decision = ma_decision_raw
     if ma_decision_raw == "UNKNOWN" and ("NO_TRADE" in enforce_flags):
