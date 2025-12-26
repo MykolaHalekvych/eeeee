@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -114,9 +114,34 @@ def _compute_session_flags(ts_utc: Optional[datetime]) -> Dict[str, Any]:
         return {
             "is_rth": None,
             "is_globex": None,
-            "minutes_to_close": None,
+            "minutes_to_close": _minutes_to_weekly_close(ts_utc),
             "is_holiday": None,
         }
+def _minutes_to_weekly_close(ts_utc: Optional[datetime]) -> Optional[int]:
+    """
+    Deterministic scaffold:
+    - Define weekly close as Friday 22:00 UTC.
+    - Return minutes until that close if within the same trading week.
+    - If timestamp missing, return None.
+    """
+    if ts_utc is None:
+        return None
+
+    # Friday=4 (Mon=0)
+    wd = ts_utc.weekday()
+    close_dt = ts_utc.replace(hour=22, minute=0, second=0, microsecond=0)
+
+    # move close_dt to Friday of current week
+    delta_days = 4 - wd
+    close_dt = close_dt + timedelta(days=delta_days)
+
+    # if already past Friday 22:00 in this week, do not guess next week's schedule here
+    if close_dt < ts_utc:
+        return 0
+
+    mins = int((close_dt - ts_utc).total_seconds() // 60)
+    return max(0, mins)
+
 
     wd = ts_utc.weekday()  # Mon=0 ... Sun=6
     # Minimal "holiday/closed" signal:
