@@ -39,6 +39,22 @@ blocks:
           any:
             - { path: "state.regime", op: "eq", value: "UNKNOWN" }
             - { path: "state.confidence", op: "lt", value: 0.60 }
+      - rule_id: "holiday_gate"
+        enabled: true
+        reason: "Market session is closed/holiday (is_holiday=true)."
+        decision: "NO_TRADE"
+        enforce: ["NO_TRADE"]
+        when:
+          any:
+            - { path: "session_flags.is_holiday", op: "eq", value: true }
+      - rule_id: "weekly_close_gate"
+        enabled: true
+        reason: "Too close to weekly close (minutes_to_close <= 60)."
+        decision: "NO_TRADE"
+        enforce: ["NO_TRADE"]
+        when:
+          any:
+            - { path: "session_flags.minutes_to_close", op: "lt", value: 60 }
       - rule_id: "roll_expiry_gate"
         enabled: true
         when:
