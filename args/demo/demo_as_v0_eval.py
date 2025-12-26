@@ -42,8 +42,8 @@ def main() -> int:
         print("ERROR: no bar parsed:", csv_path)
         return 2
 
-    ma_input = derive_ma_input_from_bar(
-        bar,
+    ma_input = derive_ma_input_from_bar(bar, 
+        bars=bars,
         qc="OK",
         stale_quotes=False,
         missing_bars=0,
