@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,9 +15,33 @@ import streamlit as st
 
 
 # -----------------------------
+# Auto-refresh helpers (no deps)
+# -----------------------------
+def _st_rerun() -> None:
+    # streamlit version compatibility
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
+def _auto_refresh_tick(enabled: bool, interval_s: int) -> None:
+    """
+    Safe-by-default auto-refresh:
+    - Enabled only when user toggles it on (operator mode)
+    - Sleep + rerun (no extra deps)
+    """
+    if not enabled:
+        return
+
+    interval_s = int(max(5, min(60, interval_s)))
+    time.sleep(interval_s)
+    _st_rerun()
+
+
+# -----------------------------
 # Data model
 # -----------------------------
-
 @dataclass(frozen=True)
 class RunArtifacts:
     run_id: str
@@ -30,7 +55,6 @@ class RunArtifacts:
 # -----------------------------
 # Filesystem helpers
 # -----------------------------
-
 def repo_root() -> Path:
     # args/ui/run_explorer_tab.py -> parents[0]=ui, [1]=args, [2]=repo root
     return Path(__file__).resolve().parents[2]
@@ -56,7 +80,6 @@ def safe_open_folder(path: Path) -> None:
 # -----------------------------
 # Run indexing
 # -----------------------------
-
 _RX_EVENTS = re.compile(r"^events_run_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_ORDERS = re.compile(r"^orders_paper_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_REPORT = re.compile(r"^run_report_(?P<rid>.+)_paper\.json$", re.IGNORECASE)
@@ -69,7 +92,9 @@ def _mtime_utc_str(p: Path) -> str:
 
 def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
     # Collect candidates from both dirs (report sometimes lives in logs, sometimes in data)
-    runs: Dict[str, Dict[str, Optional[Path]]] = defaultdict(lambda: {"events": None, "orders": None, "report": None})
+    runs: Dict[str, Dict[str, Optional[Path]]] = defaultdict(
+        lambda: {"events": None, "orders": None, "report": None}
+    )
     mtimes: Dict[str, float] = {}
 
     def register(run_id: str, kind: str, path: Path) -> None:
@@ -132,7 +157,7 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
             )
         )
 
-    # Sort: newest first (by mtime), then by run_id
+    # Sort: newest first (by mtime string), then by run_id
     out.sort(key=lambda x: (x.last_modified_utc or "", x.run_id), reverse=True)
     return out
 
@@ -140,8 +165,15 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
 # -----------------------------
 # JSONL parsing (safe, bounded)
 # -----------------------------
-
-_DECISION_KEYS = ("decision", "ma_decision", "final_decision", "gate_decision", "mg_decision", "action", "result")
+_DECISION_KEYS = (
+    "decision",
+    "ma_decision",
+    "final_decision",
+    "gate_decision",
+    "mg_decision",
+    "action",
+    "result",
+)
 
 
 def _extract_decision(obj: Dict[str, Any]) -> Optional[str]:
@@ -152,24 +184,18 @@ def _extract_decision(obj: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def summarize_jsonl(
-    path: Path,
-    tail_n: int = 25,
-    max_lines: int = 200_000,
-) -> Dict[str, Any]:
+def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> Dict[str, Any]:
     total = 0
     parse_errors = 0
     decision_counts: Dict[str, int] = defaultdict(int)
     tail_raw: deque[str] = deque(maxlen=tail_n)
 
-    # Optional timestamps (best-effort)
     ts_min = None
     ts_max = None
 
     def consider_ts(v: Any) -> None:
         nonlocal ts_min, ts_max
         if isinstance(v, (int, float)):
-            # assume seconds epoch
             try:
                 dt = datetime.utcfromtimestamp(float(v))
                 ts_min = min(ts_min, dt) if ts_min else dt
@@ -177,7 +203,6 @@ def summarize_jsonl(
             except Exception:
                 return
         if isinstance(v, str):
-            # try ISO
             try:
                 dt = datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
                 ts_min = min(ts_min, dt) if ts_min else dt
@@ -202,7 +227,6 @@ def summarize_jsonl(
                         if dec:
                             decision_counts[dec] += 1
 
-                        # best-effort time fields
                         for tk in ("ts", "timestamp", "time", "t_utc", "bar_time_utc"):
                             if tk in obj:
                                 consider_ts(obj.get(tk))
@@ -243,14 +267,10 @@ def read_json_safe(path: Path) -> Dict[str, Any]:
 # -----------------------------
 # IBKR CSV status (minimal, no pandas)
 # -----------------------------
-
 def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, Any]:
     if not csv_path.exists():
         return {"ok": False, "reason": "missing"}
 
-    # Best-effort:
-    # - count lines
-    # - infer first/last timestamp column (usually first col or 'date'/'time')
     try:
         total_lines = 0
         header = None
@@ -271,7 +291,6 @@ def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, An
                 else:
                     last_row = line
 
-                # We do not need to fully scan very large files for UI status
                 if total_lines >= max_scan_lines:
                     break
 
@@ -291,16 +310,54 @@ def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, An
 # -----------------------------
 # Streamlit tab renderer
 # -----------------------------
-
 def render_run_explorer_tab() -> None:
     st.subheader("Run Explorer (read-only)")
+
+    operator_mode = bool(st.session_state.get("operator_mode", True))
+
+    auto_refresh_enabled = False
+    interval_s = 20
+    follow_latest = True
+
+    if operator_mode:
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            auto_refresh_enabled = st.checkbox(
+                "Auto-refresh (operator mode)",
+                value=False,
+                key="runx_auto_refresh_enabled",
+                help="Automatically refresh this tab every N seconds (safe-by-default).",
+            )
+        with c2:
+            interval_s = int(
+                st.number_input(
+                    "Interval (seconds)",
+                    min_value=5,
+                    max_value=60,
+                    value=20,
+                    step=5,
+                    key="runx_auto_refresh_interval_s",
+                )
+            )
+        with c3:
+            follow_latest = st.checkbox(
+                "Follow latest run",
+                value=True,
+                key="runx_follow_latest_run",
+                help="When auto-refresh is ON, automatically select the newest run.",
+            )
+
+        if auto_refresh_enabled:
+            st.caption(f"Auto-refresh: ON ({int(interval_s)}s)")
+    else:
+        st.caption("Operator mode OFF: auto-refresh disabled.")
 
     data_dir, logs_dir = default_dirs()
     col_a, col_b, col_c = st.columns([1, 1, 2])
 
     with col_a:
         if st.button("Refresh index", key="runexp_btn_refresh"):
-            st.rerun()
+            _st_rerun()
 
     with col_b:
         if st.button("Open data folder", key="runexp_btn_open_data"):
@@ -312,17 +369,21 @@ def render_run_explorer_tab() -> None:
 
     st.caption(f"Data: {data_dir} | Logs: {logs_dir}")
 
+    # Always rebuild index on each render so auto-refresh sees new runs
     runs = build_run_index(data_dir, logs_dir)
     if not runs:
         st.info("No runs found yet. Generate a run first (paper loop / demo).")
         st.stop()
 
     run_labels = [
-        f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}"
-        for r in runs
+        f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}" for r in runs
     ]
-    sel = st.selectbox("Select run", run_labels, index=0, key="runexp_select_run")
 
+    # If auto-refresh is ON and follow_latest is ON, keep selection pinned to newest
+    if operator_mode and auto_refresh_enabled and follow_latest and run_labels:
+        st.session_state["runexp_select_run"] = run_labels[0]
+
+    sel = st.selectbox("Select run", run_labels, index=0, key="runexp_select_run")
     selected = runs[run_labels.index(sel)]
     st.write("")
 
@@ -403,3 +464,6 @@ def render_run_explorer_tab() -> None:
         st.info("No IBKR CSV found yet: args/data/hg_5m_bars_ibkr.csv")
     else:
         st.json(stat)
+
+    # Auto-refresh tick MUST be last (so the tab renders first)
+    _auto_refresh_tick(enabled=(operator_mode and auto_refresh_enabled), interval_s=int(interval_s))
