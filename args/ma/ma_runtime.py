@@ -71,7 +71,7 @@ def _require_fields_gate(ctx: Mapping[str, Any]) -> List[Violation]:
             rule_id="required_fields_gate",
             block="hard_gates",
             reason=f"Missing required fields: {', '.join(missing)}",
-            decision="UNKNOWN",
+            decision="NO_TRADE",
             enforce=["NO_TRADE"],
         )
     ]

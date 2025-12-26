@@ -33,7 +33,7 @@ blocks:
       - rule_id: "state_unknown_gate"
         enabled: true
         reason: "State is UNKNOWN or confidence is too low."
-        decision: "UNKNOWN"
+        decision: "NO_TRADE"
         enforce: ["NO_TRADE"]
         when:
           any:
