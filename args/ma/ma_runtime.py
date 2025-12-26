@@ -92,7 +92,8 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """
     Evaluate MA policy on ctx and return:
     {
-      "ma_decision": str,
+      "ma_decision": str,           # effective decision (3.4A)
+      "ma_decision_raw": str,       # raw strictest vote (before 3.4A adjustment)
       "violations": list[dict],
       "risk_envelope": dict
     }
@@ -153,21 +154,29 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 decision_votes.append(e)
                 enforce_flags.append(e)
 
-    # 2) Final decision
+    # 2) Raw decision (strictest vote)
     if decision_votes:
-        ma_decision = _strictest(decision_votes, default="ALLOW")
+        ma_decision_raw = _strictest(decision_votes, default="ALLOW")
     else:
-        ma_decision = "UNKNOWN"
+        ma_decision_raw = "UNKNOWN"
 
-    enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision in {"UNKNOWN", "NO_TRADE", "EXIT"})
-
+    # 3) Risk envelope (kept compatible with existing semantics)
+    enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"})
     risk_envelope = {
         "limits": dict(policy.risk_limits),
         "enforced_no_trade": enforced_no_trade,
     }
 
+    # 4) Effective decision (3.4A)
+    # If decision is UNKNOWN but NO_TRADE is explicitly enforced -> report NO_TRADE as final decision.
+    # Do NOT override EXIT.
+    ma_decision = ma_decision_raw
+    if ma_decision_raw == "UNKNOWN" and ("NO_TRADE" in enforce_flags):
+        ma_decision = "NO_TRADE"
+
     return {
         "ma_decision": ma_decision,
+        "ma_decision_raw": ma_decision_raw,
         "violations": [
             {
                 "rule_id": v.rule_id,
