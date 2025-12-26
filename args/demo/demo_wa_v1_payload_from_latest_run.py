@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from args.ibkr.ibkr_order_payload_v1 import build_contract_ref, intent_to_payload
+from args.wa.order_intents_v1 import build_order_intents
 from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -16,13 +17,7 @@ def _latest_report() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
     reports = sorted(
-        [
-            p
-            for p in LOGS_DIR.iterdir()
-            if p.is_file()
-            and p.name.startswith("run_report_")
-            and p.name.endswith("_paper.json")
-        ],
+        [p for p in LOGS_DIR.iterdir() if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
@@ -43,12 +38,10 @@ def _load_contract_meta_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(inp, dict):
         raise ValueError("run_report.inputs missing")
 
-    # Prefer embedded csv_meta.contract
     csv_meta = inp.get("csv_meta")
     if isinstance(csv_meta, dict) and isinstance(csv_meta.get("contract"), dict):
         return csv_meta["contract"]
 
-    # Fallback: read csv_meta_path if present
     meta_path = inp.get("csv_meta_path")
     if meta_path:
         mp = _resolve_path(meta_path)
@@ -61,7 +54,7 @@ def _load_contract_meta_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("No contract meta found in run_report (csv_meta / csv_meta_path)")
 
 
-def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
+def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     run_id = str(report.get("run_id") or "")
     if not run_id:
         raise ValueError("run_id missing in report")
@@ -70,7 +63,6 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     if intents_path.exists():
         return run_id, intents_path
 
-    # Build intents from orders_paper (same logic as Stage23A demo, but embedded here)
     out = report.get("outputs")
     if not isinstance(out, dict):
         raise ValueError("report.outputs missing")
@@ -81,7 +73,6 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     if not orders_file.exists():
         raise ValueError(f"orders_paper file missing: {orders_file}")
 
-    # Optional halt flag
     hsum = report.get("harness_summary")
     halted = False
     halt_reason = ""
@@ -110,11 +101,9 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     for row in iter_jsonl(orders_file):
         if row.get("kind") != "ORDER_PAPER":
             continue
-
         wa_action = row.get("wa_action")
         if not isinstance(wa_action, dict):
             wa_action = {}
-
         intent_obj = decide_intent(
             run_id=run_id,
             index=row.get("index"),
@@ -131,6 +120,20 @@ def _ensure_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     return run_id, intents_path
 
 
+def _ensure_order_intents(report: Dict[str, Any]) -> Tuple[str, Path, Dict[str, Any]]:
+    run_id = str(report.get("run_id") or "")
+    if not run_id:
+        raise ValueError("run_id missing in report")
+
+    order_intents_path = DATA_DIR / f"order_intents_{run_id}.jsonl"
+    if order_intents_path.exists():
+        return run_id, order_intents_path, {"note": "exists"}
+
+    _, raw_intents_path = _ensure_raw_intents(report)
+    oi_summary = build_order_intents(report, raw_intents_path, order_intents_path, source="wa_v1")
+    return run_id, order_intents_path, oi_summary
+
+
 def main() -> int:
     rp = _latest_report()
     if rp is None:
@@ -138,7 +141,7 @@ def main() -> int:
         return 2
 
     report = _load_json(rp)
-    run_id, intents_path = _ensure_intents(report)
+    run_id, order_intents_path, oi_summary = _ensure_order_intents(report)
 
     contract_meta = _load_contract_meta_from_report(report)
     contract_ref = build_contract_ref(contract_meta)
@@ -153,17 +156,16 @@ def main() -> int:
     n_cancel = 0
     n_gated = 0
 
-    for intent in iter_jsonl(intents_path):
+    for rec in iter_jsonl(order_intents_path):
         n_total += 1
 
-        # Stage 4.2: enforce mode-gating INSIDE payload pipeline (defense-in-depth)
-        intent = enforce_mode_gate(intent, report)
+        # defense-in-depth (keep it)
+        intent = enforce_mode_gate(rec, report)
         if intent.get("kind") == "INTENT_NONE" and intent.get("gate_reason"):
             n_gated += 1
 
         payload = intent_to_payload(intent, contract_ref, dry_run=True)
 
-        # Attach audit fields (safe extra keys)
         payload["mode"] = intent.get("mode")
         payload["position_size"] = intent.get("position_size")
         payload["intent_kind_raw"] = intent.get("kind_raw")
@@ -184,17 +186,15 @@ def main() -> int:
     summary = {
         "latest_report": str(rp),
         "run_id": run_id,
-        "intents_in": str(intents_path),
+        "order_intents_in": str(order_intents_path),
+        "order_intents_summary": oi_summary,
         "payload_out": str(out_payload),
         "payload_total": n_total,
         "payload_none": n_none,
         "payload_order": n_order,
         "payload_cancel_all": n_cancel,
         "gated_total": n_gated,
-        "contract": {
-            "conId": contract_ref.get("conId"),
-            "localSymbol": contract_ref.get("localSymbol"),
-        },
+        "contract": {"conId": contract_ref.get("conId"), "localSymbol": contract_ref.get("localSymbol")},
     }
 
     print("WA_V1_PAYLOAD_DRYRUN")
@@ -204,3 +204,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

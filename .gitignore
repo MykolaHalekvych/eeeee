@@ -30,3 +30,4 @@ args/data/orders_sendplan_*.jsonl
 # ARGS runtime position state (do not commit)
 args/data/position_state_v0.json
 args/data/position_state_v0.json
+args/data/order_intents_*.jsonl

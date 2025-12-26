@@ -2,23 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
-from args.wa.wa_order_gateway_v1 import enforce_mode_gate
+from typing import Any, Dict, Optional
 
-
-from args.wa.wa_order_gateway_v1 import decide_intent, iter_jsonl, append_jsonl
-
+from args.wa.order_intents_v1 import build_order_intents
+from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
 LOGS_DIR = REPO_ROOT / "args" / "logs"
 
-# DEBUG: prove gating without depending on upstream WA actions
-# Leave both empty in normal runs.
-DEBUG_FORCE_ACTION = ""  # e.g. "ENTER_LONG" / "EXIT" / "REDUCE"
-DEBUG_FORCE_KIND = ""    # e.g. "INTENT_ORDER" to simulate an order intent
-DEBUG_FORCE_ACTION = "ENTER_LONG"
-DEBUG_FORCE_KIND = "INTENT_ORDER"
+# DEBUG (OFF by default). Enable only for proofs.
+DEBUG_FORCE_ACTION = ""  # e.g. "ENTER_LONG"
+DEBUG_FORCE_KIND = ""    # e.g. "INTENT_ORDER"
 
 
 def _latest_report() -> Optional[Path]:
@@ -40,90 +35,9 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _read_position_size_runtime() -> int:
-    """
-    Read runtime position size from args/data/position_state_v0.json (ignored by git).
-    """
-    p = DATA_DIR / "position_state_v0.json"
-    if not p.exists():
-        return 0
-    try:
-        obj = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(obj, dict):
-            return int(obj.get("size", 0) or 0)
-    except Exception:
-        return 0
-    return 0
-
-
-def _action_hint_from_wa_action(wa_action: Dict[str, Any], pos_size: int) -> str:
-    for k in ("intent", "action", "kind", "signal", "op", "type", "label"):
-        v = wa_action.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip().upper()
-
-    for k in ("target_position", "target_pos", "target_size"):
-        v = wa_action.get(k)
-        if isinstance(v, (int, float)):
-            tgt = int(v)
-            cur = int(pos_size)
-            if cur == 0:
-                return "ENTER" if tgt != 0 else "HOLD"
-            if tgt == 0:
-                return "EXIT"
-            if abs(tgt) < abs(cur):
-                return "REDUCE"
-            if abs(tgt) > abs(cur):
-                return "ENTER"
-            return "HOLD"
-
-    return ""
-
-
-def _classify_action(action_hint: str) -> str:
-    s = (action_hint or "").upper()
-    if not s:
-        return "UNKNOWN"
-    if "ENTER" in s or "OPEN" in s or "NEW" in s:
-        return "ENTER"
-    if "EXIT" in s or "CLOSE" in s or "REDUCE" in s or "TAKE_PROFIT" in s or "TP" in s:
-        return "EXIT"
-    return "UNKNOWN"
-
-
-def _derive_mode_for_row(ma_decision: str, pos_size: int) -> str:
-    """
-    We derive mode deterministically from row.ma_decision + runtime position.
-    This avoids relying on run_report shape (which may not carry mode/position_size).
-    """
-    d = str(ma_decision or "").strip().upper()
-    if d == "ALLOW":
-        return "ALLOW_NEW_ENTRIES"
-    # any enforced no-trade / unknown / exit => only exits if position exists
-    if pos_size != 0:
-        return "ONLY_EXITS"
-    return "NO_TRADE"
-
-
-def _gate_intent_kind(kind_raw: str, mode: str, action_class: str) -> Tuple[str, str]:
-    k = str(kind_raw or "").strip()
-
-    if k == "INTENT_CANCEL_ALL":
-        return k, ""
-
-    if mode == "NO_TRADE":
-        if k != "INTENT_NONE":
-            return "INTENT_NONE", "mode_NO_TRADE_blocks_all"
-        return "INTENT_NONE", ""
-
-    if mode == "ONLY_EXITS":
-        if action_class == "ENTER":
-            return "INTENT_NONE", "mode_ONLY_EXITS_blocks_ENTER"
-        if action_class == "UNKNOWN":
-            return "INTENT_NONE", "mode_ONLY_EXITS_blocks_UNKNOWN_ACTION"
-        return k, ""
-
-    return k, ""
+def _resolve_to_repo(p: Any) -> Path:
+    pp = Path(str(p))
+    return pp if pp.is_absolute() else (REPO_ROOT / pp)
 
 
 def main() -> int:
@@ -133,27 +47,26 @@ def main() -> int:
         return 2
 
     report = _load_json(rp)
-    run_id = str(report.get("run_id") or "")
+    run_id = str(report.get("run_id") or "").strip()
     if not run_id:
         print(f"FAIL: run_id missing in {rp}")
         return 3
 
-    outputs = report.get("outputs") if isinstance(report.get("outputs"), dict) else {}
+    outputs = report.get("outputs")
+    if not isinstance(outputs, dict):
+        outputs = {}
+
     orders_path = outputs.get("orders_paper")
     if not orders_path:
         print(f"FAIL: outputs.orders_paper missing in {rp}")
         return 4
 
-    orders_file = Path(str(orders_path))
-    if not orders_file.is_absolute():
-        orders_file = REPO_ROOT / orders_file
+    orders_file = _resolve_to_repo(orders_path)
     if not orders_file.exists():
         print(f"FAIL: orders file not found: {orders_file}")
         return 5
 
-    # runtime position (for ONLY_EXITS)
-    pos_size_rt = _read_position_size_runtime()
-
+    # Raw intents output (legacy)
     out_intents = DATA_DIR / f"orders_intent_{run_id}.jsonl"
     if out_intents.exists():
         out_intents.unlink()
@@ -162,6 +75,7 @@ def main() -> int:
     n_none = 0
     n_order = 0
     n_cancel = 0
+    n_gated = 0
 
     for row in iter_jsonl(orders_file):
         if row.get("kind") != "ORDER_PAPER":
@@ -172,12 +86,14 @@ def main() -> int:
         if not isinstance(wa_action, dict):
             wa_action = {}
 
-        ma_decision_row = str(row.get("ma_decision") or "").strip()
+        # Optional debug: annotate action (for visibility only)
+        if DEBUG_FORCE_ACTION:
+            wa_action = dict(wa_action)
+            wa_action.setdefault("intent", str(DEBUG_FORCE_ACTION).strip())
+            wa_action["debug_force_action"] = str(DEBUG_FORCE_ACTION).strip()
 
-        # derive mode from row decision + runtime position
-        mode = _derive_mode_for_row(ma_decision_row, pos_size_rt)
+        ma_decision_row = row.get("ma_decision")
 
-        # upstream intent
         intent_obj = decide_intent(
             run_id=run_id,
             index=row.get("index"),
@@ -189,58 +105,70 @@ def main() -> int:
             halted=False,
             halt_reason="",
         )
+
         d = intent_obj.to_dict()
-        kind_raw = str(d.get("kind") or intent_obj.kind)
 
-        # DEBUG: force raw kind to prove gating
+        # Preserve original kind as kind_raw BEFORE gating (and allow debug override)
+        original_kind = str(d.get("kind") or "").strip()
+        d["kind_raw"] = original_kind if original_kind else d.get("kind_raw")
+
         if DEBUG_FORCE_KIND:
-            kind_raw = str(DEBUG_FORCE_KIND).strip()
+            d["kind_raw"] = str(DEBUG_FORCE_KIND).strip()
+            d["kind"] = str(DEBUG_FORCE_KIND).strip()
+            d["debug_force_kind"] = str(DEBUG_FORCE_KIND).strip()
 
-        action_hint = _action_hint_from_wa_action(wa_action, pos_size_rt)
-        if DEBUG_FORCE_ACTION:
-            action_hint = str(DEBUG_FORCE_ACTION).strip().upper()
-        action_class = _classify_action(action_hint)
+        # Stage 4.2 gate (single source of truth)
+        d = enforce_mode_gate(d, report)
 
-        kind_final, gate_reason = _gate_intent_kind(kind_raw, mode, action_class)
-
-        # write gated record
-        d["mode"] = mode
-        d["position_size"] = pos_size_rt
-        d["kind_raw"] = kind_raw
-        d["kind"] = kind_final
-        d["action_hint"] = action_hint
-        d["action_class"] = action_class
-        if gate_reason:
-            d["gate_reason"] = gate_reason
+        k = str(d.get("kind") or "").strip().upper()
+        if k == "INTENT_NONE":
+            n_none += 1
+            if d.get("gate_reason"):
+                n_gated += 1
+        elif k == "INTENT_ORDER":
+            n_order += 1
+        elif k == "INTENT_CANCEL_ALL":
+            n_cancel += 1
+        else:
+            # Unknown kinds are treated as NONE for safety
+            n_none += 1
+            d["kind"] = "INTENT_NONE"
+            d["gate_reason"] = d.get("gate_reason") or "unknown_kind_safety_none"
 
         append_jsonl(out_intents, d)
 
-        if kind_final == "INTENT_NONE":
-            n_none += 1
-        elif kind_final == "INTENT_ORDER":
-            n_order += 1
-        else:
-            n_cancel += 1
+    # Stage 4.3: Contract artifact (order_intents_<run_id>.jsonl)
+    order_intents_path = DATA_DIR / f"order_intents_{run_id}.jsonl"
+    oi = build_order_intents(report, out_intents, order_intents_path, source="wa_v1")
 
     summary = {
+        "latest_report": str(rp),
+        "run_id": run_id,
+        "orders_in": str(orders_file),
+
         "orders_in_total": total,
         "intent_none": n_none,
         "intent_order": n_order,
         "intent_cancel_all": n_cancel,
+        "gated_total": n_gated,
+
         "out_intents": str(out_intents),
-        "position_size": pos_size_rt,
+        "order_intents_out": str(order_intents_path),
+        "order_intents_total": oi.get("total"),
+        "order_intents_allowed": oi.get("allowed"),
+        "order_intents_none": oi.get("none"),
+        "order_intents_gated": oi.get("gated"),
+
         "debug_force_action": DEBUG_FORCE_ACTION,
         "debug_force_kind": DEBUG_FORCE_KIND,
     }
 
     print("WA_V1_INTENTS")
-    print(f"latest_report: {rp}")
-    print(f"run_id: {run_id}")
-    print(f"orders_in: {orders_file}")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
