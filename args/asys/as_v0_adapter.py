@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,8 +16,6 @@ DATA_DIR = REPO_ROOT / "args" / "data"
 
 # Roll window policy (v0.1 scaffold)
 ROLL_WINDOW_DAYS = 7
-VOL_WINDOW = 50          # bars
-THIN_BOOK_Z = -1.0       # z-score threshold (low volume)
 
 # Simple caches (avoid re-reading JSON per bar)
 _EXPIRY_CACHE: Optional[str] = None
@@ -36,28 +34,6 @@ def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
         data_dir / "ibkr_hg_contract_v1.json",
         data_dir / "hg_5m_bars_ibkr.meta.json",
     ]
-def _volume_stats(bars: List[Bar5m], window: int = VOL_WINDOW) -> Dict[str, Any]:
-    """
-    Compute simple volume z-score on last N bars.
-    Deterministic, no numpy.
-    """
-    if not bars:
-        return {"vol_mean": None, "vol_std": None, "vol_z": None}
-
-    w = int(max(5, window))
-    seq = [float(b.volume) for b in bars[-w:] if b and b.volume is not None]
-    if len(seq) < 5:
-        return {"vol_mean": None, "vol_std": None, "vol_z": None}
-
-    mean = sum(seq) / len(seq)
-    var = sum((x - mean) ** 2 for x in seq) / max(1, (len(seq) - 1))
-    std = var ** 0.5
-    if std <= 1e-9:
-        return {"vol_mean": mean, "vol_std": std, "vol_z": 0.0}
-
-    z = (float(seq[-1]) - mean) / std
-    return {"vol_mean": mean, "vol_std": std, "vol_z": z}
-
 
     for p in candidates:
         if not p.exists():
@@ -110,88 +86,6 @@ def _get_roll_flags_cached() -> Dict[str, Any]:
 
     _ROLL_FLAGS_CACHE = _compute_roll_flags(_EXPIRY_CACHE)
     return dict(_ROLL_FLAGS_CACHE)
-def _parse_ts_utc(ts_str: str) -> Optional[datetime]:
-    s = (ts_str or "").strip()
-    if not s:
-        return None
-    try:
-        # ISO with optional Z
-        if s.endswith("Z"):
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        else:
-            dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            # treat naive as UTC
-            return dt
-        # normalize to naive UTC
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    except Exception:
-        return None
-
-
-def _compute_session_flags(ts_utc: Optional[datetime]) -> Dict[str, Any]:
-    """
-    Minimal, deterministic scaffold for futures session flags (UTC-based).
-    This is intentionally conservative and simple for Stage 3.5.
-    """
-    if ts_utc is None:
-        return {
-            "is_rth": None,
-            "is_globex": None,
-            "minutes_to_close": _minutes_to_weekly_close(ts_utc),
-            "is_holiday": None,
-        }
-def _minutes_to_weekly_close(ts_utc: Optional[datetime]) -> Optional[int]:
-    """
-    Deterministic scaffold:
-    - Define weekly close as Friday 22:00 UTC.
-    - Return minutes until that close if within the same trading week.
-    - If timestamp missing, return None.
-    """
-    if ts_utc is None:
-        return None
-
-    # Friday=4 (Mon=0)
-    wd = ts_utc.weekday()
-    close_dt = ts_utc.replace(hour=22, minute=0, second=0, microsecond=0)
-
-    # move close_dt to Friday of current week
-    delta_days = 4 - wd
-    close_dt = close_dt + timedelta(days=delta_days)
-
-    # if already past Friday 22:00 in this week, do not guess next week's schedule here
-    if close_dt < ts_utc:
-        return 0
-
-    mins = int((close_dt - ts_utc).total_seconds() // 60)
-    return max(0, mins)
-
-
-    wd = ts_utc.weekday()  # Mon=0 ... Sun=6
-    # Minimal "holiday/closed" signal:
-    # - Saturday: closed
-    # - Sunday: closed until approx weekly open (roughly 22:00 UTC)
-    is_holiday = False
-    if wd == 5:  # Saturday
-        is_holiday = True
-    if wd == 6 and ts_utc.hour < 22:  # Sunday before rough open
-        is_holiday = True
-
-    # Minimal globex open heuristic
-    if wd == 5:
-        is_globex = False
-    elif wd == 6:
-        is_globex = ts_utc.hour >= 22
-    else:
-        is_globex = True
-
-    return {
-        "is_rth": None,
-        "is_globex": bool(is_globex),
-        "minutes_to_close": None,
-        "is_holiday": bool(is_holiday),
-    }
-
 
 
 @dataclass(frozen=True)
@@ -213,7 +107,6 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def derive_ma_input_from_bar(
     bar: Bar5m,
-    bars: Optional[List[Bar5m]] = None,
     *,
     # Optional knobs for offline scaffolding:
     qc: str = "OK",
@@ -272,55 +165,11 @@ def derive_ma_input_from_bar(
 
     # Ensure optional v1 keys exist (backward compatible)
     ma_input = ensure_optional_v1(ma_input)
-        # Liquidity L0 scaffold (read-only, no order book yet)
-        vol_stats = _volume_stats(bars or [])
-    vol_z = vol_stats.get("vol_z")
-
-    thin_book = None
-    note = "no_order_book"
-
-    if bars and len(bars) >= 5:
-        if isinstance(vol_z, (int, float)):
-            thin_book = bool(vol_z <= THIN_BOOK_Z)
-            note = f"volume_z={vol_z:.2f} (window={VOL_WINDOW})"
-        else:
-            thin_book = False
-            note = "volume_stats_insufficient"
-
-    if isinstance(vol_z, (int, float)):
-        thin_book = bool(vol_z <= THIN_BOOK_Z)
-        note = f"volume_z={vol_z:.2f} (window={VOL_WINDOW})"
-
-    if not isinstance(ma_input.get("liquidity_l0"), dict):
-        ma_input["liquidity_l0"] = {}
-
-    ma_input["liquidity_l0"].update(
-        {
-            "spread": None,
-            "top_size_bid": None,
-            "top_size_ask": None,
-            "thin_book": thin_book,
-            "note": note,
-        }
-    )
 
     # Populate roll flags (real values)
     roll = _get_roll_flags_cached()
     if isinstance(ma_input.get("roll_flags"), dict):
         ma_input["roll_flags"].update(roll)
-    sess = _compute_session_flags(_parse_ts_utc(bar.ts))
-    if isinstance(ma_input.get("session_flags"), dict):
-            sess = _compute_session_flags(_parse_ts_utc(bar.ts))
-    if sess is None:
-        sess = {}
-
-    if not isinstance(ma_input.get("session_flags"), dict):
-        ma_input["session_flags"] = {}
-
-    if isinstance(sess, dict):
-        ma_input["session_flags"].update(sess)
-
-
 
     return ma_input
 
