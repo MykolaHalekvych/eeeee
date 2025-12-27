@@ -8,6 +8,9 @@ from args.ibkr.ibkr_order_payload_v1 import build_contract_ref, intent_to_payloa
 from args.wa.order_intents_v1 import build_order_intents
 from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
 
+# Level 5.2: WA Action Schema v1 (file-based control plane)
+from args.wa.wa_action_schema_v1 import apply_wa_action_schema_v1
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
 LOGS_DIR = REPO_ROOT / "args" / "logs"
@@ -17,7 +20,11 @@ def _latest_report() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
     reports = sorted(
-        [p for p in LOGS_DIR.iterdir() if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")],
+        [
+            p
+            for p in LOGS_DIR.iterdir()
+            if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")
+        ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
@@ -52,6 +59,31 @@ def _load_contract_meta_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
                 return c
 
     raise ValueError("No contract meta found in run_report (csv_meta / csv_meta_path)")
+
+
+def _load_control_state() -> Optional[Dict[str, Any]]:
+    """
+    Optional file-based control plane:
+      args/data/control_state.json
+
+    Safe-by-default:
+    - missing/invalid => None
+    """
+    p = DATA_DIR / "control_state.json"
+    if not p.exists():
+        return None
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _wa_test_enabled(control_state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(control_state, dict):
+        return False
+    wt = control_state.get("wa_test")
+    return isinstance(wt, dict) and (wt.get("enabled") is True)
 
 
 def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
@@ -103,6 +135,7 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     for row in iter_jsonl(orders_file):
         if row.get("kind") != "ORDER_PAPER":
             continue
+
         wa_action = row.get("wa_action")
         if not isinstance(wa_action, dict):
             wa_action = {}
@@ -125,8 +158,8 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
 
 def _ensure_order_intents(report: Dict[str, Any]) -> Tuple[str, Path, Dict[str, Any]]:
     """
-    Keep contract artifact for Stage 4.3 (auditable minimal file),
-    but payload will be built from RAW intents because raw contains wa_action.
+    Keep Stage 4.3 contract artifact (auditable minimal file).
+    Payload is built from RAW intents; schema v1 may provide wa_action for test.
     """
     run_id = str(report.get("run_id") or "").strip()
     if not run_id:
@@ -139,6 +172,13 @@ def _ensure_order_intents(report: Dict[str, Any]) -> Tuple[str, Path, Dict[str, 
     _, raw_intents_path = _ensure_raw_intents(report)
     oi_summary = build_order_intents(report, raw_intents_path, order_intents_path, source="wa_v1")
     return run_id, order_intents_path, oi_summary
+
+
+def _as_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 
 def main() -> int:
@@ -157,6 +197,15 @@ def main() -> int:
     contract_meta = _load_contract_meta_from_report(report)
     contract_ref = build_contract_ref(contract_meta)
 
+    # Optional control plane (Level 5.2)
+    control_state = _load_control_state()
+    control_state_loaded = isinstance(control_state, dict)
+    wa_test_on = _wa_test_enabled(control_state)
+
+    # SAFE-BY-DEFAULT:
+    # - without valid control_state.json -> NO ORDER payloads
+    allow_order_payloads = bool(wa_test_on)
+
     # Output payload (per-run)
     out_payload = DATA_DIR / f"orders_payload_{run_id}.jsonl"
     if out_payload.exists():
@@ -167,16 +216,51 @@ def main() -> int:
     n_order = 0
     n_cancel = 0
     n_gated = 0
+    n_schema_applied = 0
+    n_forced_intent_order = 0
+    n_blocked_no_control = 0
 
-    # IMPORTANT: iterate RAW intents (they contain wa_action)
     for rec in iter_jsonl(raw_intents_path):
         n_total += 1
 
-        # Stage 4.2: enforce mode gate from report
+        # DEMO-ONLY: if wa_test enabled, force record to INTENT_ORDER before gating
+        # (still passes through enforce_mode_gate => mode/risk is respected)
+        if wa_test_on:
+            rr = dict(rec)
+            rr["kind_raw"] = rr.get("kind_raw") or rr.get("kind") or "INTENT_ORDER"
+            rr["kind"] = "INTENT_ORDER"
+            rec = rr
+            n_forced_intent_order += 1
+
+        # Stage 4.2: enforce mode gate from report (single source of truth)
         gated_intent = enforce_mode_gate(rec, report)
         if gated_intent.get("kind") == "INTENT_NONE" and gated_intent.get("gate_reason"):
             n_gated += 1
 
+        # Level 5.2: apply WA Action Schema v1
+        mode = str(gated_intent.get("mode") or "")
+        pos = _as_float(gated_intent.get("position_size"), 0.0)
+
+        gated_intent = apply_wa_action_schema_v1(
+            gated_intent,
+            mode=mode,
+            position_size=pos,
+            control_state=control_state,
+        )
+        n_schema_applied += 1
+
+        # HARD SAFE DEFAULT:
+        # If control_state is missing/invalid, DO NOT produce PAYLOAD_ORDER.
+        if not allow_order_payloads and str(gated_intent.get("kind") or "").strip().upper() == "INTENT_ORDER":
+            n_blocked_no_control += 1
+            gated_intent = dict(gated_intent)
+            gated_intent["kind_raw"] = gated_intent.get("kind_raw") or gated_intent.get("kind") or "INTENT_ORDER"
+            gated_intent["kind"] = "INTENT_NONE"
+            gated_intent["wa_action"] = {}
+            gated_intent["wa_action_reason"] = "SAFE_DEFAULT_NO_CONTROL_STATE"
+            gated_intent["wa_action_schema"] = gated_intent.get("wa_action_schema") or "wa_action_schema_v1"
+
+        # Build payload (dry-run)
         payload = intent_to_payload(gated_intent, contract_ref, dry_run=True)
 
         # attach audit fields
@@ -186,6 +270,10 @@ def main() -> int:
         payload["intent_kind"] = gated_intent.get("kind")
         if gated_intent.get("gate_reason"):
             payload["gate_reason"] = gated_intent.get("gate_reason")
+
+        # schema audit
+        payload["wa_action_schema"] = gated_intent.get("wa_action_schema")
+        payload["wa_action_reason"] = gated_intent.get("wa_action_reason")
 
         append_jsonl(out_payload, payload)
 
@@ -209,6 +297,13 @@ def main() -> int:
         "payload_order": n_order,
         "payload_cancel_all": n_cancel,
         "gated_total": n_gated,
+        "wa_schema_applied": n_schema_applied,
+        "control_state_path": str(DATA_DIR / "control_state.json"),
+        "control_state_loaded": bool(control_state_loaded),
+        "wa_test_enabled": bool(wa_test_on),
+        "allow_order_payloads": bool(allow_order_payloads),
+        "forced_intent_order": n_forced_intent_order,
+        "blocked_intent_order_no_control": n_blocked_no_control,
         "contract": {"conId": contract_ref.get("conId"), "localSymbol": contract_ref.get("localSymbol")},
     }
 

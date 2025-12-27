@@ -34,3 +34,33 @@ args/data/order_intents_*.jsonl
 # runtime policy copy (must never be tracked)
 args/data/invariants_hg_v0_copy.yaml
 args/data/invariants_*_copy.yaml
+# Runtime artifacts (paper/ops)
+args/data/ibkr_order_id_cursor_v1.json
+args/data/sent_orders_*.jsonl
+args/data/would_send_*.jsonl
+args/data/orders_payload_*.jsonl
+args/data/orders_sendplan_*.jsonl
+args/data/orders_intent_*.jsonl
+args/data/order_intents_*.jsonl
+args/data/events_run_*.jsonl
+args/logs/run_report_*_paper.json
+args/data/control_state.json
+# runtime artifacts
+args/data/orders_payload_*.jsonl
+args/data/orders_sendplan_*.jsonl
+args/data/orders_intent_*.jsonl
+args/data/order_intents_*.jsonl
+args/data/would_send_*.jsonl
+args/data/sent_orders_*.jsonl
+args/data/ibkr_order_id_cursor_v1.json
+args/data/control_state.json
+# runtime artifacts
+args/data/orders_payload_*.jsonl
+args/data/orders_sendplan_*.jsonl
+args/data/orders_intent_*.jsonl
+args/data/order_intents_*.jsonl
+args/data/would_send_*.jsonl
+args/data/sent_orders_*.jsonl
+args/data/ibkr_order_id_cursor_v1.json
+args/data/control_state.json
+
