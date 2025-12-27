@@ -43,7 +43,8 @@ def load_control_state(path: Path) -> Dict[str, Any]:
         return {"armed": False, "simulate": False, "source": "missing_defaults"}
 
     try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
+        # BOM-tolerant for Windows/PowerShell Set-Content UTF8
+        obj = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(obj, dict):
             return {"armed": False, "simulate": False, "source": "invalid_defaults"}
 
@@ -185,7 +186,6 @@ def _load_ledger(path: Path) -> Dict[str, Any]:
             if isinstance(obj, dict):
                 return obj
         except Exception:
-            # fail-safe: treat as empty ledger; caller still safe due to DISARM unless armed
             return {"schema_version": "ibkr_exec_ledger_v1", "items": {}}
     return {"schema_version": "ibkr_exec_ledger_v1", "items": {}}
 
@@ -391,12 +391,32 @@ def _build_ibkr_order(order_dict: Dict[str, Any], *, transmit: bool):
 
 
 # -----------------------------
-# IBKR app wrapper (nextValidId + orderStatus visibility)
+# IBKR app wrapper (nextValidId + orderStatus visibility + exec logging)
 # -----------------------------
 class _IbkrApp:
-    def __init__(self) -> None:
+    def __init__(self, *, run_id: str, exec_path: Path) -> None:
         from ibapi.client import EClient  # type: ignore
         from ibapi.wrapper import EWrapper  # type: ignore
+
+        self._run_id = str(run_id)
+        self._exec_path = exec_path
+        self._lock = threading.Lock()
+
+        self._connected = threading.Event()
+        self._errors: List[Dict[str, Any]] = []
+        self._order_status: Dict[int, str] = {}
+        self._next_id: Optional[int] = None
+
+        # map orderId -> send_key (to tie callbacks back to a sendplan item)
+        self._order_to_sendkey: Dict[int, str] = {}
+
+        def _log(ev: Dict[str, Any]) -> None:
+            ev = dict(ev)
+            ev.setdefault("kind", "IBKR_EVENT")
+            ev.setdefault("ts", _utc_now_z())
+            ev.setdefault("run_id", self._run_id)
+            with self._lock:
+                _append_exec(self._exec_path, ev)
 
         class App(EWrapper, EClient):  # type: ignore
             def __init__(self, outer: "_IbkrApp") -> None:
@@ -405,16 +425,37 @@ class _IbkrApp:
 
             def nextValidId(self, orderId: int) -> None:
                 self._outer._next_id = int(orderId)
+                _log({"event": "nextValidId", "order_id": int(orderId)})
                 self._outer._connected.set()
 
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
-                self._outer._errors.append(
-                    {
-                        "reqId": int(reqId) if str(reqId).lstrip("-").isdigit() else reqId,
-                        "code": int(errorCode),
-                        "msg": str(errorString),
-                    }
-                )
+                try:
+                    rid = int(reqId) if str(reqId).lstrip("-").isdigit() else reqId
+                except Exception:
+                    rid = reqId
+
+                rec = {
+                    "event": "error",
+                    "reqId": rid,
+                    "code": int(errorCode),
+                    "msg": str(errorString),
+                }
+
+                # best-effort: if reqId looks like orderId, attach send_key
+                try:
+                    oid = int(reqId)
+                    sk = self._outer._order_to_sendkey.get(oid)
+                    if sk:
+                        rec["order_id"] = oid
+                        rec["send_key"] = sk
+                except Exception:
+                    pass
+
+                if advancedOrderRejectJson:
+                    rec["advanced_reject_json"] = str(advancedOrderRejectJson)
+
+                self._outer._errors.append({"reqId": rid, "code": int(errorCode), "msg": str(errorString)})
+                _log(rec)
 
             def orderStatus(
                 self,
@@ -434,24 +475,88 @@ class _IbkrApp:
                     oid = int(orderId)
                 except Exception:
                     return
-                self._outer._order_status[oid] = str(status)
 
-        self._connected = threading.Event()
-        self._errors: List[Dict[str, Any]] = []
-        self._order_status: Dict[int, str] = {}
-        self._next_id: Optional[int] = None
+                st = str(status)
+                self._outer._order_status[oid] = st
+
+                rec = {
+                    "event": "orderStatus",
+                    "order_id": oid,
+                    "status": st,
+                    "filled": float(filled) if filled is not None else None,
+                    "remaining": float(remaining) if remaining is not None else None,
+                    "avgFillPrice": float(avgFillPrice) if avgFillPrice is not None else None,
+                    "lastFillPrice": float(lastFillPrice) if lastFillPrice is not None else None,
+                    "permId": int(permId) if str(permId).isdigit() else permId,
+                    "parentId": int(parentId) if str(parentId).isdigit() else parentId,
+                    "clientId": int(clientId) if str(clientId).isdigit() else clientId,
+                    "whyHeld": str(whyHeld) if whyHeld is not None else "",
+                    "mktCapPrice": float(mktCapPrice) if mktCapPrice is not None else None,
+                }
+
+                sk = self._outer._order_to_sendkey.get(oid)
+                if sk:
+                    rec["send_key"] = sk
+
+                _log(rec)
+
+            def openOrder(self, orderId, contract, order, orderState) -> None:
+                # keep it light: do not dump entire objects
+                try:
+                    oid = int(orderId)
+                except Exception:
+                    return
+                rec = {
+                    "event": "openOrder",
+                    "order_id": oid,
+                    "orderState_status": getattr(orderState, "status", None),
+                    "localSymbol": getattr(contract, "localSymbol", None),
+                    "secType": getattr(contract, "secType", None),
+                    "exchange": getattr(contract, "exchange", None),
+                    "action": getattr(order, "action", None),
+                    "orderType": getattr(order, "orderType", None),
+                    "totalQuantity": getattr(order, "totalQuantity", None),
+                }
+                sk = self._outer._order_to_sendkey.get(oid)
+                if sk:
+                    rec["send_key"] = sk
+                _log(rec)
+
         self._app = App(self)
 
+    def register_send_key(self, order_id: int, send_key: str) -> None:
+        with self._lock:
+            self._order_to_sendkey[int(order_id)] = str(send_key)
+
     def connect_and_start(self, conn: IbkrConn, timeout_s: float = 8.0) -> int:
+        with self._lock:
+            _append_exec(self._exec_path, {
+                "kind": "IBKR_EVENT",
+                "ts": _utc_now_z(),
+                "run_id": self._run_id,
+                "event": "connect_attempt",
+                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+            })
+
         self._app.connect(conn.host, conn.port, conn.client_id)
         t = threading.Thread(target=self._app.run, daemon=True)
         t.start()
+
         if not self._connected.wait(timeout=timeout_s):
+            with self._lock:
+                _append_exec(self._exec_path, {
+                    "kind": "IBKR_EVENT",
+                    "ts": _utc_now_z(),
+                    "run_id": self._run_id,
+                    "event": "connect_timeout",
+                    "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                })
             try:
                 self._app.disconnect()
             except Exception:
                 pass
             raise TimeoutError("Timeout waiting for IBKR nextValidId")
+
         assert self._next_id is not None
         return int(self._next_id)
 
@@ -461,8 +566,14 @@ class _IbkrApp:
     def disconnect(self) -> None:
         try:
             self._app.disconnect()
-        except Exception:
-            pass
+        finally:
+            with self._lock:
+                _append_exec(self._exec_path, {
+                    "kind": "IBKR_EVENT",
+                    "ts": _utc_now_z(),
+                    "run_id": self._run_id,
+                    "event": "disconnect",
+                })
 
     def place_order(self, order_id: int, contract, order) -> None:
         if self._next_id is None:
@@ -847,7 +958,7 @@ def real_sender(
 
     # ARMED (real IBKR)
     conn = load_ibkr_connection(DATA_DIR / "ibkr_connection_v0.json")
-    app = _IbkrApp()
+    app = _IbkrApp(run_id=run_id, exec_path=exec_path)
 
     server_next_valid_id: Optional[int] = None
     cursor_last_before = _get_cursor_last(conn)
@@ -1070,11 +1181,19 @@ def real_sender(
                 "simulate": False,
             })
 
+            # tie callbacks to this send_key
+            app.register_send_key(int(oid), send_key)
+
             app.place_order(oid, contract, order)
             last_oid_used = int(oid)
 
-            time.sleep(0.25)
-            st = app.status_for(oid)
+            # Wait for initial status (best effort)
+            st: Optional[str] = None
+            for _ in range(10):  # up to ~2.5s
+                st = app.status_for(oid)
+                if st:
+                    break
+                time.sleep(0.25)
 
             _append_exec(exec_path, {
                 "kind": "EXEC_EVENT",
