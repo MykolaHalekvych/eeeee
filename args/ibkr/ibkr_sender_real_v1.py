@@ -1,3 +1,4 @@
+# args/ibkr/ibkr_sender_real_v1.py
 from __future__ import annotations
 
 import json
@@ -16,7 +17,7 @@ K_LIMIT_ORDERS_DEFAULT = 1           # per invocation
 RUN_LIMIT_ORDERS_DEFAULT = 1         # per run_id across repeated ARMED runs (safety!)
 CURSOR_PATH = DATA_DIR / "ibkr_order_id_cursor_v1.json"
 
-# Safety: never start order ids from tiny numbers (avoid orderId=1 confusion/risks)
+# Safety: never start order ids from tiny numbers
 ORDER_ID_FLOOR = 1000
 
 
@@ -283,7 +284,11 @@ class _IbkrApp:
 
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
                 self._outer._errors.append(
-                    {"reqId": int(reqId) if str(reqId).lstrip("-").isdigit() else reqId, "code": int(errorCode), "msg": str(errorString)}
+                    {
+                        "reqId": int(reqId) if str(reqId).lstrip("-").isdigit() else reqId,
+                        "code": int(errorCode),
+                        "msg": str(errorString),
+                    }
                 )
 
             def orderStatus(
@@ -398,6 +403,13 @@ def real_sender(
     seen_sent_keys = _read_sent_keys(sent_path)
     already_sent_count = _count_sent_orders_for_run(sent_path, run_id)
 
+    # For clean audits, truncate would_path each invocation
+    if would_path.exists():
+        try:
+            would_path.unlink()
+        except Exception:
+            pass
+
     gen, stats = iter_jsonl_strict(sendplan_path)
 
     total = 0
@@ -421,8 +433,6 @@ def real_sender(
 
     # DISARMED
     if not armed:
-        if would_path.exists():
-            would_path.unlink()
         for rec in plans:
             kind = str(rec.get("kind") or "").strip().upper()
             append_jsonl(
@@ -629,7 +639,6 @@ def real_sender(
             executed_orders += 1
             sent += 1
 
-        # update cursor
         if last_oid_used is not None:
             _set_cursor_last(conn, int(last_oid_used))
 
