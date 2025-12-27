@@ -11,14 +11,16 @@ from args.ma.policy_loader import load_policy
 
 
 # -----------------------------
-# Severity & strictness
+# Severity
 # -----------------------------
 SEV_FAIL = "FAIL"
 SEV_WARN = "WARNING"
 SEV_INFO = "INFO"
 
-# Higher = stricter (more conservative)
+# -----------------------------
+# Strictness (higher = stricter)
 # Treat UNKNOWN as conservative (≈ NO_TRADE)
+# -----------------------------
 STRICTNESS: Dict[str, int] = {
     "BAN": 6,
     "EXIT": 5,
@@ -27,6 +29,22 @@ STRICTNESS: Dict[str, int] = {
     "REDUCE": 3,
     "ALLOW": 1,
 }
+
+# -----------------------------
+# Safety-critical blocks (pre-Level-5)
+# Any softening or condition change here is treated as FAIL.
+# -----------------------------
+SAFETY_BLOCKS: List[str] = [
+    "hard_gates",
+    "kill_switch.triggers",
+    "margin_gates",
+    "liquidity_gates",
+    "tail_risk_gates",
+    "correlation_gates",
+]
+
+# Supported DSL ops in rule_engine (must match runtime)
+ALLOWED_OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"}
 
 
 # -----------------------------
@@ -54,6 +72,7 @@ class RuleSpec:
     enabled: bool
     decision: Optional[str]
     enforce: List[str]
+    when: Any
     index: int
 
 
@@ -68,7 +87,7 @@ def _norm_decision(x: Any) -> Optional[str]:
     if x is None:
         return None
     if isinstance(x, str):
-        s = x.strip().upper()
+        s = x.strip().upper().replace("-", "_")
         return s if s else None
     return None
 
@@ -87,11 +106,25 @@ def _norm_enforce(x: Any) -> List[str]:
         for v in x:
             if v is None:
                 continue
-            s = str(v).strip().upper()
+            s = str(v).strip().upper().replace("-", "_")
             if s:
                 out.append(s)
         return out
     return []
+
+
+def _norm_enabled(x: Any, default: bool = True) -> Tuple[Optional[bool], Optional[str]]:
+    """
+    Strict bool parsing:
+    - None -> default
+    - bool -> value
+    - otherwise -> invalid
+    """
+    if x is None:
+        return default, None
+    if isinstance(x, bool):
+        return x, None
+    return None, f"enabled_not_bool:{type(x).__name__}"
 
 
 def _to_float(x: Any) -> Optional[float]:
@@ -106,9 +139,6 @@ def _to_float(x: Any) -> Optional[float]:
 
 
 def _load_raw_yaml(path: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Returns (dict, None) on success, or (None, error_message) on failure.
-    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -122,10 +152,6 @@ def _load_raw_yaml(path: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
 
 
 def _validate_with_loader(path: str) -> Optional[str]:
-    """
-    Try loading with policy_loader to ensure schema compliance.
-    Returns error string if failed, else None.
-    """
     try:
         load_policy(path)
         return None
@@ -140,110 +166,88 @@ def _get_blocks(raw_policy: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], L
         issues.append(_issue(SEV_FAIL, "blocks", "Missing required top-level key: blocks"))
         return None, issues
     if not isinstance(blocks, dict):
-        issues.append(
-            _issue(SEV_FAIL, "blocks", "blocks is not a dict/mapping", value_type=type(blocks).__name__)
-        )
+        issues.append(_issue(SEV_FAIL, "blocks", "blocks is not a dict/mapping", value_type=type(blocks).__name__))
         return None, issues
     return blocks, issues
 
 
-def _extract_block_rules(blocks: Dict[str, Any], block_name: str) -> Tuple[Dict[str, RuleSpec], List[Issue]]:
+# -----------------------------
+# DSL validation (prevents silent rule disable)
+# -----------------------------
+def _validate_when_expr(expr: Any) -> List[str]:
     """
-    Expects blocks.<block_name> to be a dict with rules: [ ... ].
-    Returns {rule_id: RuleSpec} + issues.
+    Strict DSL validation (must match runtime rule_engine shapes):
+      - {"any": [expr, ...]}  non-empty list
+      - {"all": [expr, ...]}  non-empty list
+      - atom: {"path": "...", "op": "...", "value": ...} with op in ALLOWED_OPS
     """
-    issues: List[Issue] = []
-    out: Dict[str, RuleSpec] = {}
+    errs: List[str] = []
+    if not isinstance(expr, dict):
+        return ["when_not_dict"]
 
-    block = blocks.get(block_name)
-    if block is None:
-        return out, issues
+    if "any" in expr:
+        items = expr.get("any")
+        if not isinstance(items, list) or len(items) == 0:
+            return ["any_not_list_or_empty"]
+        for j, sub in enumerate(items):
+            sub_errs = _validate_when_expr(sub)
+            errs.extend([f"any[{j}].{e}" for e in sub_errs])
+        return errs
 
-    if not isinstance(block, dict):
-        issues.append(
-            _issue(
-                SEV_WARN,
-                f"blocks.{block_name}",
-                "Block exists but is not a dict; skipping.",
-                block_name=block_name,
-                value_type=type(block).__name__,
-            )
-        )
-        return out, issues
+    if "all" in expr:
+        items = expr.get("all")
+        if not isinstance(items, list) or len(items) == 0:
+            return ["all_not_list_or_empty"]
+        for j, sub in enumerate(items):
+            sub_errs = _validate_when_expr(sub)
+            errs.extend([f"all[{j}].{e}" for e in sub_errs])
+        return errs
 
-    rules = block.get("rules")
-    if rules is None:
-        issues.append(_issue(SEV_WARN, f"blocks.{block_name}.rules", "rules missing; skipping.", block_name=block_name))
-        return out, issues
-    if not isinstance(rules, list):
-        issues.append(
-            _issue(
-                SEV_WARN,
-                f"blocks.{block_name}.rules",
-                "rules is not a list; skipping.",
-                block_name=block_name,
-                value_type=type(rules).__name__,
-            )
-        )
-        return out, issues
+    # atom
+    path = expr.get("path")
+    op = expr.get("op")
 
-    for idx, item in enumerate(rules):
-        if not isinstance(item, dict):
-            issues.append(
-                _issue(
-                    SEV_WARN,
-                    f"blocks.{block_name}.rules[{idx}]",
-                    "Rule item is not a dict; skipping.",
-                    block_name=block_name,
-                    index=idx,
-                    item_type=type(item).__name__,
-                )
-            )
-            continue
+    if not isinstance(path, str) or not path.strip():
+        errs.append("atom_path_missing_or_empty")
+    if not isinstance(op, str) or not op.strip():
+        errs.append("atom_op_missing_or_empty")
+    else:
+        op_u = op.strip().lower()
+        if op_u not in ALLOWED_OPS:
+            errs.append(f"atom_op_invalid:{op_u}")
 
-        rid = item.get("rule_id") or item.get("id") or item.get("name") or f"index_{idx:03d}"
-        rid = str(rid)
+    if "value" not in expr:
+        errs.append("atom_value_missing")
 
-        enabled = bool(item.get("enabled", True))
-        decision = _norm_decision(item.get("decision"))
-        enforce = _norm_enforce(item.get("enforce"))
+    # refuse unknown top keys to avoid accidental shapes
+    # (allow only atom keys: path/op/value)
+    for k in expr.keys():
+        if k not in ("path", "op", "value"):
+            errs.append(f"atom_unknown_key:{k}")
+            break
 
-        if rid in out:
-            issues.append(
-                _issue(SEV_FAIL, f"{block_name}.{rid}", "Duplicate rule_id in block.", block=block_name, rule_id=rid)
-            )
-            continue
-
-        out[rid] = RuleSpec(rule_id=rid, enabled=enabled, decision=decision, enforce=enforce, index=idx)
-
-        if decision is None:
-            issues.append(
-                _issue(
-                    SEV_WARN,
-                    f"{block_name}.{rid}",
-                    "Rule missing decision (governance visibility reduced).",
-                    block=block_name,
-                    rule_id=rid,
-                )
-            )
-
-    return out, issues
+    return errs
 
 
+# -----------------------------
+# Extractors
+# -----------------------------
 def _extract_allowed(raw_policy: Dict[str, Any]) -> Tuple[Optional[List[str]], List[Issue]]:
     issues: List[Issue] = []
     ds = raw_policy.get("decision_set")
     if ds is None:
+        issues.append(_issue(SEV_WARN, "decision_set", "decision_set missing; governance weaker."))
         return None, issues
     if not isinstance(ds, dict):
-        issues.append(_issue(SEV_WARN, "decision_set", "decision_set not a dict; skipping.", value_type=type(ds).__name__))
+        issues.append(_issue(SEV_FAIL, "decision_set", "decision_set not a dict.", value_type=type(ds).__name__))
         return None, issues
 
     allowed = ds.get("allowed")
     if allowed is None:
+        issues.append(_issue(SEV_WARN, "decision_set.allowed", "allowed missing; governance weaker."))
         return None, issues
     if not isinstance(allowed, list):
-        issues.append(_issue(SEV_WARN, "decision_set.allowed", "allowed not a list; skipping.", value_type=type(allowed).__name__))
+        issues.append(_issue(SEV_FAIL, "decision_set.allowed", "allowed not a list.", value_type=type(allowed).__name__))
         return None, issues
 
     out: List[str] = []
@@ -251,26 +255,122 @@ def _extract_allowed(raw_policy: Dict[str, Any]) -> Tuple[Optional[List[str]], L
         d = _norm_decision(v)
         if d:
             out.append(d)
+    if not out:
+        issues.append(_issue(SEV_FAIL, "decision_set.allowed", "allowed list empty after normalization."))
+        return None, issues
+
     return out, issues
 
 
 def _extract_limits(raw_policy: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Issue]]:
     issues: List[Issue] = []
-    re = raw_policy.get("risk_envelope")
-    if re is None:
+    re_obj = raw_policy.get("risk_envelope")
+    if re_obj is None:
+        issues.append(_issue(SEV_WARN, "risk_envelope", "risk_envelope missing; skipping limits checks."))
         return {}, issues
-    if not isinstance(re, dict):
-        issues.append(_issue(SEV_WARN, "risk_envelope", "risk_envelope not a dict; skipping.", value_type=type(re).__name__))
+    if not isinstance(re_obj, dict):
+        issues.append(_issue(SEV_FAIL, "risk_envelope", "risk_envelope not a dict.", value_type=type(re_obj).__name__))
         return {}, issues
 
-    limits = re.get("limits")
+    limits = re_obj.get("limits")
     if limits is None:
+        issues.append(_issue(SEV_WARN, "risk_envelope.limits", "limits missing; skipping."))
         return {}, issues
     if not isinstance(limits, dict):
-        issues.append(_issue(SEV_WARN, "risk_envelope.limits", "limits not a dict; skipping.", value_type=type(limits).__name__))
+        issues.append(_issue(SEV_FAIL, "risk_envelope.limits", "limits not a dict.", value_type=type(limits).__name__))
         return {}, issues
 
     return limits, issues
+
+
+def _extract_block_rules(
+    blocks: Dict[str, Any],
+    block_name: str,
+    allowed_decisions: Optional[List[str]],
+) -> Tuple[Dict[str, RuleSpec], List[Issue]]:
+    """
+    Expects blocks.<block_name> to be a dict with rules: [ ... ].
+    Returns {rule_id: RuleSpec} + issues.
+    Strict for safety blocks.
+    """
+    issues: List[Issue] = []
+    out: Dict[str, RuleSpec] = {}
+
+    block = blocks.get(block_name)
+    if block is None:
+        # For safety blocks, missing is FAIL
+        if block_name in SAFETY_BLOCKS:
+            issues.append(_issue(SEV_FAIL, f"blocks.{block_name}", "Missing safety block.", block=block_name))
+        return out, issues
+
+    if not isinstance(block, dict):
+        sev = SEV_FAIL if block_name in SAFETY_BLOCKS else SEV_WARN
+        issues.append(_issue(sev, f"blocks.{block_name}", "Block is not a dict.", value_type=type(block).__name__))
+        return out, issues
+
+    rules = block.get("rules")
+    if rules is None:
+        sev = SEV_FAIL if block_name in SAFETY_BLOCKS else SEV_WARN
+        issues.append(_issue(sev, f"blocks.{block_name}.rules", "rules missing.", block=block_name))
+        return out, issues
+    if not isinstance(rules, list):
+        sev = SEV_FAIL if block_name in SAFETY_BLOCKS else SEV_WARN
+        issues.append(_issue(sev, f"blocks.{block_name}.rules", "rules is not a list.", value_type=type(rules).__name__))
+        return out, issues
+
+    for idx, item in enumerate(rules):
+        if not isinstance(item, dict):
+            sev = SEV_FAIL if block_name in SAFETY_BLOCKS else SEV_WARN
+            issues.append(_issue(sev, f"blocks.{block_name}.rules[{idx}]", "Rule item is not a dict.", item_type=type(item).__name__))
+            continue
+
+        rid = item.get("rule_id")
+        if not isinstance(rid, str) or not rid.strip():
+            issues.append(_issue(SEV_FAIL, f"blocks.{block_name}.rules[{idx}].rule_id", "rule_id missing/empty.", block=block_name, index=idx))
+            continue
+        rid = rid.strip()
+
+        if rid in out:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", "Duplicate rule_id in block.", block=block_name, rule_id=rid))
+            continue
+
+        enabled_raw = item.get("enabled", True)
+        enabled, e_err = _norm_enabled(enabled_raw, default=True)
+        if enabled is None:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.enabled", "enabled must be bool.", block=block_name, rule_id=rid, value=enabled_raw, error=e_err))
+            # Fail closed: treat invalid as disabled softening
+            enabled = False
+
+        decision = _norm_decision(item.get("decision"))
+        if decision is None:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.decision", "decision missing.", block=block_name, rule_id=rid))
+
+        enforce = _norm_enforce(item.get("enforce"))
+        # If allowed decisions exist, enforce values must belong to allowed set
+        if allowed_decisions is not None:
+            bad = [x for x in enforce if x not in allowed_decisions]
+            if bad:
+                issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.enforce", "enforce contains values not in decision_set.allowed.", block=block_name, rule_id=rid, bad=bad))
+
+        when = item.get("when")
+        when_errs = _validate_when_expr(when)
+        if when_errs:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.when", "Invalid when DSL (prevents silent disable).", block=block_name, rule_id=rid, errors=when_errs))
+
+        # decision must be in allowed decisions if known
+        if allowed_decisions is not None and decision is not None and decision not in allowed_decisions:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.decision", "decision not in decision_set.allowed.", block=block_name, rule_id=rid, decision=decision))
+
+        out[rid] = RuleSpec(
+            rule_id=rid,
+            enabled=bool(enabled),
+            decision=decision,
+            enforce=enforce,
+            when=when,
+            index=idx,
+        )
+
+    return out, issues
 
 
 # -----------------------------
@@ -278,7 +378,6 @@ def _extract_limits(raw_policy: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Is
 # -----------------------------
 def _compare_allowed(b_allowed: Optional[List[str]], c_allowed: Optional[List[str]]) -> List[Issue]:
     issues: List[Issue] = []
-
     if b_allowed is None and c_allowed is None:
         return issues
     if b_allowed is not None and c_allowed is None:
@@ -297,7 +396,6 @@ def _compare_allowed(b_allowed: Optional[List[str]], c_allowed: Optional[List[st
         removed = sorted(list(b_set - c_set))
 
         sev = SEV_WARN
-        # If candidate removes safety decisions -> FAIL
         for core in ("NO_TRADE", "UNKNOWN"):
             if core in b_set and core not in c_set:
                 sev = SEV_FAIL
@@ -380,10 +478,10 @@ def _compare_rules(
     candidate: Dict[str, RuleSpec],
     block_name: str,
     enforce_must_include: Optional[str] = None,
-    fail_on_disable: bool = True,
 ) -> List[Issue]:
     issues: List[Issue] = []
 
+    # Baseline -> candidate checks
     for rid, br in baseline.items():
         if rid not in candidate:
             issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", "Rule removed in candidate.", block=block_name, rule_id=rid))
@@ -391,13 +489,11 @@ def _compare_rules(
 
         cr = candidate[rid]
 
-        # enabled flip
-        if br.enabled and (not cr.enabled) and fail_on_disable:
-            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", "Rule disabled in candidate (treated as softening).", block=block_name, rule_id=rid))
-        elif (not br.enabled) and cr.enabled:
-            issues.append(_issue(SEV_INFO, f"{block_name}.{rid}", "Rule enabled in candidate.", block=block_name, rule_id=rid))
+        # enabled flip (baseline enabled -> candidate disabled is softening)
+        if br.enabled and (not cr.enabled):
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", "Rule disabled in candidate (softening).", block=block_name, rule_id=rid))
 
-        # decision presence/softening
+        # decision softening
         if br.decision and not cr.decision:
             issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", "Decision missing in candidate while baseline had it.", block=block_name, rule_id=rid, baseline_decision=br.decision))
         elif br.decision and cr.decision:
@@ -412,10 +508,15 @@ def _compare_rules(
 
         # enforce weakening
         if enforce_must_include:
-            must = enforce_must_include.upper()
+            must = enforce_must_include.upper().replace("-", "_")
             if must in br.enforce and must not in cr.enforce:
                 issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}", f"Enforce weakened: '{must}' removed.", block=block_name, rule_id=rid, baseline_enforce=br.enforce, candidate_enforce=cr.enforce))
 
+        # WHEN change (critical): any change to conditions is treated as FAIL
+        if br.when != cr.when:
+            issues.append(_issue(SEV_FAIL, f"{block_name}.{rid}.when", "Rule 'when' changed (treated as softening risk).", block=block_name, rule_id=rid))
+
+    # New rules in candidate (INFO)
     for rid, cr in candidate.items():
         if rid not in baseline:
             issues.append(_issue(SEV_INFO, f"{block_name}.{rid}", "New rule added in candidate.", block=block_name, rule_id=rid, candidate_decision=cr.decision))
@@ -453,6 +554,13 @@ def run_meta_audit(baseline_path: str, candidate_path: str) -> Dict[str, Any]:
         info = sum(1 for it in issues if it.severity == SEV_INFO)
         return {"summary": {"FAIL": fail, "WARNING": warn, "INFO": info}, "issues": [it.to_dict() for it in issues]}
 
+    # decision_set.allowed (extract early; used for enforce/decision checks)
+    b_allowed, b_allowed_issues = _extract_allowed(b_raw)
+    c_allowed, c_allowed_issues = _extract_allowed(c_raw)
+    issues.extend(b_allowed_issues)
+    issues.extend(c_allowed_issues)
+    issues.extend(_compare_allowed(b_allowed, c_allowed))
+
     # blocks
     b_blocks, b_block_issues = _get_blocks(b_raw)
     c_blocks, c_block_issues = _get_blocks(c_raw)
@@ -465,32 +573,20 @@ def run_meta_audit(baseline_path: str, candidate_path: str) -> Dict[str, Any]:
         info = sum(1 for it in issues if it.severity == SEV_INFO)
         return {"summary": {"FAIL": fail, "WARNING": warn, "INFO": info}, "issues": [it.to_dict() for it in issues]}
 
-    # hard_gates (governance-critical)
-    b_hg, b_hg_issues = _extract_block_rules(b_blocks, "hard_gates")
-    c_hg, c_hg_issues = _extract_block_rules(c_blocks, "hard_gates")
-    issues.extend(b_hg_issues)
-    issues.extend(c_hg_issues)
+    # Compare safety-critical blocks
+    for block_name in SAFETY_BLOCKS:
+        b_map, b_issues = _extract_block_rules(b_blocks, block_name, allowed_decisions=b_allowed)
+        c_map, c_issues = _extract_block_rules(c_blocks, block_name, allowed_decisions=c_allowed)
 
-    if b_hg and not c_hg:
-        issues.append(_issue(SEV_FAIL, "blocks.hard_gates", "Candidate missing hard_gates while baseline has it (possible deletion)."))
-    issues.extend(_compare_rules(b_hg, c_hg, "hard_gates", enforce_must_include="NO_TRADE", fail_on_disable=True))
+        issues.extend(b_issues)
+        issues.extend(c_issues)
 
-    # kill_switch.triggers (required by your loader)
-    b_ks, b_ks_issues = _extract_block_rules(b_blocks, "kill_switch.triggers")
-    c_ks, c_ks_issues = _extract_block_rules(c_blocks, "kill_switch.triggers")
-    issues.extend(b_ks_issues)
-    issues.extend(c_ks_issues)
+        # If baseline has block and candidate doesn't -> FAIL (handled in extractor too)
+        if b_map and not c_map:
+            issues.append(_issue(SEV_FAIL, f"blocks.{block_name}", "Candidate missing block while baseline has it.", block=block_name))
 
-    if b_ks and not c_ks:
-        issues.append(_issue(SEV_FAIL, "blocks.kill_switch.triggers", "Candidate missing kill_switch.triggers while baseline has it."))
-    issues.extend(_compare_rules(b_ks, c_ks, "kill_switch.triggers", enforce_must_include="NO_TRADE", fail_on_disable=True))
-
-    # decision_set.allowed
-    b_allowed, b_allowed_issues = _extract_allowed(b_raw)
-    c_allowed, c_allowed_issues = _extract_allowed(c_raw)
-    issues.extend(b_allowed_issues)
-    issues.extend(c_allowed_issues)
-    issues.extend(_compare_allowed(b_allowed, c_allowed))
+        must_enforce = "NO_TRADE" if block_name in {"hard_gates", "kill_switch.triggers"} else None
+        issues.extend(_compare_rules(b_map, c_map, block_name, enforce_must_include=must_enforce))
 
     # limits
     b_limits, b_lim_issues = _extract_limits(b_raw)
@@ -523,7 +619,7 @@ def _print_human(report: Dict[str, Any]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="meta_audit",
-        description="Offline governance checks for MA policy changes (Meta Audit v2.1; raw YAML blocks.*).",
+        description="Offline governance checks for MA policy changes (hardened: safety blocks + when/op DSL).",
     )
     parser.add_argument("baseline", help="Path to baseline policy YAML (trusted).")
     parser.add_argument("candidate", help="Path to candidate policy YAML (changed).")

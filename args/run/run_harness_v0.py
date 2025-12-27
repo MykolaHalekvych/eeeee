@@ -4,30 +4,23 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from args.asys.as_v0_adapter import parse_bar_row, derive_ma_input_from_bar
-from args.contracts.paths_from_policy import inventory_from_policy_yaml
 from args.contracts.ma_input_contract import validate_ma_input
-from args.ma.policy_loader import load_policy
+from args.contracts.paths_from_policy import inventory_from_policy_yaml
 from args.ma.ma_runtime import eval_ma
+from args.ma.policy_loader import load_policy
 from args.run.live_safety_v0 import evaluate_live_safety
 
 
-@dataclass(frozen=True)
-class RunConfig:
-    csv_path: Path
-    policy_path: Path
-    out_events: Path
-    max_steps: int = 0  # 0 = all rows
-    start_index: int = 0
-    defaults: Dict[str, Any] = None
-
-
+# -----------------------------
+# JSONL helpers
+# -----------------------------
 def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False))
+        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         f.write("\n")
 
 
@@ -36,6 +29,22 @@ def _load_rows(csv_path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+# -----------------------------
+# Config
+# -----------------------------
+@dataclass(frozen=True)
+class RunConfig:
+    csv_path: Path
+    policy_path: Path
+    out_events: Path
+    max_steps: int = 0  # 0 = all rows
+    start_index: int = 0
+    defaults: Optional[Dict[str, Any]] = None
+
+
+# -----------------------------
+# Harness
+# -----------------------------
 def run_harness(cfg: RunConfig) -> Dict[str, Any]:
     rows = _load_rows(cfg.csv_path)
     total_rows = len(rows)
@@ -52,14 +61,21 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
     policy = load_policy(str(cfg.policy_path))
     inv = inventory_from_policy_yaml(str(cfg.policy_path))
 
+    defaults = cfg.defaults or {}
+
+    # Canonical defaults (Stage A)
+    # QC must be PASS/FAIL (live_safety is PASS-only)
+    qc_default = str(defaults.get("qc", "PASS")).strip().upper() or "PASS"
+
     summary: Dict[str, Any] = {
         "total_rows": total_rows,
         "processed": 0,
         "contract_fail": 0,
-        "ma_decisions": {},
-        "out_events": str(cfg.out_events),
+        "safety_no_decision": 0,
         "halted": False,
         "halt_reason": "",
+        "ma_decisions": {},
+        "out_events": str(cfg.out_events),
     }
 
     _append_jsonl(
@@ -68,19 +84,19 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
             "kind": "RUN_START",
             "csv": str(cfg.csv_path),
             "policy": str(cfg.policy_path),
+            "policy_name": policy.name,
+            "schema_version": policy.schema_version,
             "start_index": cfg.start_index,
             "end_index": end_index,
         },
     )
-
-    defaults = cfg.defaults or {}
 
     for i, r in enumerate(slice_rows, start=cfg.start_index):
         bar = parse_bar_row(r)
 
         ma_input = derive_ma_input_from_bar(
             bar,
-            qc=defaults.get("qc", "OK"),
+            qc=qc_default,
             stale_quotes=bool(defaults.get("stale_quotes", False)),
             missing_bars=int(defaults.get("missing_bars", 0)),
             timestamp_drift_ms=int(defaults.get("timestamp_drift_ms", 0)),
@@ -93,12 +109,14 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
             correlation=float(defaults.get("correlation", 0.10)),
         )
 
-        # Required fields gate
+        # Required base fields (MA runtime expects these)
         ma_input["instrument"] = str(defaults.get("instrument", "HG"))
         ma_input["timeframe"] = str(defaults.get("timeframe", "5m"))
         ma_input["env"] = str(defaults.get("env", "IBKR_PAPER_LABEL"))
 
-        # ---- Live safety gate (BEFORE MA, BEFORE WA)
+        # -----------------------------
+        # Live safety gate (BEFORE MA, BEFORE WA)
+        # -----------------------------
         safety = evaluate_live_safety(ma_input)
 
         if safety.decision == "HALT":
@@ -117,7 +135,10 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
             break
 
         if safety.decision == "NO_DECISION":
+            # Stage A semantics:
+            # NO_DECISION is a first-class "no-trade" signal before MA.
             summary["processed"] += 1
+            summary["safety_no_decision"] += 1
             summary["ma_decisions"]["NO_DECISION"] = summary["ma_decisions"].get("NO_DECISION", 0) + 1
 
             _append_jsonl(
@@ -129,6 +150,10 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                     "safety": safety.to_dict(),
                 },
             )
+
+            # Emit a TICK record but keep it explicit:
+            # - ma_decision is NO_DECISION (not part of MA decision_set)
+            # - include mode-like fields to prevent downstream confusion
             _append_jsonl(
                 cfg.out_events,
                 {
@@ -145,12 +170,19 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                     },
                     "ma_decision": "NO_DECISION",
                     "violations": [],
+                    "risk_envelope": {
+                        "mode": "NO_TRADE",
+                        "enforced_no_trade": True,
+                        "note": "live_safety_no_decision",
+                    },
                     "safety": safety.to_dict(),
                 },
             )
             continue
 
-        # ---- Contract check
+        # -----------------------------
+        # Contract check (policy-driven paths)
+        # -----------------------------
         res = validate_ma_input(ma_input, inv.paths)
         if not res.ok:
             summary["contract_fail"] += 1
@@ -166,12 +198,19 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
             )
             continue
 
-        # ---- MA eval
+        # -----------------------------
+        # MA eval
+        # -----------------------------
         report = eval_ma(policy, ma_input)
-        decision = report.get("ma_decision", "UNKNOWN")
+        decision = str(report.get("ma_decision", "UNKNOWN") or "UNKNOWN").upper()
 
         summary["processed"] += 1
         summary["ma_decisions"][decision] = summary["ma_decisions"].get(decision, 0) + 1
+
+        # include risk_envelope + position_state if present (for downstream gating)
+        risk_env = report.get("risk_envelope", {})
+        if not isinstance(risk_env, dict):
+            risk_env = {}
 
         _append_jsonl(
             cfg.out_events,
@@ -189,6 +228,8 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                 },
                 "ma_decision": decision,
                 "violations": report.get("violations", []),
+                "risk_envelope": risk_env,
+                "position_state": ma_input.get("position_state") if isinstance(ma_input.get("position_state"), dict) else None,
                 "safety": safety.to_dict(),
             },
         )
@@ -225,3 +266,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

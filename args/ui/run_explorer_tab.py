@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 import socket
 import subprocess
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +20,6 @@ import streamlit as st
 # Auto-refresh helpers (no deps)
 # -----------------------------
 def _st_rerun() -> None:
-    # streamlit version compatibility
     if hasattr(st, "rerun"):
         st.rerun()
     else:
@@ -28,14 +27,8 @@ def _st_rerun() -> None:
 
 
 def _auto_refresh_tick(enabled: bool, interval_s: int) -> None:
-    """
-    Safe-by-default auto-refresh:
-    - Enabled only when user toggles it on (operator mode)
-    - Sleep + rerun (no extra deps)
-    """
     if not enabled:
         return
-
     interval_s = int(max(5, min(60, interval_s)))
     time.sleep(interval_s)
     _st_rerun()
@@ -50,15 +43,17 @@ class RunArtifacts:
     events_path: Optional[Path]
     orders_path: Optional[Path]
     report_path: Optional[Path]
+    order_intents_path: Optional[Path]
+    payload_path: Optional[Path]
+    sendplan_path: Optional[Path]
     last_modified_utc: Optional[str]
-    completeness: str  # e.g. "events+orders+report", "events+orders", "events", ...
+    completeness: str  # e.g. "events+orders+report+oi+payload+sendplan"
 
 
 # -----------------------------
 # Filesystem helpers
 # -----------------------------
 def repo_root() -> Path:
-    # args/ui/run_explorer_tab.py -> parents[0]=ui, [1]=args, [2]=repo root
     return Path(__file__).resolve().parents[2]
 
 
@@ -77,6 +72,8 @@ def safe_open_folder(path: Path) -> None:
             st.warning("Open folder is supported on Windows only in this UI.")
     except Exception as e:
         st.error(f"Failed to open folder: {e}")
+
+
 def _fmt_age(age_s: float) -> str:
     age_s = max(0.0, float(age_s))
     if age_s < 60:
@@ -88,8 +85,9 @@ def _fmt_age(age_s: float) -> str:
     h = int(age_s // 3600)
     m = int((age_s % 3600) // 60)
     return f"{h}h {m}m"
+
+
 def _fmt_task_dt(v: Any) -> str:
-    # v may be "/Date(1766714666000)/" from PowerShell JSON
     if v is None:
         return "n/a"
     s = str(v)
@@ -99,6 +97,12 @@ def _fmt_task_dt(v: Any) -> str:
         dt = datetime.utcfromtimestamp(ms / 1000.0)
         return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
     return s
+
+
+def _mtime_utc_str(p: Path) -> str:
+    ts = p.stat().st_mtime
+    return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S UTC")
+
 
 def _mtime_info(path: Path) -> Dict[str, Any]:
     try:
@@ -133,6 +137,14 @@ def _latest_matching(dir_path: Path, prefix: str, suffix: str) -> Optional[Path]
         return None
 
 
+def read_json_safe(path: Path) -> Dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        return {"_ok": False, "_error": str(e)}
+
+
 def _read_ibkr_connection(data_dir: Path) -> Dict[str, Any]:
     cfg_path = data_dir / "ibkr_connection_v0.json"
     if not cfg_path.exists():
@@ -145,12 +157,8 @@ def _read_ibkr_connection(data_dir: Path) -> Dict[str, Any]:
     return {"ok": True, "host": host, "port": port, "path": str(cfg_path)}
 
 
-
-
-
 def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
-    # Robust on Windows: try IPv4 loopback and IPv6 loopback explicitly
-    targets = []
+    targets: List[Tuple[str, int]]
     h = str(host).strip().lower()
     if h in ("localhost", "127.0.0.1", "::1"):
         targets = [("127.0.0.1", int(port)), ("::1", int(port))]
@@ -165,6 +173,13 @@ def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
             continue
     return False
 
+
+def _get_task_info(task_name: str) -> Dict[str, Any]:
+    """
+    Read-only Scheduled Task status via PowerShell -> JSON.
+    """
+    if os.name != "nt":
+        return {"ok": False, "error": "windows-only"}
 
     ps = (
         f"$t=Get-ScheduledTask -TaskName '{task_name}';"
@@ -188,11 +203,7 @@ def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
             timeout=2.5,
         )
         if cp.returncode != 0:
-            return {
-                "ok": False,
-                "error": (cp.stderr or cp.stdout or "").strip(),
-                "returncode": cp.returncode,
-            }
+            return {"ok": False, "error": (cp.stderr or cp.stdout or "").strip(), "returncode": cp.returncode}
         raw = (cp.stdout or "").strip()
         if not raw:
             return {"ok": False, "error": "empty output"}
@@ -202,22 +213,21 @@ def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
 
 
 # -----------------------------
-# Run indexing
+# Run indexing (core artifacts)
 # -----------------------------
 _RX_EVENTS = re.compile(r"^events_run_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_ORDERS = re.compile(r"^orders_paper_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_REPORT = re.compile(r"^run_report_(?P<rid>.+)_paper\.json$", re.IGNORECASE)
 
-
-def _mtime_utc_str(p: Path) -> str:
-    ts = p.stat().st_mtime
-    return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S UTC")
+# Stage 4.3 artifacts
+_RX_OI = re.compile(r"^order_intents_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
+_RX_PAYLOAD = re.compile(r"^orders_payload_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
+_RX_SENDPLAN = re.compile(r"^orders_sendplan_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 
 
 def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
-    # Collect candidates from both dirs (report sometimes lives in logs, sometimes in data)
     runs: Dict[str, Dict[str, Optional[Path]]] = defaultdict(
-        lambda: {"events": None, "orders": None, "report": None}
+        lambda: {"events": None, "orders": None, "report": None, "oi": None, "payload": None, "sendplan": None}
     )
     mtimes: Dict[str, float] = {}
 
@@ -233,17 +243,35 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
         for p in data_dir.iterdir():
             if not p.is_file():
                 continue
+
             m = _RX_EVENTS.match(p.name)
             if m:
                 register(m.group("rid"), "events", p)
                 continue
+
             m = _RX_ORDERS.match(p.name)
             if m:
                 register(m.group("rid"), "orders", p)
                 continue
+
             m = _RX_REPORT.match(p.name)
             if m:
                 register(m.group("rid"), "report", p)
+                continue
+
+            m = _RX_OI.match(p.name)
+            if m:
+                register(m.group("rid"), "oi", p)
+                continue
+
+            m = _RX_PAYLOAD.match(p.name)
+            if m:
+                register(m.group("rid"), "payload", p)
+                continue
+
+            m = _RX_SENDPLAN.match(p.name)
+            if m:
+                register(m.group("rid"), "sendplan", p)
                 continue
 
     if logs_dir.exists():
@@ -264,6 +292,12 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
             parts.append("orders")
         if d["report"] is not None:
             parts.append("report")
+        if d["oi"] is not None:
+            parts.append("oi")
+        if d["payload"] is not None:
+            parts.append("payload")
+        if d["sendplan"] is not None:
+            parts.append("sendplan")
 
         completeness = "+".join(parts) if parts else "none"
         lm = None
@@ -276,18 +310,20 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
                 events_path=d["events"],
                 orders_path=d["orders"],
                 report_path=d["report"],
+                order_intents_path=d["oi"],
+                payload_path=d["payload"],
+                sendplan_path=d["sendplan"],
                 last_modified_utc=lm,
                 completeness=completeness,
             )
         )
 
-    # Sort: newest first (by mtime string), then by run_id
     out.sort(key=lambda x: (x.last_modified_utc or "", x.run_id), reverse=True)
     return out
 
 
 # -----------------------------
-# JSONL parsing (safe, bounded)
+# JSONL parsing (generic + stage-specific)
 # -----------------------------
 _DECISION_KEYS = (
     "decision",
@@ -359,14 +395,7 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
                     parse_errors += 1
                     continue
     except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e),
-            "total": 0,
-            "parse_errors": 0,
-            "decision_counts": {},
-            "tail_raw": [],
-        }
+        return {"ok": False, "error": str(e), "total": 0, "parse_errors": 0, "decision_counts": {}, "tail_raw": []}
 
     return {
         "ok": True,
@@ -380,12 +409,154 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
     }
 
 
-def read_json_safe(path: Path) -> Dict[str, Any]:
+def summarize_order_intents_jsonl(path: Path, tail_n: int = 15, max_lines: int = 250_000) -> Dict[str, Any]:
+    """
+    Stage 4.3 contract file:
+    order_intents_<run_id>.jsonl
+    Expected keys: kind, kind_raw, mode, gate_reason
+    """
+    total = 0
+    parse_errors = 0
+    none = 0
+    allowed = 0
+    gated = 0
+    kinds: Dict[str, int] = defaultdict(int)
+    reasons: Dict[str, int] = defaultdict(int)
+    tail_raw: deque[str] = deque(maxlen=tail_n)
+
     try:
         with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            for line in f:
+                if total >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                tail_raw.append(line)
+                try:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    k = str(obj.get("kind") or "").strip().upper() or "UNKNOWN"
+                    kinds[k] += 1
+
+                    gr = obj.get("gate_reason")
+                    if isinstance(gr, str) and gr.strip():
+                        reasons[gr.strip()] += 1
+
+                    if k == "INTENT_NONE":
+                        none += 1
+                        if isinstance(gr, str) and gr.strip():
+                            gated += 1
+                    else:
+                        allowed += 1
+                except Exception:
+                    parse_errors += 1
+                    continue
     except Exception as e:
-        return {"_ok": False, "_error": str(e)}
+        return {"ok": False, "error": str(e)}
+
+    top_reasons = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    return {
+        "ok": True,
+        "total": total,
+        "allowed": allowed,
+        "none": none,
+        "gated": gated,
+        "parse_errors": parse_errors,
+        "kinds": dict(sorted(kinds.items(), key=lambda kv: kv[0])),
+        "top_gate_reasons": top_reasons,
+        "tail_raw": list(tail_raw),
+        "truncated": total >= max_lines,
+    }
+
+
+def summarize_payload_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_000) -> Dict[str, Any]:
+    total = 0
+    parse_errors = 0
+    kinds: Dict[str, int] = defaultdict(int)
+    tail_raw: deque[str] = deque(maxlen=tail_n)
+
+    def payload_kind(obj: Dict[str, Any]) -> str:
+        for k in ("payload_kind", "kind", "type"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
+        return "UNKNOWN"
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if total >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                tail_raw.append(line)
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        kinds[payload_kind(obj)] += 1
+                except Exception:
+                    parse_errors += 1
+                    continue
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "total": total,
+        "parse_errors": parse_errors,
+        "kinds": dict(sorted(kinds.items(), key=lambda kv: kv[0])),
+        "tail_raw": list(tail_raw),
+        "truncated": total >= max_lines,
+    }
+
+
+def summarize_sendplan_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_000) -> Dict[str, Any]:
+    total = 0
+    parse_errors = 0
+    kinds: Dict[str, int] = defaultdict(int)
+    tail_raw: deque[str] = deque(maxlen=tail_n)
+
+    def plan_kind(obj: Dict[str, Any]) -> str:
+        for k in ("plan_kind", "kind", "type", "action"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
+        return "UNKNOWN"
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if total >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                tail_raw.append(line)
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        kinds[plan_kind(obj)] += 1
+                except Exception:
+                    parse_errors += 1
+                    continue
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "total": total,
+        "parse_errors": parse_errors,
+        "kinds": dict(sorted(kinds.items(), key=lambda kv: kv[0])),
+        "tail_raw": list(tail_raw),
+        "truncated": total >= max_lines,
+    }
 
 
 # -----------------------------
@@ -436,13 +607,13 @@ def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, An
 # -----------------------------
 def render_run_explorer_tab() -> None:
     st.subheader("Run Explorer (read-only)")
+
+    data_dir, logs_dir = default_dirs()
+
     # -----------------------------
     # Ops status (read-only)
     # -----------------------------
-    data_dir, logs_dir = default_dirs()
-
     with st.expander("Ops status (read-only)", expanded=True):
-        # Scheduled Task status
         task = _get_task_info("ARGS_AutoLoop_5m")
         c1, c2, c3, c4 = st.columns(4)
 
@@ -458,21 +629,17 @@ def render_run_explorer_tab() -> None:
             c2.metric("LastTaskResult", f"{last_hex}")
             c3.metric("Missed runs", str(d.get("NumberOfMissedRuns", "n/a")))
             c4.metric("Args", "… -Once" if "-Once" in str(d.get("Arguments", "")) else str(d.get("Arguments", ""))[:16] + "…")
-
             st.caption(f"LastRunTime: {_fmt_task_dt(d.get('LastRunTime'))} | NextRunTime: {_fmt_task_dt(d.get('NextRunTime'))}")
-
         else:
             st.warning(f"ScheduledTask read failed: {task.get('error')}")
 
-        # auto_loop.log freshness
         latest_log = _latest_matching(logs_dir, prefix="auto_loop_", suffix=".log")
         if latest_log:
             li = _mtime_info(latest_log)
-            st.caption(f"Latest auto_loop log: {latest_log.name} | {li.get('mtime_utc')} | age { _fmt_age(li.get('age_s', 0)) }")
+            st.caption(f"Latest auto_loop log: {latest_log.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0))}")
         else:
             st.caption("Latest auto_loop log: n/a")
 
-        # lock status
         lock_path = logs_dir / "auto_loop.lock"
         lock = _mtime_info(lock_path) if lock_path.exists() else {"exists": False}
         if lock.get("exists"):
@@ -480,7 +647,6 @@ def render_run_explorer_tab() -> None:
         else:
             st.caption("LOCK: not present (OK)")
 
-        # IBKR CSV freshness
         csv_path = data_dir / "hg_5m_bars_ibkr.csv"
         csv_i = _mtime_info(csv_path) if csv_path.exists() else {"exists": False}
         if csv_i.get("exists"):
@@ -488,7 +654,6 @@ def render_run_explorer_tab() -> None:
         else:
             st.caption("IBKR CSV: missing")
 
-        # TWS socket (host:port) status (from config)
         conn = _read_ibkr_connection(data_dir)
         if conn.get("ok"):
             host = conn["host"]
@@ -498,6 +663,13 @@ def render_run_explorer_tab() -> None:
         else:
             st.caption(f"TWS socket: config read failed ({conn.get('error')})")
 
+        # Stage 4.4: latest order_intents freshness (if any)
+        latest_oi = _latest_matching(data_dir, prefix="order_intents_", suffix=".jsonl")
+        if latest_oi:
+            oi = _mtime_info(latest_oi)
+            st.caption(f"Latest order_intents: {latest_oi.name} | {oi.get('mtime_utc')} | age {_fmt_age(oi.get('age_s', 0))}")
+        else:
+            st.caption("Latest order_intents: n/a")
 
     operator_mode = bool(st.session_state.get("operator_mode", True))
 
@@ -538,74 +710,26 @@ def render_run_explorer_tab() -> None:
     else:
         st.caption("Operator mode OFF: auto-refresh disabled.")
 
-    data_dir, logs_dir = default_dirs()
     col_a, col_b, col_c = st.columns([1, 1, 2])
-
     with col_a:
         if st.button("Refresh index", key="runexp_btn_refresh"):
             _st_rerun()
-
     with col_b:
         if st.button("Open data folder", key="runexp_btn_open_data"):
             safe_open_folder(data_dir)
-def _get_task_info(task_name: str) -> Dict[str, Any]:
-    """
-    Read-only Scheduled Task status via PowerShell -> JSON.
-    """
-    if os.name != "nt":
-        return {"ok": False, "error": "windows-only"}
-
-    ps = (
-        f"$t=Get-ScheduledTask -TaskName '{task_name}';"
-        f"$ti=$t | Get-ScheduledTaskInfo;"
-        f"[pscustomobject]@{{"
-        f"TaskName=$t.TaskName;"
-        f"State=$t.State;"
-        f"LastRunTime=$ti.LastRunTime;"
-        f"NextRunTime=$ti.NextRunTime;"
-        f"LastTaskResult=$ti.LastTaskResult;"
-        f"NumberOfMissedRuns=$ti.NumberOfMissedRuns;"
-        f"Arguments=$t.Actions[0].Arguments;"
-        f"}} | ConvertTo-Json -Compress"
-    )
-
-    try:
-        cp = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=2.5,
-        )
-        if cp.returncode != 0:
-            return {
-                "ok": False,
-                "error": (cp.stderr or cp.stdout or "").strip(),
-                "returncode": cp.returncode,
-            }
-        raw = (cp.stdout or "").strip()
-        if not raw:
-            return {"ok": False, "error": "empty output"}
-        return {"ok": True, "data": json.loads(raw)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
     with col_c:
         if st.button("Open logs folder", key="runexp_btn_open_logs"):
             safe_open_folder(logs_dir)
 
     st.caption(f"Data: {data_dir} | Logs: {logs_dir}")
 
-    # Always rebuild index on each render so auto-refresh sees new runs
     runs = build_run_index(data_dir, logs_dir)
     if not runs:
         st.info("No runs found yet. Generate a run first (paper loop / demo).")
         st.stop()
 
-    run_labels = [
-        f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}" for r in runs
-    ]
+    run_labels = [f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}" for r in runs]
 
-    # If auto-refresh is ON and follow_latest is ON, keep selection pinned to newest
     if operator_mode and auto_refresh_enabled and follow_latest and run_labels:
         st.session_state["runexp_select_run"] = run_labels[0]
 
@@ -620,13 +744,18 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
         "events_path": str(selected.events_path) if selected.events_path else None,
         "orders_path": str(selected.orders_path) if selected.orders_path else None,
         "report_path": str(selected.report_path) if selected.report_path else None,
+        "order_intents_path": str(selected.order_intents_path) if selected.order_intents_path else None,
+        "payload_path": str(selected.payload_path) if selected.payload_path else None,
+        "sendplan_path": str(selected.sendplan_path) if selected.sendplan_path else None,
     }
     st.json(meta)
 
     st.divider()
 
-    # Report
-    st.markdown("### Run report")
+    # -----------------------------
+    # Run report
+    # -----------------------------
+    st.markdown("### Run report (paper)")
     if selected.report_path and selected.report_path.exists():
         rep = read_json_safe(selected.report_path)
         if rep.get("_ok") is False:
@@ -638,7 +767,9 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
 
     st.divider()
 
+    # -----------------------------
     # Events
+    # -----------------------------
     st.markdown("### Events (events_run_*.jsonl)")
     if selected.events_path and selected.events_path.exists():
         ev = summarize_jsonl(selected.events_path, tail_n=25)
@@ -664,7 +795,9 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
 
     st.divider()
 
-    # Orders
+    # -----------------------------
+    # Orders (paper)
+    # -----------------------------
     st.markdown("### Orders (orders_paper_*.jsonl)")
     if selected.orders_path and selected.orders_path.exists():
         od = summarize_jsonl(selected.orders_path, tail_n=25)
@@ -682,7 +815,78 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
 
     st.divider()
 
-    # IBKR CSV status (minimal)
+    # -----------------------------
+    # Stage 4.4: Order Intents / Payload / Sendplan
+    # -----------------------------
+    st.markdown("### Stage 4.4 — WA artifacts")
+
+    # Order intents
+    st.markdown("#### Order Intents (order_intents_*.jsonl)")
+    if selected.order_intents_path and selected.order_intents_path.exists():
+        oi = summarize_order_intents_jsonl(selected.order_intents_path, tail_n=15)
+        if not oi.get("ok"):
+            st.error(f"Failed to read order_intents JSONL: {oi.get('error')}")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total", oi["total"])
+            c2.metric("Allowed", oi["allowed"])
+            c3.metric("None", oi["none"])
+            c4.metric("Gated", oi["gated"])
+
+            st.write("Kinds:")
+            st.json(oi["kinds"])
+
+            if oi.get("top_gate_reasons"):
+                st.write("Top gate reasons:")
+                st.json({k: v for (k, v) in oi["top_gate_reasons"]})
+
+            if oi.get("truncated"):
+                st.warning("order_intents file is large; UI scan is truncated for safety.")
+
+            with st.expander("Tail (last 15 lines)", expanded=False):
+                st.code("\n".join(oi["tail_raw"]), language="json")
+    else:
+        st.info("No order_intents_*.jsonl found for this run_id yet.")
+
+    # Payload
+    st.markdown("#### Payload (orders_payload_*.jsonl)")
+    if selected.payload_path and selected.payload_path.exists():
+        pl = summarize_payload_jsonl(selected.payload_path, tail_n=10)
+        if not pl.get("ok"):
+            st.error(f"Failed to read payload JSONL: {pl.get('error')}")
+        else:
+            c1, c2 = st.columns(2)
+            c1.metric("Lines", pl["total"])
+            c2.metric("Parse errors", pl["parse_errors"])
+            st.write("Payload kinds:")
+            st.json(pl["kinds"])
+
+            with st.expander("Tail (last 10 lines)", expanded=False):
+                st.code("\n".join(pl["tail_raw"]), language="json")
+    else:
+        st.info("No orders_payload_*.jsonl found for this run_id yet.")
+
+    # Sendplan
+    st.markdown("#### Sendplan (orders_sendplan_*.jsonl)")
+    if selected.sendplan_path and selected.sendplan_path.exists():
+        sp = summarize_sendplan_jsonl(selected.sendplan_path, tail_n=10)
+        if not sp.get("ok"):
+            st.error(f"Failed to read sendplan JSONL: {sp.get('error')}")
+        else:
+            c1, c2 = st.columns(2)
+            c1.metric("Lines", sp["total"])
+            c2.metric("Parse errors", sp["parse_errors"])
+            st.write("Sendplan kinds:")
+            st.json(sp["kinds"])
+
+            with st.expander("Tail (last 10 lines)", expanded=False):
+                st.code("\n".join(sp["tail_raw"]), language="json")
+    else:
+        st.info("No orders_sendplan_*.jsonl found for this run_id yet.")
+
+    st.divider()
+
+    # IBKR CSV status
     st.markdown("### IBKR data status (hg_5m_bars_ibkr.csv)")
     csv_path = data_dir / "hg_5m_bars_ibkr.csv"
     stat = ibkr_csv_status(csv_path)
@@ -691,5 +895,4 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
     else:
         st.json(stat)
 
-    # Auto-refresh tick MUST be last (so the tab renders first)
     _auto_refresh_tick(enabled=(operator_mode and auto_refresh_enabled), interval_s=int(interval_s))

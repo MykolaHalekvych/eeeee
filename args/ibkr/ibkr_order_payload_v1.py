@@ -1,28 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
+
+# Stage A: semantic intent kinds
+KIND_NONE = "INTENT_NONE"
+KIND_CANCEL_ALL = "INTENT_CANCEL_ALL"
+KIND_ENTRY = "INTENT_ENTRY"
+KIND_EXIT = "INTENT_EXIT"
+KIND_REDUCE = "INTENT_REDUCE"
+KIND_TAKE_PROFIT = "INTENT_TAKE_PROFIT"
+
+_ALLOWED_INTENT_KINDS = {KIND_NONE, KIND_CANCEL_ALL, KIND_ENTRY, KIND_EXIT, KIND_REDUCE, KIND_TAKE_PROFIT}
+_ALLOWED_ORDER_TYPES = {"MKT", "LMT"}  # minimal set
 
 
 def _u(x: Any) -> str:
-    return str(x or "").upper().strip()
+    return str(x or "").strip().upper().replace("-", "_")
 
 
-def _as_int(x: Any, default: int) -> int:
+def _as_pos_int(x: Any) -> Optional[int]:
     try:
         v = int(x)
-        return v if v > 0 else default
+        return v if v > 0 else None
     except Exception:
-        return default
+        return None
+
+
+def _as_float(x: Any) -> Optional[float]:
+    try:
+        return float(x)
+    except Exception:
+        return None
 
 
 def build_contract_ref(contract_meta: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Build a minimal IBKR contract reference (JSON payload style).
-    Expects dict like meta["contract"] from hg_5m_bars_ibkr.meta.json or run_report.inputs.csv_meta.contract.
-    """
     con_id = contract_meta.get("conId")
     local = contract_meta.get("localSymbol")
+
     sym = contract_meta.get("symbol") or "HG"
     sec_type = contract_meta.get("secType") or "FUT"
     exch = contract_meta.get("exchange") or "COMEX"
@@ -45,84 +59,132 @@ def build_contract_ref(contract_meta: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def wa_action_to_order_fields(wa_action: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Convert WA action dict -> IBKR-ish order fields (still dry-run).
-    If cannot map safely -> (None, reason).
-    """
+def _notes(a: Dict[str, Any]) -> Dict[str, Any]:
+    n = a.get("notes")
+    return n if isinstance(n, dict) else {}
 
-    # 1) Extract action / side
-    # Accept common variants:
-    # - wa_action["side"] in {"BUY","SELL"}
-    # - wa_action["ibkr_action"] in {"BUY","SELL"}
-    # - wa_action["action"] in {"BUY","SELL","ENTER_LONG","ENTER_SHORT"}
-    side = _u(wa_action.get("side") or wa_action.get("ibkr_action") or "")
-    act = _u(wa_action.get("action") or wa_action.get("type") or wa_action.get("kind") or "")
 
-    if side not in {"BUY", "SELL"}:
-        if act in {"BUY", "SELL"}:
-            side = act
-        elif act in {"ENTER_LONG", "LONG"}:
-            side = "BUY"
-        elif act in {"ENTER_SHORT", "SHORT"}:
-            side = "SELL"
+def _infer_side_from_wa_action(wa_action: Dict[str, Any]) -> Optional[str]:
+    n = _notes(wa_action)
 
-    if side not in {"BUY", "SELL"}:
-        # If WA is NOOP or not explicit, refuse to map.
-        return None, "AMBIGUOUS_WA_ACTION"
+    # accept side fields on top-level or inside notes (controlled test)
+    side = _u(wa_action.get("side") or wa_action.get("ibkr_action") or n.get("side"))
+    if side in {"BUY", "SELL"}:
+        return side
 
-    # 2) Quantity
+    # accept action/intent markers
+    act = _u(
+        wa_action.get("action")
+        or wa_action.get("intent")
+        or wa_action.get("type")
+        or wa_action.get("kind")
+        or n.get("intent")
+        or ""
+    )
+
+    if act in {"BUY", "SELL"}:
+        return act
+    if act in {"ENTER_LONG", "LONG"}:
+        return "BUY"
+    if act in {"ENTER_SHORT", "SHORT"}:
+        return "SELL"
+
+    return None
+
+
+def _infer_qty_from_wa_action(wa_action: Dict[str, Any]) -> Optional[int]:
+    n = _notes(wa_action)
+
     qty = wa_action.get("qty")
     if qty is None:
         qty = wa_action.get("quantity")
     if qty is None:
         qty = wa_action.get("size")
-    qty_i = _as_int(qty, default=1)
+    if qty is None:
+        qty = n.get("qty") or n.get("quantity") or n.get("size")
+    return _as_pos_int(qty)
 
-    # 3) Order type
-    order_type = _u(wa_action.get("orderType") or wa_action.get("order_type") or wa_action.get("ord_type") or "")
-    if not order_type:
-        order_type = "MKT"
+
+def _infer_order_type_from_wa_action(wa_action: Dict[str, Any]) -> Optional[str]:
+    n = _notes(wa_action)
+
+    ot = _u(
+        wa_action.get("orderType")
+        or wa_action.get("order_type")
+        or wa_action.get("ord_type")
+        or n.get("orderType")
+        or n.get("order_type")
+        or ""
+    )
+    if not ot:
+        return None
+    return ot if ot in _ALLOWED_ORDER_TYPES else None
+
+
+def wa_action_to_order_fields(wa_action: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    SAFETY (pre-Level-5):
+      - side must be explicit (BUY/SELL)
+      - qty must be explicit and >0
+      - orderType must be explicit and valid
+      - transmit MUST exist and be False at payload layer
+      - LMT must have price
+    """
+    side = _infer_side_from_wa_action(wa_action)
+    if side not in {"BUY", "SELL"}:
+        return None, "MISSING_SIDE"
+
+    qty_i = _infer_qty_from_wa_action(wa_action)
+    if qty_i is None:
+        return None, "MISSING_OR_INVALID_QTY"
+
+    order_type = _infer_order_type_from_wa_action(wa_action)
+    if order_type is None:
+        return None, "MISSING_OR_INVALID_ORDER_TYPE"
 
     order: Dict[str, Any] = {
-        "action": side,                 # BUY/SELL
-        "orderType": order_type,        # MKT/LMT etc
+        "action": side,
+        "orderType": order_type,
         "totalQuantity": qty_i,
-        "tif": _u(wa_action.get("tif") or "DAY"),
-        # Safety defaults:
+        "tif": _u(wa_action.get("tif") or _notes(wa_action).get("tif") or "DAY"),
         "transmit": False,
     }
 
-    # 4) Limit price if LMT
     if order_type == "LMT":
-        lp = wa_action.get("lmtPrice") or wa_action.get("limit_price") or wa_action.get("price")
-        if lp is None:
-            return None, "LMT_MISSING_PRICE"
-        order["lmtPrice"] = lp
+        lp = wa_action.get("lmtPrice") or wa_action.get("limit_price") or wa_action.get("price") or _notes(wa_action).get("lmtPrice")
+        lp_f = _as_float(lp)
+        if lp_f is None:
+            return None, "LMT_MISSING_OR_INVALID_PRICE"
+        order["lmtPrice"] = lp_f
 
     return order, None
 
 
-def intent_to_payload(
-    intent: Dict[str, Any],
-    contract_ref: Dict[str, Any],
-    *,
-    dry_run: bool = True,
-) -> Dict[str, Any]:
-    """
-    Convert a single OrderIntent dict -> payload dict.
-    Does NOT send anything.
-    """
-    kind = str(intent.get("kind") or "")
-    run_id = intent.get("run_id")
+def intent_to_payload(intent: Dict[str, Any], contract_ref: Dict[str, Any], *, dry_run: bool = True) -> Dict[str, Any]:
+    kind = _u(intent.get("kind"))
+    run_id = str(intent.get("run_id") or "").strip()
+
     idx = intent.get("index")
     ts = intent.get("ts")
     ma_dec = intent.get("ma_decision")
+
     wa_action = intent.get("wa_action")
     if not isinstance(wa_action, dict):
         wa_action = {}
 
-    if kind == "INTENT_CANCEL_ALL":
+    if not run_id:
+        return {
+            "payload_kind": "PAYLOAD_NONE",
+            "dry_run": dry_run,
+            "run_id": run_id,
+            "index": idx,
+            "ts": ts,
+            "contract": contract_ref,
+            "order": None,
+            "reason": "MISSING_RUN_ID",
+        }
+
+    if kind == KIND_CANCEL_ALL:
         return {
             "payload_kind": "PAYLOAD_CANCEL_ALL",
             "dry_run": dry_run,
@@ -134,7 +196,7 @@ def intent_to_payload(
             "reason": intent.get("reason") or "CANCEL_ALL",
         }
 
-    if kind == "INTENT_NONE":
+    if kind == KIND_NONE or kind not in _ALLOWED_INTENT_KINDS:
         return {
             "payload_kind": "PAYLOAD_NONE",
             "dry_run": dry_run,
@@ -143,10 +205,11 @@ def intent_to_payload(
             "ts": ts,
             "contract": contract_ref,
             "order": None,
-            "reason": intent.get("reason") or "NO_ACTION",
+            "reason": intent.get("reason") or (f"UNKNOWN_INTENT_KIND:{kind}" if kind else "NO_ACTION"),
         }
 
-    if kind != "INTENT_ORDER":
+    # For controlled test we generate orders only for ENTRY
+    if kind in {KIND_EXIT, KIND_REDUCE, KIND_TAKE_PROFIT}:
         return {
             "payload_kind": "PAYLOAD_NONE",
             "dry_run": dry_run,
@@ -155,9 +218,11 @@ def intent_to_payload(
             "ts": ts,
             "contract": contract_ref,
             "order": None,
-            "reason": f"UNKNOWN_INTENT_KIND:{kind}",
+            "reason": f"NON_ENTRY_INTENT:{kind}",
+            "notes": {"ma_decision": ma_dec},
         }
 
+    # ENTRY
     order_fields, err = wa_action_to_order_fields(wa_action)
     if err or order_fields is None:
         return {
@@ -169,7 +234,7 @@ def intent_to_payload(
             "contract": contract_ref,
             "order": None,
             "reason": f"ORDER_MAP_FAIL:{err}",
-            "notes": {"ma_decision": ma_dec, "wa_action": wa_action},
+            "notes": {"ma_decision": ma_dec, "wa_action": wa_action, "intent_kind": kind},
         }
 
     return {
@@ -181,5 +246,5 @@ def intent_to_payload(
         "contract": contract_ref,
         "order": order_fields,
         "reason": "OK",
-        "notes": {"ma_decision": ma_dec},
+        "notes": {"ma_decision": ma_dec, "intent_kind": kind},
     }

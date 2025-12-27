@@ -55,7 +55,7 @@ def _load_contract_meta_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
-    run_id = str(report.get("run_id") or "")
+    run_id = str(report.get("run_id") or "").strip()
     if not run_id:
         raise ValueError("run_id missing in report")
 
@@ -83,13 +83,14 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     if intents_path.exists():
         intents_path.unlink()
 
+    # If halted, write a single CANCEL_ALL intent (must survive gating)
     if halted:
         intent_obj = decide_intent(
             run_id=run_id,
             index=None,
             ts=None,
-            instrument="HG",
-            timeframe="5m",
+            instrument=str(report.get("instrument") or "HG"),
+            timeframe=str(report.get("timeframe") or "5m"),
             ma_decision="UNKNOWN",
             wa_action={},
             halted=True,
@@ -98,18 +99,20 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
         append_jsonl(intents_path, intent_obj.to_dict())
         return run_id, intents_path
 
+    # Otherwise, derive intents from orders_paper
     for row in iter_jsonl(orders_file):
         if row.get("kind") != "ORDER_PAPER":
             continue
         wa_action = row.get("wa_action")
         if not isinstance(wa_action, dict):
             wa_action = {}
+
         intent_obj = decide_intent(
             run_id=run_id,
             index=row.get("index"),
             ts=row.get("ts"),
-            instrument=str(row.get("instrument") or "HG"),
-            timeframe=str(row.get("timeframe") or "5m"),
+            instrument=str(row.get("instrument") or report.get("instrument") or "HG"),
+            timeframe=str(row.get("timeframe") or report.get("timeframe") or "5m"),
             ma_decision=row.get("ma_decision"),
             wa_action=wa_action,
             halted=False,
@@ -121,7 +124,11 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
 
 
 def _ensure_order_intents(report: Dict[str, Any]) -> Tuple[str, Path, Dict[str, Any]]:
-    run_id = str(report.get("run_id") or "")
+    """
+    Keep contract artifact for Stage 4.3 (auditable minimal file),
+    but payload will be built from RAW intents because raw contains wa_action.
+    """
+    run_id = str(report.get("run_id") or "").strip()
     if not run_id:
         raise ValueError("run_id missing in report")
 
@@ -141,11 +148,16 @@ def main() -> int:
         return 2
 
     report = _load_json(rp)
-    run_id, order_intents_path, oi_summary = _ensure_order_intents(report)
 
+    # Ensure artifacts
+    run_id, raw_intents_path = _ensure_raw_intents(report)
+    _, order_intents_path, oi_summary = _ensure_order_intents(report)
+
+    # Contract ref
     contract_meta = _load_contract_meta_from_report(report)
     contract_ref = build_contract_ref(contract_meta)
 
+    # Output payload (per-run)
     out_payload = DATA_DIR / f"orders_payload_{run_id}.jsonl"
     if out_payload.exists():
         out_payload.unlink()
@@ -156,22 +168,24 @@ def main() -> int:
     n_cancel = 0
     n_gated = 0
 
-    for rec in iter_jsonl(order_intents_path):
+    # IMPORTANT: iterate RAW intents (they contain wa_action)
+    for rec in iter_jsonl(raw_intents_path):
         n_total += 1
 
-        # defense-in-depth (keep it)
-        intent = enforce_mode_gate(rec, report)
-        if intent.get("kind") == "INTENT_NONE" and intent.get("gate_reason"):
+        # Stage 4.2: enforce mode gate from report
+        gated_intent = enforce_mode_gate(rec, report)
+        if gated_intent.get("kind") == "INTENT_NONE" and gated_intent.get("gate_reason"):
             n_gated += 1
 
-        payload = intent_to_payload(intent, contract_ref, dry_run=True)
+        payload = intent_to_payload(gated_intent, contract_ref, dry_run=True)
 
-        payload["mode"] = intent.get("mode")
-        payload["position_size"] = intent.get("position_size")
-        payload["intent_kind_raw"] = intent.get("kind_raw")
-        payload["intent_kind"] = intent.get("kind")
-        if intent.get("gate_reason"):
-            payload["gate_reason"] = intent.get("gate_reason")
+        # attach audit fields
+        payload["mode"] = gated_intent.get("mode")
+        payload["position_size"] = gated_intent.get("position_size")
+        payload["intent_kind_raw"] = gated_intent.get("kind_raw")
+        payload["intent_kind"] = gated_intent.get("kind")
+        if gated_intent.get("gate_reason"):
+            payload["gate_reason"] = gated_intent.get("gate_reason")
 
         append_jsonl(out_payload, payload)
 
@@ -186,7 +200,8 @@ def main() -> int:
     summary = {
         "latest_report": str(rp),
         "run_id": run_id,
-        "order_intents_in": str(order_intents_path),
+        "raw_intents_in": str(raw_intents_path),
+        "order_intents_contract": str(order_intents_path),
         "order_intents_summary": oi_summary,
         "payload_out": str(out_payload),
         "payload_total": n_total,
@@ -204,4 +219,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

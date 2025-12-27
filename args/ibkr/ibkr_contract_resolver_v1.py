@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,6 +12,9 @@ from ibapi.client import EClient
 from ibapi.common import TickerId
 from ibapi.contract import Contract, ContractDetails
 from ibapi.wrapper import EWrapper
+
+
+ROLL_WINDOW_DAYS_DEFAULT = 7
 
 
 @dataclass(frozen=True)
@@ -23,7 +26,6 @@ class IbkrConn:
 
 def load_ibkr_connection(path: Path) -> IbkrConn:
     if not path.exists():
-        # Safe defaults for local TWS/Gateway
         return IbkrConn(host="localhost", port=7497, client_id=101)
 
     obj = json.loads(path.read_text(encoding="utf-8"))
@@ -43,7 +45,6 @@ def make_hg_fut_contract(exchange: str = "COMEX", currency: str = "USD") -> Cont
 
 
 def make_hg_contfut_contract(exchange: str = "COMEX", currency: str = "USD") -> Contract:
-    # Continuous futures (useful for data); trading still needs a конкретный expiry
     c = Contract()
     c.secType = "CONTFUT"
     c.symbol = "HG"
@@ -61,15 +62,11 @@ class _ContractDetailsApp(EWrapper, EClient):
         self._errors: List[Tuple[int, int, str]] = []
         self._req_id: Optional[int] = None
 
-    # ---- lifecycle ----
-
     def nextValidId(self, orderId: int) -> None:
         self._connected.set()
 
     def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
         self._errors.append((int(reqId), int(errorCode), str(errorString)))
-
-    # ---- contract details ----
 
     def contractDetails(self, reqId: int, contractDetails: ContractDetails) -> None:
         self._details.append(contractDetails)
@@ -101,8 +98,6 @@ def fetch_contract_details(
     app.reqContractDetails(req_id, contract)
 
     app._done.wait(timeout=timeout_s)
-
-    # small grace
     time.sleep(0.2)
 
     try:
@@ -127,7 +122,7 @@ def contract_details_to_dict(cd: ContractDetails) -> Dict[str, Any]:
         "lastTradeDateOrContractMonth": getattr(c, "lastTradeDateOrContractMonth", None),
         "multiplier": getattr(c, "multiplier", None),
         "includeExpired": getattr(c, "includeExpired", None),
-        # Details side (best-effort)
+        # details side
         "marketName": getattr(cd, "marketName", None),
         "minTick": getattr(cd, "minTick", None),
         "validExchanges": getattr(cd, "validExchanges", None),
@@ -137,39 +132,82 @@ def contract_details_to_dict(cd: ContractDetails) -> Dict[str, Any]:
     }
 
 
-def _parse_yyyymm(last_trade: Any) -> Optional[int]:
-    if not isinstance(last_trade, str):
-        return None
-    s = "".join(ch for ch in last_trade if ch.isdigit())
-    if len(s) < 6:
-        return None
-    try:
-        return int(s[:6])
-    except Exception:
-        return None
+def _digits(s: Any) -> str:
+    if not isinstance(s, str):
+        return ""
+    return "".join(ch for ch in s if ch.isdigit())
 
 
-def select_front_month(details: List[ContractDetails], now_utc: Optional[datetime] = None) -> Optional[ContractDetails]:
+def _parse_last_trade_date(x: Any) -> Optional[date]:
+    """
+    IB returns lastTradeDateOrContractMonth as:
+      - YYYYMMDD
+      - YYYYMM (sometimes)
+      - YYYYMMDD HH:MM:SS (rare)
+    We prefer YYYYMMDD if present.
+    """
+    s = _digits(x)
+    if len(s) >= 8:
+        try:
+            return datetime.strptime(s[:8], "%Y%m%d").date()
+        except Exception:
+            return None
+    if len(s) >= 6:
+        # Month-only fallback: treat as first day of month (conservative for selection)
+        try:
+            return datetime.strptime(s[:6] + "01", "%Y%m%d").date()
+        except Exception:
+            return None
+    return None
+
+
+def _days_to_expiry(cd: ContractDetails, now_utc: Optional[datetime] = None) -> Optional[int]:
+    now = now_utc or datetime.now(timezone.utc)
+    d = _parse_last_trade_date(getattr(cd.contract, "lastTradeDateOrContractMonth", None))
+    if d is None:
+        return None
+    return int((d - now.date()).days)
+
+
+def select_front_month(
+    details: List[ContractDetails],
+    now_utc: Optional[datetime] = None,
+    *,
+    roll_window_days: int = ROLL_WINDOW_DAYS_DEFAULT,
+) -> Optional[ContractDetails]:
+    """
+    Tradeable front-month selection:
+    - Prefer the nearest contract with days_to_expiry > roll_window_days
+    - If none found, fall back to the nearest future contract (days_to_expiry >= 0)
+    This prevents picking a contract already inside roll/expiry window.
+    """
     if not details:
         return None
+
     now = now_utc or datetime.now(timezone.utc)
-    now_yyyymm = now.year * 100 + now.month
 
-    scored: List[Tuple[int, int, ContractDetails]] = []
+    scored_safe: List[Tuple[int, ContractDetails]] = []
+    scored_future: List[Tuple[int, ContractDetails]] = []
+
     for cd in details:
-        yyyymm = _parse_yyyymm(getattr(cd.contract, "lastTradeDateOrContractMonth", None))
-        if yyyymm is None:
+        dte = _days_to_expiry(cd, now_utc=now)
+        if dte is None:
             continue
-        # primary score: >= now, secondary: yyyymm itself
-        primary = 0 if yyyymm >= now_yyyymm else 1
-        scored.append((primary, yyyymm, cd))
+        if dte < 0:
+            continue
+        scored_future.append((dte, cd))
+        if dte > int(roll_window_days):
+            scored_safe.append((dte, cd))
 
-    if not scored:
-        return None
+    if scored_safe:
+        scored_safe.sort(key=lambda x: x[0])
+        return scored_safe[0][1]
 
-    scored.sort(key=lambda x: (x[0], x[1]))
-    # If there are >=now months, the best is (0, smallest yyyymm). Otherwise (1, smallest yyyymm).
-    return scored[0][2]
+    if scored_future:
+        scored_future.sort(key=lambda x: x[0])
+        return scored_future[0][1]
+
+    return None
 
 
 def utc_now_str() -> str:

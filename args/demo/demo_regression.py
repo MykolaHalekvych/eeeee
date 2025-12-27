@@ -4,6 +4,10 @@ Demo runner for regression set.
 - Loads all JSON cases from args/data/regression_cases
 - Runs MA evaluation and compares with expected outputs
 - Prints TOTAL / PASS / FAIL and lists failed cases
+
+EXIT CODES:
+- 0 if failed == 0
+- 2 if failed > 0
 """
 
 from pathlib import Path
@@ -33,7 +37,7 @@ def main() -> int:
             if not r["passed"]:
                 print(f"- {r['case_name']}: {r['reason']} expected={r['expected']} actual={r['actual']}")
 
-    return 0
+    return 2 if report["failed"] > 0 else 0
 
 
 if __name__ == "__main__":
