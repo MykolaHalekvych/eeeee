@@ -63,4 +63,11 @@ args/data/would_send_*.jsonl
 args/data/sent_orders_*.jsonl
 args/data/ibkr_order_id_cursor_v1.json
 args/data/control_state.json
+# --- Stage 5.5 execution lifecycle / reconciliation ---
+args/data/orders_exec_*.jsonl
+args/data/orders_reconcile_*.json
+args/data/ibkr_exec_ledger_v1*.json
+args/data/sent_orders_*.jsonl
+args/data/would_send_*.jsonl
+
 
