@@ -1,3 +1,4 @@
+
 # args/ui/run_explorer_tab.py
 from __future__ import annotations
 
@@ -137,9 +138,219 @@ def _latest_matching(dir_path: Path, prefix: str, suffix: str) -> Optional[Path]
         return None
 
 
+# -----------------------------
+# Control Plane (file-based)
+# -----------------------------
+_ALLOWED_GLOBAL_MODES = ["NO_TRADE", "ONLY_EXITS", "ALLOW_NEW_ENTRIES"]
+
+
+def _normalize_global_mode(v: Any, default: str = "NO_TRADE") -> str:
+    if not isinstance(v, str):
+        return default
+    s = v.strip().upper()
+    return s if s in _ALLOWED_GLOBAL_MODES else default
+
+
+def _control_state_path(data_dir: Path) -> Path:
+    return data_dir / "control_state.json"
+
+
+def _load_control_state(data_dir: Path) -> Dict[str, Any]:
+    """
+    BOM-safe read of control_state.json.
+    Returns dict with guaranteed 'global_mode' key (normalized).
+    """
+    p = _control_state_path(data_dir)
+    if not p.exists():
+        return {"_ok": True, "_exists": False, "_path": str(p), "global_mode": "NO_TRADE"}
+
+    try:
+        with p.open("r", encoding="utf-8-sig", errors="replace") as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict):
+            obj = {}
+        obj["global_mode"] = _normalize_global_mode(obj.get("global_mode"), default="NO_TRADE")
+        obj["_ok"] = True
+        obj["_exists"] = True
+        obj["_path"] = str(p)
+        return obj
+    except Exception as e:
+        return {"_ok": False, "_exists": True, "_path": str(p), "_error": str(e), "global_mode": "NO_TRADE"}
+
+
+def _save_control_state(data_dir: Path, global_mode: str) -> Tuple[bool, str]:
+    p = _control_state_path(data_dir)
+    try:
+        obj = {"global_mode": _normalize_global_mode(global_mode, default="NO_TRADE")}
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Write without BOM; readers are BOM-safe anyway.
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        return True, str(p)
+    except Exception as e:
+        return False, str(e)
+
+
+# -----------------------------
+# Step 5 UI: MA Explain helpers
+# -----------------------------
+def _evt_type(e: dict) -> str:
+    for k in ("type", "kind", "event_type", "name"):
+        v = e.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().upper()
+    return ""
+
+
+def _dg(d: dict, path: str, default=None):
+    cur = d
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return default
+        cur = cur[p]
+    return cur
+
+
+def _fmt(v):
+    if v is None:
+        return "None"
+    if isinstance(v, float):
+        return f"{v:.6g}"
+    return str(v)
+
+
+def _extract_ma_explain(evt: dict, control_state: dict) -> dict:
+    ma_input = evt.get("ma_input", {}) if isinstance(evt.get("ma_input"), dict) else {}
+    state_d = ma_input.get("state", {}) if isinstance(ma_input.get("state"), dict) else {}
+    risk_d = ma_input.get("risk", {}) if isinstance(ma_input.get("risk"), dict) else {}
+
+    re_d = evt.get("risk_envelope", {}) if isinstance(evt.get("risk_envelope"), dict) else {}
+    limits = re_d.get("limits", {}) if isinstance(re_d.get("limits"), dict) else {}
+
+    operator_mode = None
+    if isinstance(control_state, dict):
+        operator_mode = control_state.get("global_mode")
+
+    exec_mode = _dg(ma_input, "exec.global_mode", None)
+    re_exec_mode = re_d.get("exec_global_mode", None)
+
+    out = {
+        "operator_global_mode": operator_mode,
+        "ma_input_exec_global_mode": exec_mode,
+        "risk_envelope_exec_global_mode": re_exec_mode,
+        "ma_decision": evt.get("ma_decision"),
+        "enforced_no_trade": re_d.get("enforced_no_trade"),
+        "risk_mode": re_d.get("mode"),
+        "mode_source": re_d.get("mode_source"),
+        "mode_invariant_ok": re_d.get("mode_invariant_ok", None),
+        "truth": {
+            "state.regime": state_d.get("regime"),
+            "state.confidence": state_d.get("confidence"),
+            "state.tail_risk": state_d.get("tail_risk"),
+            "risk.margin_usage": risk_d.get("margin_usage"),
+        },
+        "limits": {
+            "conf_min": limits.get("conf_min"),
+            "margin_max": limits.get("margin_max"),
+        },
+        "violations": evt.get("violations", []) if isinstance(evt.get("violations"), list) else [],
+    }
+    return out
+
+
+def _compute_mismatch_flags(explain: dict) -> List[str]:
+    flags: List[str] = []
+
+    op = str(explain.get("operator_global_mode") or "").strip().upper()
+    ex = str(explain.get("ma_input_exec_global_mode") or "").strip().upper()
+    rx = str(explain.get("risk_mode") or "").strip().upper()
+    dec = str(explain.get("ma_decision") or "").strip().upper()
+    enforced = bool(explain.get("enforced_no_trade"))
+
+    inv = explain.get("mode_invariant_ok", None)
+    if inv is False:
+        flags.append("risk_envelope.mode_invariant_ok == false")
+
+    if dec == "ALLOW" and rx == "NO_TRADE":
+        flags.append("ma_decision=ALLOW while risk_envelope.mode=NO_TRADE")
+
+    if (not enforced) and ex == "ALLOW_NEW_ENTRIES" and rx != "ALLOW_NEW_ENTRIES":
+        flags.append("exec.global_mode=ALLOW_NEW_ENTRIES but risk_envelope.mode != ALLOW_NEW_ENTRIES")
+
+    if op and ex and op != ex:
+        flags.append(f"operator global_mode ({op}) != ma_input.exec.global_mode ({ex})")
+
+    return flags
+
+
+def _render_step5_ma_explain(evt: dict, control_state: dict) -> None:
+    if not isinstance(evt, dict) or not evt:
+        st.info("No selected event to explain.")
+        return
+
+    ex = _extract_ma_explain(evt, control_state)
+    mism = _compute_mismatch_flags(ex)
+
+    st.subheader("Step 5 — MA / Control Plane Explain")
+
+    # Control Plane Echo
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Operator global_mode", _fmt(ex["operator_global_mode"]))
+    c2.metric("ma_input.exec.global_mode", _fmt(ex["ma_input_exec_global_mode"]))
+    c3.metric("risk_envelope.exec_global_mode", _fmt(ex["risk_envelope_exec_global_mode"]))
+
+    # Core decision/mode
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("ma_decision", _fmt(ex["ma_decision"]))
+    d2.metric("enforced_no_trade", _fmt(ex["enforced_no_trade"]))
+    d3.metric("risk_envelope.mode", _fmt(ex["risk_mode"]))
+    d4.metric("mode_source", _fmt(ex["mode_source"]))
+
+    if mism:
+        st.error("MISMATCH / FLAGS:\n- " + "\n- ".join(mism))
+
+    # Truth snapshot + limits
+    st.markdown("**Truth snapshot (ma_input) + limits**")
+    truth = ex["truth"]
+    lim = ex["limits"]
+    rows = [
+        {"field": "state.regime", "value": _fmt(truth.get("state.regime")), "limit": ""},
+        {"field": "state.confidence", "value": _fmt(truth.get("state.confidence")), "limit": f"conf_min={_fmt(lim.get('conf_min'))}"},
+        {"field": "state.tail_risk", "value": _fmt(truth.get("state.tail_risk")), "limit": ""},
+        {"field": "risk.margin_usage", "value": _fmt(truth.get("risk.margin_usage")), "limit": f"margin_max={_fmt(lim.get('margin_max'))}"},
+    ]
+    st.table(rows)
+
+    # Violations list
+    v = ex["violations"]
+    st.markdown(f"**Violations** ({len(v)})")
+    if v:
+        st.table(
+            [
+                {
+                    "block": x.get("block"),
+                    "rule_id": x.get("rule_id"),
+                    "decision": x.get("decision"),
+                    "reason": x.get("reason"),
+                }
+                for x in v[:30]
+                if isinstance(x, dict)
+            ]
+        )
+    else:
+        st.write("No violations in this event.")
+
+    # Dominance hint
+    if bool(ex.get("enforced_no_trade")) and str(ex.get("ma_input_exec_global_mode") or "").strip().upper() == "ALLOW_NEW_ENTRIES":
+        st.info("Operator ALLOW_NEW_ENTRIES is dominated by enforced_no_trade (expected).")
+
+
+# -----------------------------
+# JSON helpers
+# -----------------------------
 def read_json_safe(path: Path) -> Dict[str, Any]:
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             return json.load(f)
     except Exception as e:
         return {"_ok": False, "_error": str(e)}
@@ -219,7 +430,7 @@ _RX_EVENTS = re.compile(r"^events_run_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_ORDERS = re.compile(r"^orders_paper_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_REPORT = re.compile(r"^run_report_(?P<rid>.+)_paper\.json$", re.IGNORECASE)
 
-# Stage 4.3 artifacts
+# Stage 4.x artifacts
 _RX_OI = re.compile(r"^order_intents_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_PAYLOAD = re.compile(r"^orders_payload_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 _RX_SENDPLAN = re.compile(r"^orders_sendplan_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
@@ -252,11 +463,6 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
             m = _RX_ORDERS.match(p.name)
             if m:
                 register(m.group("rid"), "orders", p)
-                continue
-
-            m = _RX_REPORT.match(p.name)
-            if m:
-                register(m.group("rid"), "report", p)
                 continue
 
             m = _RX_OI.match(p.name)
@@ -371,7 +577,7 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
                 return
 
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 if total >= max_lines:
                     break
@@ -409,12 +615,87 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
     }
 
 
+def _scan_tick_events(events_path: Path, max_ticks: int = 250, max_lines: int = 250_000) -> List[Dict[str, Any]]:
+    """
+    Load up to max_ticks TICK events (BOM-safe), bounded by max_lines.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        with events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
+            seen = 0
+            for line in f:
+                if seen >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                seen += 1
+                try:
+                    e = json.loads(line)
+                    if not isinstance(e, dict):
+                        continue
+                    if _evt_type(e) == "TICK":
+                        out.append(e)
+                        if len(out) >= max_ticks:
+                            break
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out
+
+
+def _tick_label(e: Dict[str, Any]) -> str:
+    idx = _dg(e, "bar.index", None)
+    if idx is None:
+        idx = _dg(e, "ma_input.bar.index", None)
+    if idx is None:
+        idx = e.get("index")
+
+    ts = _dg(e, "bar.ts", None)
+    if ts is None:
+        ts = _dg(e, "ma_input.bar.ts", None)
+    if ts is None:
+        ts = e.get("ts")
+
+    dec = e.get("ma_decision") or e.get("decision") or ""
+    mode = _dg(e, "risk_envelope.mode", None)
+    enforced = _dg(e, "risk_envelope.enforced_no_trade", None)
+    v = e.get("violations", [])
+    vcount = len(v) if isinstance(v, list) else 0
+    return f"idx={idx} ts={ts} dec={dec} mode={mode} enforced={enforced} v={vcount}"
+
+
+_STEP6_EVENT_TYPES = {"ORDER_INTENT", "ORDER_SUBMIT", "ORDER_ACK", "ORDER_REJECT", "ORDER_FILL", "EXEC_FILL"}
+
+
+def _summarize_step6_events(events_path: Path, max_lines: int = 250_000) -> Dict[str, int]:
+    counts: Dict[str, int] = defaultdict(int)
+    try:
+        with events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
+            seen = 0
+            for line in f:
+                if seen >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                seen += 1
+                try:
+                    e = json.loads(line)
+                    if not isinstance(e, dict):
+                        continue
+                    t = _evt_type(e)
+                    if t in _STEP6_EVENT_TYPES:
+                        counts[t] += 1
+                except Exception:
+                    continue
+    except Exception:
+        return {}
+    return dict(sorted(counts.items(), key=lambda kv: kv[0]))
+
+
 def summarize_order_intents_jsonl(path: Path, tail_n: int = 15, max_lines: int = 250_000) -> Dict[str, Any]:
-    """
-    Stage 4.3 contract file:
-    order_intents_<run_id>.jsonl
-    Expected keys: kind, kind_raw, mode, gate_reason
-    """
     total = 0
     parse_errors = 0
     none = 0
@@ -425,7 +706,7 @@ def summarize_order_intents_jsonl(path: Path, tail_n: int = 15, max_lines: int =
     tail_raw: deque[str] = deque(maxlen=tail_n)
 
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 if total >= max_lines:
                     break
@@ -487,7 +768,7 @@ def summarize_payload_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_0
         return "UNKNOWN"
 
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 if total >= max_lines:
                     break
@@ -530,7 +811,7 @@ def summarize_sendplan_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_
         return "UNKNOWN"
 
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 if total >= max_lines:
                     break
@@ -606,9 +887,47 @@ def ibkr_csv_status(csv_path: Path, max_scan_lines: int = 5_000) -> Dict[str, An
 # Streamlit tab renderer
 # -----------------------------
 def render_run_explorer_tab() -> None:
-    st.subheader("Run Explorer (read-only)")
+    st.subheader("Run Explorer (OPS / Observability)")
 
     data_dir, logs_dir = default_dirs()
+
+    # Load control state (BOM-safe)
+    control_state = _load_control_state(data_dir)
+
+    # -----------------------------
+    # Control Plane panel
+    # -----------------------------
+    with st.expander("Control Plane (control_state.json)", expanded=True):
+        p = control_state.get("_path")
+        ok = control_state.get("_ok", True)
+        if not ok:
+            st.error(f"Failed to read control_state.json: {control_state.get('_error')}")
+        st.caption(f"Path: {p}")
+
+        operator_mode = bool(st.session_state.get("operator_mode", True))
+        current_mode = _normalize_global_mode(control_state.get("global_mode"), default="NO_TRADE")
+        st.caption(f"File global_mode (loaded): {current_mode}")
+
+        c1, c2, c3 = st.columns([2, 1, 2])
+        with c1:
+            new_mode = st.selectbox(
+                "global_mode",
+                _ALLOWED_GLOBAL_MODES,
+                index=_ALLOWED_GLOBAL_MODES.index(current_mode) if current_mode in _ALLOWED_GLOBAL_MODES else 0,
+                key="cp_global_mode_select",
+                help="Operator intent. Can be dominated by enforced_no_trade.",
+                disabled=not operator_mode,
+            )
+        with c2:
+            if st.button("Save", key="cp_save_btn", disabled=not operator_mode):
+                ok2, msg = _save_control_state(data_dir, new_mode)
+                if ok2:
+                    st.success(f"Saved: {msg}")
+                    _st_rerun()
+                else:
+                    st.error(f"Save failed: {msg}")
+        with c3:
+            st.caption("Operator mode controls whether Save is enabled (safe-by-default).")
 
     # -----------------------------
     # Ops status (read-only)
@@ -658,12 +977,11 @@ def render_run_explorer_tab() -> None:
         if conn.get("ok"):
             host = conn["host"]
             port = conn["port"]
-            ok = _tcp_check(host, port)
-            st.caption(f"TWS socket: {host}:{port} -> {'OK' if ok else 'DOWN'}")
+            ok3 = _tcp_check(host, port)
+            st.caption(f"TWS socket: {host}:{port} -> {'OK' if ok3 else 'DOWN'}")
         else:
             st.caption(f"TWS socket: config read failed ({conn.get('error')})")
 
-        # Stage 4.4: latest order_intents freshness (if any)
         latest_oi = _latest_matching(data_dir, prefix="order_intents_", suffix=".jsonl")
         if latest_oi:
             oi = _mtime_info(latest_oi)
@@ -788,6 +1106,41 @@ def render_run_explorer_tab() -> None:
             st.write("Decision histogram:")
             st.json(ev["decision_counts"])
 
+            # Step 6: execution event counts (may be empty until Step 6 is implemented)
+            st.write("Step 6 event counts (if present):")
+            st.json(_summarize_step6_events(selected.events_path))
+
+            # Step 5 Explain: pick a TICK
+            ticks = _scan_tick_events(selected.events_path, max_ticks=250)
+            if ticks:
+                # default to first problematic tick if any (violations or enforced_no_trade)
+                def score(t: Dict[str, Any]) -> int:
+                    v = t.get("violations", [])
+                    vcount = len(v) if isinstance(v, list) else 0
+                    enforced = bool(_dg(t, "risk_envelope.enforced_no_trade", False))
+                    return (10 if enforced else 0) + (1 if vcount > 0 else 0) + vcount
+
+                best_i = 0
+                best_s = -1
+                for i, t in enumerate(ticks):
+                    s = score(t)
+                    if s > best_s:
+                        best_s = s
+                        best_i = i
+
+                labels = [_tick_label(t) for t in ticks]
+                sel_i = st.selectbox(
+                    "Select TICK for Step 5 Explain",
+                    list(range(len(labels))),
+                    index=best_i,
+                    format_func=lambda i: labels[i],
+                    key=f"runx_tick_select_{selected.run_id}",
+                )
+                selected_tick = ticks[int(sel_i)]
+                _render_step5_ma_explain(selected_tick, control_state)
+            else:
+                st.info("No TICK events found to explain (unexpected for paper loop).")
+
             with st.expander("Tail (last 25 lines)", expanded=False):
                 st.code("\n".join(ev["tail_raw"]), language="json")
     else:
@@ -816,9 +1169,9 @@ def render_run_explorer_tab() -> None:
     st.divider()
 
     # -----------------------------
-    # Stage 4.4: Order Intents / Payload / Sendplan
+    # Stage 4.x — WA artifacts (existing)
     # -----------------------------
-    st.markdown("### Stage 4.4 — WA artifacts")
+    st.markdown("### Stage 4.x — WA artifacts")
 
     # Order intents
     st.markdown("#### Order Intents (order_intents_*.jsonl)")
