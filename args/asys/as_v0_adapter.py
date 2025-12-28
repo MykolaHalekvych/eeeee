@@ -259,7 +259,7 @@ def derive_ma_input_from_bar(
     bars: Optional[List[Bar5m]] = None,
     *,
     # Optional knobs for offline scaffolding:
-    qc: str = "OK",
+    qc: str = "PASS",
     stale_quotes: bool = False,
     missing_bars: int = 0,
     timestamp_drift_ms: int = 0,
