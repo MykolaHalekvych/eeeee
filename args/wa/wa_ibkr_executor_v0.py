@@ -8,7 +8,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
+
+from args.wa.order_ledger_v0 import OrderLedgerV0, compute_idempotency_key_from_plan
 
 SCHEMA_VERSION = "wa_ibkr_executor_v0"
 
@@ -32,7 +34,7 @@ def _json_compact(obj: Dict[str, Any]) -> str:
 
 
 def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
 
 
 def _write_jsonl_line(f, obj: Dict[str, Any]) -> None:
@@ -68,7 +70,6 @@ def _repo_root() -> Path:
 
 
 def _default_contract_path(repo_root: Path, instrument: str) -> Optional[Path]:
-    # Minimal mapping for current project state
     inst = _norm(instrument)
     data_dir = repo_root / "args" / "data"
     if inst == "HG":
@@ -78,11 +79,6 @@ def _default_contract_path(repo_root: Path, instrument: str) -> Optional[Path]:
 
 
 def _extract_contract_dict(plan: Dict[str, Any], repo_root: Path) -> Optional[Dict[str, Any]]:
-    # Priority:
-    # 1) plan["contract"] (dict)
-    # 2) plan["ibkr_contract"] (dict)
-    # 3) plan["contract_path"] (str path to json)
-    # 4) default mapping by instrument
     for k in ("contract", "ibkr_contract"):
         v = plan.get(k)
         if isinstance(v, dict) and v:
@@ -107,11 +103,6 @@ def _extract_contract_dict(plan: Dict[str, Any], repo_root: Path) -> Optional[Di
 
 
 def _extract_order_dict(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    # Priority:
-    # 1) plan["order"] (dict)
-    # 2) plan["ibkr_order"] (dict)
-    # 3) plan["payload"]["order"] (dict)
-    # 4) plan["payload"]["ibkr_order"] (dict)
     for k in ("order", "ibkr_order"):
         v = plan.get(k)
         if isinstance(v, dict) and v:
@@ -128,7 +119,6 @@ def _extract_order_dict(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _safe_setattr(obj: Any, k: str, v: Any) -> None:
-    # IB API objects are permissive; but guard anyway.
     if not isinstance(k, str) or not k:
         return
     try:
@@ -158,14 +148,13 @@ def _dict_to_ib_order(order_dict: Dict[str, Any]):
 @dataclass(frozen=True)
 class IbkrConn:
     host: str = "127.0.0.1"
-    port: int = 7497          # paper default (often 7497). If you use TWS live: 7496.
+    port: int = 7497
     client_id: int = 11
     timeout_s: float = 15.0
 
 
-class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
+class _IBSimpleApp:
     def __init__(self, conn: IbkrConn):
-        # Lazy import to keep module importable even without ibapi installed.
         from ibapi.client import EClient  # type: ignore
         from ibapi.wrapper import EWrapper  # type: ignore
 
@@ -174,7 +163,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
                 EClient.__init__(self, self)
                 self._outer = outer
 
-            # ---- callbacks ----
             def nextValidId(self, orderId: int) -> None:
                 self._outer._on_next_valid_id(orderId)
 
@@ -205,7 +193,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
                     whyHeld=whyHeld,
                 )
 
-            # Newer ibapi includes advancedOrderRejectJson; keep signature flexible.
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:  # type: ignore  # noqa: N802
                 self._outer._on_error(reqId, errorCode, errorString, advancedOrderRejectJson)
 
@@ -225,7 +212,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
         self._app.connect(self._conn.host, int(self._conn.port), int(self._conn.client_id))
         self._thread = threading.Thread(target=self._app.run, daemon=True)
         self._thread.start()
-
         if not self._next_id_ev.wait(timeout=self._conn.timeout_s):
             raise RuntimeError("IBKR connect: timeout waiting for nextValidId()")
 
@@ -241,7 +227,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
         self._next_id_ev.set()
 
     def _on_open_order(self, order_id: int, contract: Any, order: Any, order_state: Any) -> None:
-        # Treat openOrder callback as ACK proxy.
         try:
             st = getattr(order_state, "status", None)
         except Exception:
@@ -253,7 +238,17 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
                 "order_state_status": st,
             }
 
-    def _on_order_status(self, *, orderId: int, status: Any, filled: Any, remaining: Any, avgFillPrice: Any, lastFillPrice: Any, whyHeld: Any) -> None:
+    def _on_order_status(
+        self,
+        *,
+        orderId: int,
+        status: Any,
+        filled: Any,
+        remaining: Any,
+        avgFillPrice: Any,
+        lastFillPrice: Any,
+        whyHeld: Any,
+    ) -> None:
         with self._lock:
             self._status[int(orderId)] = {
                 "event": "orderStatus",
@@ -267,7 +262,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
             }
 
     def _on_error(self, req_id: Any, error_code: Any, error_str: Any, advanced: Any) -> None:
-        # For order rejections, reqId is typically the orderId.
         try:
             oid = int(req_id)
         except Exception:
@@ -280,9 +274,7 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
         }
         if isinstance(advanced, str) and advanced.strip():
             payload["advanced_order_reject_json"] = advanced
-
         with self._lock:
-            # If we can map to a specific order id, store under it; else store under -1.
             self._reject[oid] = payload
 
     def next_order_id(self) -> int:
@@ -303,14 +295,12 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
 
         self._app.placeOrder(int(order_id), contract_obj, order_obj)
 
-        # Wait for ACK (openOrder) or REJECT (error)
         t0 = time.time()
         while (time.time() - t0) < self._conn.timeout_s:
             with self._lock:
                 if int(order_id) in self._reject:
                     return False, dict(self._reject[int(order_id)])
                 if int(order_id) in self._ack:
-                    # attach latest status if present
                     out = dict(self._ack[int(order_id)])
                     st = self._status.get(int(order_id))
                     if isinstance(st, dict):
@@ -318,7 +308,6 @@ class _IBSimpleApp:  # minimal sync-ish wrapper around IB API
                     return True, out
             time.sleep(0.05)
 
-        # timeout: if we got a status update, surface it; else reject by timeout
         with self._lock:
             st = self._status.get(int(order_id))
         if isinstance(st, dict):
@@ -332,22 +321,12 @@ def _try_submit_via_sender_real(
     order_dict: Dict[str, Any],
     conn: IbkrConn,
 ) -> Optional[Tuple[bool, Dict[str, Any]]]:
-    """
-    Best-effort integration with args.ibkr.ibkr_sender_real_v1.py.
-    If no compatible callable is found, return None (caller can fallback to IB API direct).
-    """
     try:
         import args.ibkr.ibkr_sender_real_v1 as sender  # type: ignore
     except Exception:
         return None
 
-    candidates = [
-        "submit_order_v0",
-        "submit_order",
-        "send_order",
-        "place_order",
-        "execute_order",
-    ]
+    candidates = ["submit_order_v0", "submit_order", "send_order", "place_order", "execute_order"]
 
     def _coerce_result(res: Any) -> Optional[Tuple[bool, Dict[str, Any]]]:
         if isinstance(res, tuple) and len(res) == 2:
@@ -366,7 +345,6 @@ def _try_submit_via_sender_real(
         if not callable(fn):
             continue
 
-        # Try common signatures (by keyword first, then positional).
         attempts = [
             lambda: fn(contract_dict=contract_dict, order_dict=order_dict, host=conn.host, port=conn.port, client_id=conn.client_id, timeout_s=conn.timeout_s),
             lambda: fn(contract=contract_dict, order=order_dict, host=conn.host, port=conn.port, client_id=conn.client_id, timeout_s=conn.timeout_s),
@@ -391,7 +369,6 @@ def _is_actionable_plan(plan: Dict[str, Any]) -> bool:
     pk = _norm(plan.get("plan_kind"))
     if pk in ACTIONABLE_PLAN_KINDS:
         return True
-    # Accept any future "PLAN_IBKR_*" as actionable
     if pk.startswith("PLAN_IBKR_"):
         return True
     return False
@@ -417,25 +394,56 @@ def _build_event_base(plan: Dict[str, Any], *, exec_id: str) -> Dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="wa_ibkr_executor_v0")
-    ap.add_argument("--sendplan", required=True, help="Path to orders_sendplan_<run_id>.jsonl")
+
+    # Input selection
+    ap.add_argument("--sendplan", default="", help="Path to orders_sendplan_<run_id>.jsonl (optional if --run-id is given)")
+    ap.add_argument("--run-id", default="", help="If set, will use args/data/orders_sendplan_<run_id>.jsonl")
+
+    # Safety
     ap.add_argument("--execute", default="0", help="0/1. When 1, executor will attempt IBKR placeOrder for actionable plans.")
+    ap.add_argument("--max-orders", type=int, default=0, help="Safety limit: 0 means no limit")
+
+    # Ledger (Stage 5C)
+    ap.add_argument("--ledger-path", default="args/data/order_ledger_v0.jsonl")
+    ap.add_argument("--ledger-enabled", default="1", help="0/1. Enabled only when execute=1")
+    ap.add_argument("--ledger-allow-retry", default="0", help="0/1. SAFE default 0 (no retry after REJECT/ERROR)")
+
+    # Output
     ap.add_argument("--out", default="", help="Optional output JSONL for exec events. Default: args/data/orders_exec_events_<run_id>.jsonl")
+
+    # Connection
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7497)
     ap.add_argument("--client-id", type=int, default=11)
     ap.add_argument("--timeout-s", type=float, default=15.0)
-    ap.add_argument("--max-orders", type=int, default=0, help="Safety limit: 0 means no limit")
-    args = ap.parse_args()
 
+    args = ap.parse_args()
     repo_root = _repo_root()
-    sendplan_path = Path(args.sendplan)
-    if not sendplan_path.is_absolute():
-        sendplan_path = repo_root / sendplan_path
+
+    # Resolve sendplan path
+    run_id_arg = str(args.run_id or "").strip()
+    sendplan_arg = str(args.sendplan or "").strip()
+
+    if not sendplan_arg and not run_id_arg:
+        raise SystemExit("Need --sendplan <path> or --run-id <RUN_ID>")
+
+    if not sendplan_arg and run_id_arg:
+        sendplan_path = repo_root / "args" / "data" / f"orders_sendplan_{run_id_arg}.jsonl"
+    else:
+        sendplan_path = Path(sendplan_arg)
+        if not sendplan_path.is_absolute():
+            sendplan_path = repo_root / sendplan_path
+
     if not sendplan_path.exists():
         raise FileNotFoundError(f"sendplan not found: {sendplan_path}")
 
     execute = _b01(args.execute)
-    conn = IbkrConn(host=str(args.host), port=int(args.port), client_id=int(args.client_id), timeout_s=float(args.timeout_s))
+    conn = IbkrConn(
+        host=str(args.host),
+        port=int(args.port),
+        client_id=int(args.client_id),
+        timeout_s=float(args.timeout_s),
+    )
 
     exec_id = uuid.uuid4().hex[:12]
 
@@ -443,20 +451,22 @@ def main() -> int:
     plans_actionable = 0
     orders_attempted = 0
     orders_skipped = 0
+    orders_skipped_duplicate = 0
     acks = 0
     rejects = 0
     parse_errors = 0
 
-    # Determine run_id from first parsed plan (best-effort)
-    first_run_id: Optional[str] = None
-    for plan in _iter_jsonl_dicts(sendplan_path):
-        rid = plan.get("run_id")
-        if isinstance(rid, str) and rid.strip():
-            first_run_id = rid.strip()
-            break
+    # Determine run_id from first plan (best-effort)
+    first_run_id: Optional[str] = run_id_arg or None
+    if first_run_id is None:
+        for plan in _iter_jsonl_dicts(sendplan_path):
+            rid = plan.get("run_id")
+            if isinstance(rid, str) and rid.strip():
+                first_run_id = rid.strip()
+                break
 
-    out_path: Path
-    if args.out and str(args.out).strip():
+    # Resolve output path
+    if str(args.out or "").strip():
         out_path = Path(str(args.out).strip())
         if not out_path.is_absolute():
             out_path = repo_root / out_path
@@ -466,11 +476,21 @@ def main() -> int:
         suffix = first_run_id or "unknown"
         out_path = data_dir / f"orders_exec_events_{suffix}.jsonl"
 
-    # If execute=1 and we have actionable plans, we open a single IB connection and submit sequentially.
+    # Ledger init (only when execute=1)
+    ledger: Optional[OrderLedgerV0] = None
+    ledger_enabled = _b01(args.ledger_enabled)
+    ledger_allow_retry = _b01(args.ledger_allow_retry)
+    if execute and ledger_enabled:
+        ledger_path = Path(str(args.ledger_path))
+        if not ledger_path.is_absolute():
+            ledger_path = repo_root / ledger_path
+        ledger = OrderLedgerV0(ledger_path)
+
+    # IB connection (lazy)
     ib_app: Optional[_IBSimpleApp] = None
     ib_connected = False
 
-    def _ensure_connected():
+    def _ensure_connected() -> None:
         nonlocal ib_app, ib_connected
         if ib_connected:
             return
@@ -478,7 +498,6 @@ def main() -> int:
         ib_app.connect()
         ib_connected = True
 
-    # Main loop
     with out_path.open("w", encoding="utf-8") as fout:
         for raw_line in sendplan_path.open("r", encoding="utf-8-sig", errors="replace"):
             s = raw_line.strip()
@@ -502,7 +521,7 @@ def main() -> int:
                 continue
             plans_actionable += 1
 
-            # Plan-level execute flag can further gate execution
+            # Plan-level execute gate
             plan_execute = bool(plan.get("execute", False))
             if (not execute) or (not plan_execute):
                 orders_skipped += 1
@@ -534,39 +553,75 @@ def main() -> int:
                     {
                         "kind": "ORDER_REJECT",
                         "reason": "missing_order",
-                        "details": {"error": "No order info in plan (expected plan.order/plan.ibkr_order/...)"}
+                        "details": {"error": "No order info in plan (expected plan.order/plan.ibkr_order/payload.*)"},
                     }
                 )
                 _write_jsonl_line(fout, evt)
                 rejects += 1
                 continue
 
+            # Ledger dedupe: reserve BEFORE submit
+            ledger_key = ""
+            plan_fp = ""
+            if ledger is not None:
+                ledger_key, plan_fp = compute_idempotency_key_from_plan(plan, prefix="ibkr_place_order")
+                reserved = ledger.reserve(
+                    ledger_key,
+                    run_id=str(first_run_id or plan.get("run_id") or "unknown"),
+                    plan_meta={
+                        "plan_kind": plan.get("plan_kind"),
+                        "plan_fp": plan_fp,
+                        "plan_id": plan.get("plan_id"),
+                        "payload_id": plan.get("payload_id"),
+                        "index": plan.get("index"),
+                    },
+                    allow_retry=ledger_allow_retry,
+                )
+                if not reserved:
+                    evt = _build_event_base(plan, exec_id=exec_id)
+                    evt.update(
+                        {
+                            "kind": "ORDER_SKIP_DUPLICATE",
+                            "ledger_key": ledger_key,
+                            "details": {"plan_fp": plan_fp},
+                        }
+                    )
+                    _write_jsonl_line(fout, evt)
+                    orders_skipped_duplicate += 1
+                    continue
+
             orders_attempted += 1
 
-            # 1) Prefer sender_real_v1 if it exposes a compatible callable (thin wrapper intent)
+            # 1) Try sender_real_v1
             sender_res = _try_submit_via_sender_real(contract_dict=contract_dict, order_dict=order_dict, conn=conn)
-
             if sender_res is not None:
                 ok, detail = sender_res
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibkr_sender_real_v1"}
+                if ledger_key:
+                    evt["ledger_key"] = ledger_key
+
                 if ok:
                     evt["kind"] = "ORDER_ACK"
                     evt["details"] = detail
                     acks += 1
+                    if ledger is not None:
+                        ledger.finalize(ledger_key, run_id=str(first_run_id or "unknown"), status="ACK", result={"ack": detail})
                 else:
                     evt["kind"] = "ORDER_REJECT"
                     evt["details"] = detail
                     rejects += 1
+                    if ledger is not None:
+                        ledger.finalize(ledger_key, run_id=str(first_run_id or "unknown"), status="REJECT", result={"reject": detail})
+
                 _write_jsonl_line(fout, evt)
                 continue
 
-            # 2) Fallback: direct IB API (minimal)
+            # 2) Fallback: direct ibapi
             try:
                 _ensure_connected()
                 assert ib_app is not None
 
-                # order_id selection:
                 plan_order_id = plan.get("ibkr_order_id") or plan.get("order_id")
                 if isinstance(plan_order_id, int):
                     order_id = int(plan_order_id)
@@ -580,18 +635,28 @@ def main() -> int:
 
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibapi_direct", "order_id": int(order_id)}
+                if ledger_key:
+                    evt["ledger_key"] = ledger_key
+
                 if ok:
                     evt["kind"] = "ORDER_ACK"
                     evt["details"] = detail
                     acks += 1
+                    if ledger is not None:
+                        ledger.finalize(ledger_key, run_id=str(first_run_id or "unknown"), status="ACK", result={"ack": detail})
                 else:
                     evt["kind"] = "ORDER_REJECT"
                     evt["details"] = detail
                     rejects += 1
+                    if ledger is not None:
+                        ledger.finalize(ledger_key, run_id=str(first_run_id or "unknown"), status="REJECT", result={"reject": detail})
+
                 _write_jsonl_line(fout, evt)
 
             except Exception as e:
                 evt = _build_event_base(plan, exec_id=exec_id)
+                if ledger_key:
+                    evt["ledger_key"] = ledger_key
                 evt.update(
                     {
                         "kind": "ORDER_REJECT",
@@ -601,8 +666,14 @@ def main() -> int:
                 )
                 _write_jsonl_line(fout, evt)
                 rejects += 1
+                if ledger is not None and ledger_key:
+                    ledger.finalize(
+                        ledger_key,
+                        run_id=str(first_run_id or "unknown"),
+                        status="ERROR",
+                        result={"error": {"type": type(e).__name__, "msg": str(e)}},
+                    )
 
-    # Cleanup connection if we opened it
     if ib_app is not None:
         try:
             ib_app.disconnect()
@@ -615,11 +686,17 @@ def main() -> int:
         "execute": execute,
         "sendplan_path": str(sendplan_path),
         "out_path": str(out_path),
+        "ledger": {
+            "enabled": bool(ledger is not None),
+            "path": str((repo_root / Path(str(args.ledger_path))).resolve()) if (execute and ledger_enabled) else "",
+            "allow_retry": ledger_allow_retry,
+        },
         "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
         "plans_seen": plans_seen,
         "plans_actionable": plans_actionable,
         "orders_attempted": orders_attempted,
         "orders_skipped": orders_skipped,
+        "orders_skipped_duplicate": orders_skipped_duplicate,
         "acks": acks,
         "rejects": rejects,
         "parse_errors": parse_errors,
