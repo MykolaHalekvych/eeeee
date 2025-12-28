@@ -94,6 +94,7 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
     for i, r in enumerate(slice_rows, start=cfg.start_index):
         bar = parse_bar_row(r)
 
+        # Build MA input (deterministic)
         ma_input = derive_ma_input_from_bar(
             bar,
             qc=qc_default,
@@ -130,13 +131,12 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                     "index": i,
                     "ts": bar.ts,
                     "safety": safety.to_dict(),
+                    "ma_input": ma_input,  # forensic visibility
                 },
             )
             break
 
         if safety.decision == "NO_DECISION":
-            # Stage A semantics:
-            # NO_DECISION is a first-class "no-trade" signal before MA.
             summary["processed"] += 1
             summary["safety_no_decision"] += 1
             summary["ma_decisions"]["NO_DECISION"] = summary["ma_decisions"].get("NO_DECISION", 0) + 1
@@ -148,12 +148,10 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                     "index": i,
                     "ts": bar.ts,
                     "safety": safety.to_dict(),
+                    "ma_input": ma_input,  # forensic visibility
                 },
             )
 
-            # Emit a TICK record but keep it explicit:
-            # - ma_decision is NO_DECISION (not part of MA decision_set)
-            # - include mode-like fields to prevent downstream confusion
             _append_jsonl(
                 cfg.out_events,
                 {
@@ -175,6 +173,8 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                         "enforced_no_trade": True,
                         "note": "live_safety_no_decision",
                     },
+                    "position_state": ma_input.get("position_state") if isinstance(ma_input.get("position_state"), dict) else None,
+                    "ma_input": ma_input,  # Stage 5.7.2
                     "safety": safety.to_dict(),
                 },
             )
@@ -194,6 +194,7 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                     "ts": bar.ts,
                     "missing_paths": res.missing_paths,
                     "unknown_top_level_keys": res.unknown_top_level_keys,
+                    "ma_input": ma_input,  # forensic visibility
                 },
             )
             continue
@@ -207,7 +208,6 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
         summary["processed"] += 1
         summary["ma_decisions"][decision] = summary["ma_decisions"].get(decision, 0) + 1
 
-        # include risk_envelope + position_state if present (for downstream gating)
         risk_env = report.get("risk_envelope", {})
         if not isinstance(risk_env, dict):
             risk_env = {}
@@ -230,6 +230,7 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                 "violations": report.get("violations", []),
                 "risk_envelope": risk_env,
                 "position_state": ma_input.get("position_state") if isinstance(ma_input.get("position_state"), dict) else None,
+                "ma_input": ma_input,  # Stage 5.7.2
                 "safety": safety.to_dict(),
             },
         )
@@ -266,4 +267,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
