@@ -1,3 +1,4 @@
+
 # args/wa/order_payload_v0.py
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, Optional
 
 
 # -----------------------------
@@ -16,15 +17,20 @@ SCHEMA_VERSION = "order_payload_v0"
 
 # What we emit into orders_payload_*.jsonl
 PAYLOAD_KIND_NONE = "PAYLOAD_NONE"
-PAYLOAD_KIND_IBKR_ORDER = "IBKR_ORDER"
+PAYLOAD_KIND_IBKR_ORDER = "PAYLOAD_IBKR_ORDER"   # normalized name (used by sendplan/executor)
 
 
 @dataclass(frozen=True)
 class PayloadBuildConfig:
-    execute: bool = False            # SAFE DEFAULT: never send real orders from this stage
-    default_qty: int = 1             # used only if intent doesn't specify qty
-    order_type: str = "MKT"          # MKT only for stub payloads
-    tif: str = "DAY"                 # day orders for stub payloads
+    execute: bool = False                 # SAFE DEFAULT: never send real orders from this stage
+    default_qty: int = 1                  # used only if intent doesn't specify qty
+    order_type: str = "MKT"               # stub order type
+    tif: str = "DAY"                      # stub tif
+
+    # 5B engineer test: force exactly one actionable order payload
+    force_one_order: bool = False         # when True: turn the first payload into IBKR order
+    force_order_side: str = "BUY"         # BUY/SELL
+    force_order_symbol: str = "HG"        # fallback symbol if intent.instrument missing
 
 
 # -----------------------------
@@ -82,22 +88,24 @@ def _payload_id(intent: Dict[str, Any]) -> str:
 
 
 def _is_entry_intent(kind_u: str) -> bool:
-    # future-proof: any "ENTER" is treated as new entry
     return "ENTER" in kind_u or "OPEN" in kind_u or "NEW" in kind_u
 
 
 def _is_exit_intent(kind_u: str) -> bool:
-    # future-proof: any "EXIT"/"CLOSE" is treated as exit
     return "EXIT" in kind_u or "CLOSE" in kind_u
 
 
 def _side_from_kind(kind_u: str) -> Optional[str]:
-    # very conservative mapping; extend later when strategy defines kinds.
     if "LONG" in kind_u or "BUY" in kind_u:
         return "BUY"
     if "SHORT" in kind_u or "SELL" in kind_u:
         return "SELL"
     return None
+
+
+def _normalize_side(v: Any, default: str = "BUY") -> str:
+    s = _u(v)
+    return s if s in ("BUY", "SELL") else default
 
 
 def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[str, Any]:
@@ -107,7 +115,7 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
 
     kind_u = _u(intent.get("kind") or intent.get("kind_raw"))
     instrument = _s(intent.get("instrument"))
-    timeframe = _s(intent.get("timeframe") or intent.get("timeframe"))
+    timeframe = _s(intent.get("timeframe"))
     env = _s(intent.get("env"))
 
     mode = _u(intent.get("mode"))
@@ -156,7 +164,7 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
         return payload
 
     # Otherwise: produce an IBKR_ORDER stub payload (still execute=False by default)
-    side = _side_from_kind(kind_u) or "BUY"  # default BUY for any non-mapped kind (placeholder)
+    side = _side_from_kind(kind_u) or "BUY"
     qty = intent.get("qty")
     try:
         qty_i = int(qty) if qty is not None else int(cfg.default_qty)
@@ -167,15 +175,14 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
 
     payload["payload_kind"] = PAYLOAD_KIND_IBKR_ORDER
     payload["ibkr"] = {
-        # NOTE: This is a "contract hint" stub. Real contract resolution happens later.
         "contract": {
-            "symbol": instrument or "UNKNOWN",
+            "symbol": instrument or cfg.force_order_symbol or "HG",
             "secType": "FUT",
             "exchange": "SMART",
             "currency": "USD",
         },
         "order": {
-            "action": side,
+            "action": _normalize_side(side),
             "orderType": str(cfg.order_type),
             "totalQuantity": qty_i,
             "tif": str(cfg.tif),
@@ -186,7 +193,6 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
 
 
 def _default_out_path(intents_path: Path) -> Path:
-    # expects: order_intents_<run_id>.jsonl
     name = intents_path.name
     run_id = name
     if name.lower().startswith("order_intents_"):
@@ -196,7 +202,11 @@ def _default_out_path(intents_path: Path) -> Path:
     return intents_path.parent / f"orders_payload_{run_id}.jsonl"
 
 
-def write_orders_payload(intents_path: Path, out_path: Optional[Path] = None, cfg: Optional[PayloadBuildConfig] = None) -> Dict[str, Any]:
+def write_orders_payload(
+    intents_path: Path,
+    out_path: Optional[Path] = None,
+    cfg: Optional[PayloadBuildConfig] = None
+) -> Dict[str, Any]:
     cfg = cfg or PayloadBuildConfig()
     out_path = out_path or _default_out_path(intents_path)
 
@@ -204,15 +214,41 @@ def write_orders_payload(intents_path: Path, out_path: Optional[Path] = None, cf
     none_cnt = 0
     ibkr_cnt = 0
 
+    forced_done = False
+
     def rows() -> Iterator[Dict[str, Any]]:
-        nonlocal total, none_cnt, ibkr_cnt
+        nonlocal total, none_cnt, ibkr_cnt, forced_done
         for intent in _iter_jsonl(intents_path):
             total += 1
             payload = intent_to_payload(intent, cfg)
+
+            # 5B engineering probe: force exactly one IBKR order payload.
+            # This does NOT change execute flag; execute is controlled separately.
+            if cfg.force_one_order and (not forced_done):
+                payload["payload_kind"] = PAYLOAD_KIND_IBKR_ORDER
+                payload["reason"] = "force_one_order_probe"
+                inst = payload.get("instrument") or cfg.force_order_symbol or "HG"
+                payload["ibkr"] = {
+                    "contract": {
+                        "symbol": str(inst),
+                        "secType": "FUT",
+                        "exchange": "SMART",
+                        "currency": "USD",
+                    },
+                    "order": {
+                        "action": _normalize_side(cfg.force_order_side, default="BUY"),
+                        "orderType": str(cfg.order_type),
+                        "totalQuantity": int(cfg.default_qty),
+                        "tif": str(cfg.tif),
+                    },
+                }
+                forced_done = True
+
             if payload.get("payload_kind") == PAYLOAD_KIND_IBKR_ORDER:
                 ibkr_cnt += 1
             else:
                 none_cnt += 1
+
             yield payload
 
     written = _write_jsonl(out_path, rows())
@@ -223,6 +259,7 @@ def write_orders_payload(intents_path: Path, out_path: Optional[Path] = None, cf
         "intents_path": str(intents_path),
         "out_path": str(out_path),
         "execute": bool(cfg.execute),
+        "force_one_order": bool(cfg.force_one_order),
         "intents_total": total,
         "payload_written": written,
         "payload_none": none_cnt,
@@ -234,18 +271,31 @@ def write_orders_payload(intents_path: Path, out_path: Optional[Path] = None, cf
 # CLI
 # -----------------------------
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="order_payload_v0", description="Build orders_payload_<run_id>.jsonl from order_intents_<run_id>.jsonl")
+    ap = argparse.ArgumentParser(
+        prog="order_payload_v0",
+        description="Build orders_payload_<run_id>.jsonl from order_intents_<run_id>.jsonl",
+    )
     ap.add_argument("--intents", required=True, help="Path to order_intents_<run_id>.jsonl")
     ap.add_argument("--out", default="", help="Optional output path (default derived from intents filename)")
     ap.add_argument("--execute", default="0", help="0/1. SAFE DEFAULT=0. Keep 0 for paper.")
     ap.add_argument("--default-qty", type=int, default=1)
+
+    # 5B probe
+    ap.add_argument("--force-one-order", type=int, default=0, help="0/1. Force exactly one IBKR order payload (probe).")
+    ap.add_argument("--force-order-side", default="BUY", help="BUY/SELL (only used with --force-one-order 1)")
+    ap.add_argument("--force-order-symbol", default="HG", help="Fallback symbol (only used with --force-one-order 1)")
+
     args = ap.parse_args()
 
     intents_path = Path(args.intents)
     out_path = Path(args.out) if args.out else None
+
     cfg = PayloadBuildConfig(
         execute=str(args.execute).strip() in ("1", "true", "TRUE", "yes", "YES"),
         default_qty=int(args.default_qty),
+        force_one_order=bool(int(args.force_one_order)),
+        force_order_side=_normalize_side(args.force_order_side, default="BUY"),
+        force_order_symbol=str(args.force_order_symbol or "HG"),
     )
 
     summary = write_orders_payload(intents_path=intents_path, out_path=out_path, cfg=cfg)
