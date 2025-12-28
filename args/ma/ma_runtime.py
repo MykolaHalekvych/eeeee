@@ -11,7 +11,7 @@ Key properties:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from args.ma.policy_loader import Policy
 from args.ma.rule_engine import eval_expr
@@ -33,6 +33,8 @@ BLOCK_ORDER = [
     "correlation_gates",
     "kill_switch.triggers",
 ]
+
+_VALID_GLOBAL_MODES = {"NO_TRADE", "ONLY_EXITS", "ALLOW_NEW_ENTRIES"}
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,84 @@ def _strictest(decisions: List[str], default: str = "UNKNOWN") -> str:
             best = d
             best_p = p
     return best
+
+
+def _normalize_global_mode(v: Any) -> Optional[str]:
+    if not isinstance(v, str):
+        return None
+    s = v.strip().upper()
+    return s if s in _VALID_GLOBAL_MODES else None
+
+
+def _extract_pos_from_position_state(position_state: Any) -> float:
+    """
+    Best-effort extraction of net position.
+
+    Supports common shapes used across ARGS:
+      - position_state.size (int)
+      - position_state.pos / net_pos / qty / net_qty
+    """
+    if position_state is None:
+        return 0.0
+
+    if isinstance(position_state, Mapping):
+        for k in ("pos", "net_pos", "size", "position", "position_qty", "qty", "net_qty"):
+            if k in position_state:
+                try:
+                    return float(position_state.get(k) or 0.0)
+                except Exception:
+                    return 0.0
+        return 0.0
+
+    for attr in ("pos", "net_pos", "size", "position", "position_qty", "qty", "net_qty"):
+        if hasattr(position_state, attr):
+            try:
+                return float(getattr(position_state, attr) or 0.0)
+            except Exception:
+                return 0.0
+
+    return 0.0
+
+
+def _get_exec_global_mode(ctx: Mapping[str, Any]) -> Optional[str]:
+    """
+    Stage 5.8+: authoritative operator intent is ctx.exec.global_mode.
+    """
+    try:
+        ex = ctx.get("exec", {})
+        if isinstance(ex, Mapping):
+            return _normalize_global_mode(ex.get("global_mode"))
+    except Exception:
+        pass
+    return None
+
+
+def compute_risk_envelope_mode(
+    *,
+    enforced_no_trade: bool,
+    position_state: Any,
+    exec_global_mode: Optional[str],
+) -> Tuple[str, str]:
+    """
+    Spec:
+      1) enforced_no_trade=True => mode NO_TRADE always
+      2) else base mode depends on position_state:
+            pos!=0 => ONLY_EXITS
+            pos==0 => NO_TRADE
+      3) then override from ctx.exec.global_mode (NO_TRADE/ONLY_EXITS/ALLOW_NEW_ENTRIES)
+    Returns: (final_mode, mode_source)
+      mode_source: ENFORCED | BASE_POSITION | EXEC_OVERRIDE
+    """
+    if enforced_no_trade:
+        return "NO_TRADE", "ENFORCED"
+
+    pos = _extract_pos_from_position_state(position_state)
+    base_mode = "ONLY_EXITS" if abs(pos) > 1e-12 else "NO_TRADE"
+
+    if exec_global_mode in _VALID_GLOBAL_MODES:
+        return exec_global_mode, "EXEC_OVERRIDE"
+
+    return base_mode, "BASE_POSITION"
 
 
 def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -166,70 +246,36 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
     else:
         ma_decision_raw = "UNKNOWN"
 
-    # 3) Risk envelope core
-    # Enforced NO_TRADE if any rule enforces it OR raw decision is unsafe.
+    # 3) Enforcement + Risk envelope (single computation; no overwrites)
     enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"})
 
-    # Position state (Stage 4.0)
-    pos_size = 0
-    try:
-        ps = ctx.get("position_state", {})
-        if isinstance(ps, dict):
-            pos_size = int(ps.get("size", 0) or 0)
-    except Exception:
-        pos_size = 0
+    ps = ctx.get("position_state", {})
+    pos_val = _extract_pos_from_position_state(ps)
+    has_position = abs(pos_val) > 1e-12
 
-    has_position = (pos_size != 0)
+    exec_global_mode = _get_exec_global_mode(ctx)
 
-    # Default safe behavior:
-    # - if has_position => ONLY_EXITS (until explicit entry permission exists)
-    # - else => NO_TRADE
-    mode = "ONLY_EXITS" if has_position else "NO_TRADE"
+    mode, mode_source = compute_risk_envelope_mode(
+        enforced_no_trade=enforced_no_trade,
+        position_state=ps,
+        exec_global_mode=exec_global_mode,
+    )
 
-    # Enforced no-trade always dominates
-    if enforced_no_trade:
-        mode = "NO_TRADE"
-    else:
-        # Optional override via control plane (explicit operator intent)
-        # This does NOT bypass enforced_no_trade gates.
-        control_mode = None
-        try:
-            control = ctx.get("control", {})
-            if isinstance(control, dict):
-                control_mode = control.get("global_mode")
-        except Exception:
-            control_mode = None
-
-        if isinstance(control_mode, str) and control_mode.strip().upper() == "ALLOW_NEW_ENTRIES":
-            mode = "ALLOW_NEW_ENTRIES"
+    # Minimal observability invariant (does not change decisions)
+    mode_invariant_ok = True
+    if (not enforced_no_trade) and (exec_global_mode in _VALID_GLOBAL_MODES) and (mode != exec_global_mode):
+        mode_invariant_ok = False
 
     risk_envelope = {
         "limits": dict(policy.risk_limits),
         "enforced_no_trade": enforced_no_trade,
         "mode": mode,
+        "mode_source": mode_source,
+        "exec_global_mode": exec_global_mode,
+        "mode_invariant_ok": mode_invariant_ok,
         "has_position": has_position,
-        "position_size": pos_size,
+        "position_size": int(pos_val) if float(pos_val).is_integer() else pos_val,
     }
-    # Enforced no-trade always dominates
-    if enforced_no_trade:
-        mode = "NO_TRADE"
-    else:
-        # Control-plane override via ctx.exec.global_mode (Stage 5.8)
-        control_mode = None
-        try:
-            ex = ctx.get("exec", {})
-            if isinstance(ex, dict):
-                control_mode = ex.get("global_mode")
-        except Exception:
-            control_mode = None
-
-        cm = str(control_mode or "").strip().upper()
-        if cm == "ALLOW_NEW_ENTRIES":
-            mode = "ALLOW_NEW_ENTRIES"
-        elif cm == "ONLY_EXITS":
-            mode = "ONLY_EXITS"
-        elif cm == "NO_TRADE":
-            mode = "NO_TRADE"
 
     # 4) Effective decision
     # If raw decision is UNKNOWN but NO_TRADE is explicitly enforced -> report NO_TRADE as final decision.
