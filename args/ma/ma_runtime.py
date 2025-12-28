@@ -5,8 +5,10 @@ Key properties:
 - Deterministic: same input => same output
 - No side-effects
 - Evaluates ALL rules (no short-circuit), collects violations, then decides
-- UNKNOWN is valid and safety-first (but hard-gates are now deterministic NO_TRADE)
+- UNKNOWN is valid and safety-first
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping
@@ -54,6 +56,9 @@ def _get_by_path(ctx: Mapping[str, Any], path: str) -> bool:
 
 
 def _require_fields_gate(ctx: Mapping[str, Any]) -> List[Violation]:
+    """
+    Built-in hard gate: ensure minimal required fields exist.
+    """
     required_paths = [
         "instrument",
         "timeframe",
@@ -66,6 +71,7 @@ def _require_fields_gate(ctx: Mapping[str, Any]) -> List[Violation]:
     missing = [p for p in required_paths if not _get_by_path(ctx, p)]
     if not missing:
         return []
+
     return [
         Violation(
             rule_id="required_fields_gate",
@@ -102,7 +108,7 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
     decision_votes: List[str] = []
     enforce_flags: List[str] = []
 
-    # 0) Required fields gate (built-in hard gate)
+    # 0) Required fields gate (built-in)
     rf_violations = _require_fields_gate(ctx)
     for v in rf_violations:
         violations.append(v)
@@ -161,9 +167,10 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
         ma_decision_raw = "UNKNOWN"
 
     # 3) Risk envelope core
+    # Enforced NO_TRADE if any rule enforces it OR raw decision is unsafe.
     enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"})
 
-    # Stage 4.0 — position_state -> ONLY_EXITS mode
+    # Position state (Stage 4.0)
     pos_size = 0
     try:
         ps = ctx.get("position_state", {})
@@ -173,10 +180,28 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
         pos_size = 0
 
     has_position = (pos_size != 0)
+
+    # Default safe behavior:
+    # - if has_position => ONLY_EXITS (until explicit entry permission exists)
+    # - else => NO_TRADE
+    mode = "ONLY_EXITS" if has_position else "NO_TRADE"
+
+    # Enforced no-trade always dominates
     if enforced_no_trade:
-        mode = "ONLY_EXITS" if has_position else "NO_TRADE"
+        mode = "NO_TRADE"
     else:
-        mode = "ALLOW_NEW_ENTRIES"
+        # Optional override via control plane (explicit operator intent)
+        # This does NOT bypass enforced_no_trade gates.
+        control_mode = None
+        try:
+            control = ctx.get("control", {})
+            if isinstance(control, dict):
+                control_mode = control.get("global_mode")
+        except Exception:
+            control_mode = None
+
+        if isinstance(control_mode, str) and control_mode.strip().upper() == "ALLOW_NEW_ENTRIES":
+            mode = "ALLOW_NEW_ENTRIES"
 
     risk_envelope = {
         "limits": dict(policy.risk_limits),
@@ -185,8 +210,28 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "has_position": has_position,
         "position_size": pos_size,
     }
+    # Enforced no-trade always dominates
+    if enforced_no_trade:
+        mode = "NO_TRADE"
+    else:
+        # Control-plane override via ctx.exec.global_mode (Stage 5.8)
+        control_mode = None
+        try:
+            ex = ctx.get("exec", {})
+            if isinstance(ex, dict):
+                control_mode = ex.get("global_mode")
+        except Exception:
+            control_mode = None
 
-    # 4) Effective decision (3.4A)
+        cm = str(control_mode or "").strip().upper()
+        if cm == "ALLOW_NEW_ENTRIES":
+            mode = "ALLOW_NEW_ENTRIES"
+        elif cm == "ONLY_EXITS":
+            mode = "ONLY_EXITS"
+        elif cm == "NO_TRADE":
+            mode = "NO_TRADE"
+
+    # 4) Effective decision
     # If raw decision is UNKNOWN but NO_TRADE is explicitly enforced -> report NO_TRADE as final decision.
     # Do NOT override EXIT.
     ma_decision = ma_decision_raw
