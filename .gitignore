@@ -69,5 +69,13 @@ args/data/orders_reconcile_*.json
 args/data/ibkr_exec_ledger_v1*.json
 args/data/sent_orders_*.jsonl
 args/data/would_send_*.jsonl
+# runtime order ledger (idempotency)
+args/data/order_ledger_v0.jsonl
+args/data/order_ledger_v0.jsonl.lock
 
+
+
+# runtime order ledger (idempotency)
+args/data/order_ledger_v0.jsonl
+args/data/order_ledger_v0.jsonl.lock
 
