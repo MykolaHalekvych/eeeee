@@ -86,3 +86,7 @@ args/data/order_ledger_recon_*.jsonl.lock
 args/data/*.lock
 args/data/*lock*
 
+
+# ops control plane
+args/data/stop.flag
+
