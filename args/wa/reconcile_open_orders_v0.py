@@ -1,0 +1,136 @@
+# args/wa/reconcile_open_orders_v0.py
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+
+SCHEMA_VERSION = "reconcile_open_orders_v0"
+SNAPSHOT_GLOB = "ibkr_open_orders_*.jsonl"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _parse_iso_z(s: str) -> Optional[datetime]:
+    try:
+        s2 = s.strip()
+        if s2.endswith("Z"):
+            s2 = s2[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s2)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
+    data_dir = repo_root / "args" / "data"
+    files = sorted(data_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+@dataclass(frozen=True)
+class SnapshotIndex:
+    path: Path
+    ts_start: Optional[datetime]
+    ts_end: Optional[datetime]
+    open_orders: List[Dict[str, Any]]
+    by_conid: Dict[int, List[Dict[str, Any]]]
+    by_local_symbol: Dict[str, List[Dict[str, Any]]]
+
+
+def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
+    ts_start: Optional[datetime] = None
+    ts_end: Optional[datetime] = None
+
+    open_orders: List[Dict[str, Any]] = []
+    by_conid: Dict[int, List[Dict[str, Any]]] = {}
+    by_local: Dict[str, List[Dict[str, Any]]] = {}
+
+    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+
+            kind = str(obj.get("kind") or "").strip().upper()
+
+            if kind == "IBKR_SNAPSHOT_START":
+                ts = obj.get("ts")
+                if isinstance(ts, str):
+                    ts_start = _parse_iso_z(ts) or ts_start
+
+            if kind == "IBKR_SNAPSHOT_END":
+                ts = obj.get("ts")
+                if isinstance(ts, str):
+                    ts_end = _parse_iso_z(ts) or ts_end
+
+            if kind != "IBKR_OPEN_ORDER":
+                continue
+
+            oo = {
+                "order_id": obj.get("order_id"),
+                "contract": obj.get("contract") if isinstance(obj.get("contract"), dict) else {},
+                "order": obj.get("order") if isinstance(obj.get("order"), dict) else {},
+                "order_state": obj.get("order_state") if isinstance(obj.get("order_state"), dict) else {},
+                "ts": obj.get("ts"),
+            }
+            open_orders.append(oo)
+
+            c = oo["contract"]
+            conid = c.get("conId")
+            if isinstance(conid, int):
+                by_conid.setdefault(conid, []).append(oo)
+
+            ls = c.get("localSymbol")
+            if isinstance(ls, str) and ls.strip():
+                by_local.setdefault(ls.strip().upper(), []).append(oo)
+
+    return SnapshotIndex(
+        path=path,
+        ts_start=ts_start,
+        ts_end=ts_end,
+        open_orders=open_orders,
+        by_conid=by_conid,
+        by_local_symbol=by_local,
+    )
+
+
+def snapshot_age_seconds(idx: SnapshotIndex) -> Optional[float]:
+    ref = idx.ts_end or idx.ts_start
+    if ref is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return float((now - ref).total_seconds())
+
+
+def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tuple[bool, str, List[Dict[str, Any]]]:
+    """
+    Match priority:
+      1) conId
+      2) localSymbol
+    Returns: (matched, match_by, matches)
+    """
+    conid = contract_dict.get("conId")
+    if isinstance(conid, int) and conid in idx.by_conid:
+        return True, "conId", idx.by_conid[conid][:10]
+
+    ls = contract_dict.get("localSymbol")
+    if isinstance(ls, str) and ls.strip():
+        key = ls.strip().upper()
+        if key in idx.by_local_symbol:
+            return True, "localSymbol", idx.by_local_symbol[key][:10]
+
+    return False, "", []
