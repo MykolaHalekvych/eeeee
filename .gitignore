@@ -77,4 +77,7 @@ args/data/order_ledger_test.jsonl.lock
 # runtime order ledger (idempotency)
 args/data/order_ledger_v0.jsonl
 args/data/order_ledger_v0.jsonl.lock
+args/data/ibkr_open_orders_*.jsonl
+# IBKR open orders snapshots (runtime)
+args/data/ibkr_open_orders_*.jsonl
 
