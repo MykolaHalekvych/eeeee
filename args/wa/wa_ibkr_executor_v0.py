@@ -1,3 +1,4 @@
+
 # args/wa/wa_ibkr_executor_v0.py
 from __future__ import annotations
 
@@ -50,6 +51,12 @@ def _as_int(x: Any) -> Optional[int]:
     return None
 
 
+def _norm(x: Any) -> str:
+    if not isinstance(x, str):
+        return ""
+    return x.strip().upper()
+
+
 def _json_compact(obj: Dict[str, Any]) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -79,12 +86,6 @@ def _iter_jsonl_dicts(path: Path) -> Iterable[Dict[str, Any]]:
                 yield obj
 
 
-def _norm(s: Any) -> str:
-    if not isinstance(s, str):
-        return ""
-    return s.strip().upper()
-
-
 def _repo_root() -> Path:
     # .../args/wa/wa_ibkr_executor_v0.py -> parents[2] == repo root
     return Path(__file__).resolve().parents[2]
@@ -100,6 +101,39 @@ def _stable_event_id(kind: str, *, ledger_key: str, run_id: Any, index: Any, pla
     if lk:
         return f"{k}:{lk}"
     return f"{k}:run={run_id}:idx={index}:plan={plan_id}"
+
+
+def _stable_status_event_id(*, ledger_key: str, status: Any, filled: Any, remaining: Any) -> str:
+    """
+    Merge-proof id for ORDER_STATUS snapshots.
+    """
+    lk = str(ledger_key or "").strip()
+    st = str(status or "").strip().upper() or "UNKNOWN"
+    fd = "" if filled is None else str(filled)
+    rm = "" if remaining is None else str(remaining)
+    return f"ORDER_STATUS:{lk}:{st}:{fd}:{rm}"
+
+
+def _compute_ledger_key(plan: Dict[str, Any], *, prefix: str) -> Tuple[str, str]:
+    """
+    Always return a non-empty ledger_key if we can.
+    Primary: compute_idempotency_key_from_plan().
+    Fallback: prefix + (run_id,index,plan_id/payload_id).
+    """
+    try:
+        lk, fp = compute_idempotency_key_from_plan(plan, prefix=prefix)
+        lk = str(lk or "").strip()
+        fp = str(fp or "").strip()
+        if lk:
+            return lk, fp
+    except Exception:
+        pass
+
+    rid = plan.get("run_id")
+    idx = plan.get("index")
+    pid = plan.get("plan_id") or plan.get("payload_id") or ""
+    lk2 = f"{prefix}:run={rid}:idx={idx}:plan={pid}"
+    return lk2, ""
 
 
 # ---------------------------
@@ -471,7 +505,7 @@ def _is_actionable_plan(plan: Dict[str, Any]) -> bool:
 
 
 def _build_event_base(plan: Dict[str, Any], *, exec_id: str) -> Dict[str, Any]:
-    return {
+    evt: Dict[str, Any] = {
         "run_id": plan.get("run_id"),
         "index": plan.get("index"),
         "ts": plan.get("ts"),
@@ -486,6 +520,12 @@ def _build_event_base(plan: Dict[str, Any], *, exec_id: str) -> Dict[str, Any]:
         "payload_kind": plan.get("payload_kind"),
         "execute": _b01(plan.get("execute", False)),
     }
+    # Optional: keep extra fields if present (do not require them)
+    if "payload_execute" in plan:
+        evt["payload_execute"] = _b01(plan.get("payload_execute"))
+    if "gate_reason" in plan and isinstance(plan.get("gate_reason"), str):
+        evt["gate_reason"] = plan.get("gate_reason")
+    return evt
 
 
 def _finalize_ledger_safe(
@@ -496,9 +536,7 @@ def _finalize_ledger_safe(
     status: str,
     result: Dict[str, Any],
 ) -> None:
-    if ledger is None:
-        return
-    if not ledger_key:
+    if ledger is None or not ledger_key:
         return
     try:
         ledger.finalize(ledger_key, run_id=run_id, status=status, result=result)
@@ -574,6 +612,7 @@ def main() -> int:
     acks = 0
     rejects = 0
     parse_errors = 0
+    status_events = 0
 
     # Determine run_id from first plan (best-effort)
     first_run_id: Optional[str] = run_id_arg or None
@@ -620,17 +659,54 @@ def main() -> int:
         ib_app.connect()
         ib_connected = True
 
-    def _emit_event(fout, evt: Dict[str, Any]) -> None:
-        # add stable event_id
+    def _emit_event(fout, evt: Dict[str, Any], *, event_id_override: Optional[str] = None) -> None:
         lk = str(evt.get("ledger_key") or "").strip()
-        evt["event_id"] = _stable_event_id(
-            str(evt.get("kind") or ""),
-            ledger_key=lk,
-            run_id=evt.get("run_id"),
-            index=evt.get("index"),
-            plan_id=evt.get("plan_id"),
-        )
+        if event_id_override:
+            evt["event_id"] = str(event_id_override)
+        else:
+            evt["event_id"] = _stable_event_id(
+                str(evt.get("kind") or ""),
+                ledger_key=lk,
+                run_id=evt.get("run_id"),
+                index=evt.get("index"),
+                plan_id=evt.get("plan_id"),
+            )
         _write_jsonl_line(fout, evt)
+
+    def _emit_status_event_if_present(
+        fout,
+        *,
+        plan: Dict[str, Any],
+        exec_id: str,
+        ledger_key: str,
+        ibkr_meta: Dict[str, Any],
+        detail: Any,
+    ) -> int:
+        """
+        Emit ORDER_STATUS as a separate lifecycle event when detail contains 'order_status' dict.
+        """
+        if not ledger_key:
+            return 0
+        if not isinstance(detail, dict):
+            return 0
+        st = detail.get("order_status")
+        if not isinstance(st, dict) or not st:
+            return 0
+
+        sev = _build_event_base(plan, exec_id=exec_id)
+        sev["kind"] = "ORDER_STATUS"
+        sev["ledger_key"] = ledger_key
+        sev["ibkr"] = dict(ibkr_meta)
+        sev["details"] = dict(st)
+
+        eid = _stable_status_event_id(
+            ledger_key=ledger_key,
+            status=st.get("status"),
+            filled=st.get("filled"),
+            remaining=st.get("remaining"),
+        )
+        _emit_event(fout, sev, event_id_override=eid)
+        return 1
 
     run_id_for_ledger = str(first_run_id or "unknown")
 
@@ -672,12 +748,7 @@ def main() -> int:
             order_dict = _extract_order_dict(plan)
 
             # Compute ledger_key (even if ledger disabled) for stable ids/traceability
-            ledger_key = ""
-            plan_fp = ""
-            try:
-                ledger_key, plan_fp = compute_idempotency_key_from_plan(plan, prefix="ibkr_place_order")
-            except Exception:
-                ledger_key, plan_fp = "", ""
+            ledger_key, plan_fp = _compute_ledger_key(plan, prefix="ibkr_place_order")
 
             if not isinstance(contract_dict, dict) or not contract_dict:
                 evt = _build_event_base(plan, exec_id=exec_id)
@@ -686,10 +757,9 @@ def main() -> int:
                         "kind": "ORDER_REJECT",
                         "reason": "missing_contract",
                         "details": {"error": "No contract info in plan and no default contract mapping found."},
+                        "ledger_key": ledger_key,
                     }
                 )
-                if ledger_key:
-                    evt["ledger_key"] = ledger_key
                 _emit_event(fout, evt)
                 rejects += 1
                 continue
@@ -701,17 +771,15 @@ def main() -> int:
                         "kind": "ORDER_REJECT",
                         "reason": "missing_order",
                         "details": {"error": "No order info in plan (expected plan.order/plan.ibkr_order/payload.*)"},
+                        "ledger_key": ledger_key,
                     }
                 )
-                if ledger_key:
-                    evt["ledger_key"] = ledger_key
                 _emit_event(fout, evt)
                 rejects += 1
                 continue
 
-            # Ledger dedupe: reserve BEFORE submit
+            # Ledger dedupe: reserve BEFORE submit (only when ledger enabled)
             if ledger is not None and ledger_key:
-                reserved = False
                 try:
                     reserved = ledger.reserve(
                         ledger_key,
@@ -725,9 +793,20 @@ def main() -> int:
                         },
                         allow_retry=ledger_allow_retry,
                     )
-                except Exception:
-                    # If ledger breaks, treat as not reserved (SAFE: do not submit).
-                    reserved = False
+                except Exception as e:
+                    # SAFE: do not submit if ledger breaks; also don't lie that it's a duplicate
+                    evt = _build_event_base(plan, exec_id=exec_id)
+                    evt.update(
+                        {
+                            "kind": "ORDER_REJECT",
+                            "reason": "ledger_error",
+                            "ledger_key": ledger_key,
+                            "details": {"error": repr(e)},
+                        }
+                    )
+                    _emit_event(fout, evt)
+                    rejects += 1
+                    continue
 
                 if not reserved:
                     evt = _build_event_base(plan, exec_id=exec_id)
@@ -750,8 +829,7 @@ def main() -> int:
                 ok, detail = sender_res
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibkr_sender_real_v1"}
-                if ledger_key:
-                    evt["ledger_key"] = ledger_key
+                evt["ledger_key"] = ledger_key
 
                 if ok:
                     evt["kind"] = "ORDER_ACK"
@@ -765,6 +843,16 @@ def main() -> int:
                     _finalize_ledger_safe(ledger, ledger_key=ledger_key, run_id=run_id_for_ledger, status="REJECT", result={"reject": detail})
 
                 _emit_event(fout, evt)
+
+                # Optional lifecycle event
+                status_events += _emit_status_event_if_present(
+                    fout,
+                    plan=plan,
+                    exec_id=exec_id,
+                    ledger_key=ledger_key,
+                    ibkr_meta={"via": "ibkr_sender_real_v1"},
+                    detail=detail,
+                )
                 continue
 
             # 2) Fallback: direct ibapi
@@ -783,8 +871,7 @@ def main() -> int:
 
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibapi_direct", "order_id": int(order_id)}
-                if ledger_key:
-                    evt["ledger_key"] = ledger_key
+                evt["ledger_key"] = ledger_key
 
                 if ok:
                     evt["kind"] = "ORDER_ACK"
@@ -799,17 +886,26 @@ def main() -> int:
 
                 _emit_event(fout, evt)
 
+                # Lifecycle event (orderStatus snapshot if present)
+                status_events += _emit_status_event_if_present(
+                    fout,
+                    plan=plan,
+                    exec_id=exec_id,
+                    ledger_key=ledger_key,
+                    ibkr_meta={"via": "ibapi_direct", "order_id": int(order_id)},
+                    detail=detail,
+                )
+
             except Exception as e:
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt.update(
                     {
                         "kind": "ORDER_REJECT",
                         "reason": "executor_exception",
+                        "ledger_key": ledger_key,
                         "details": {"error": repr(e)},
                     }
                 )
-                if ledger_key:
-                    evt["ledger_key"] = ledger_key
                 _emit_event(fout, evt)
                 rejects += 1
                 _finalize_ledger_safe(
@@ -845,6 +941,7 @@ def main() -> int:
         "orders_skipped_duplicate": orders_skipped_duplicate,
         "acks": acks,
         "rejects": rejects,
+        "order_status_events": status_events,
         "parse_errors": parse_errors,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
