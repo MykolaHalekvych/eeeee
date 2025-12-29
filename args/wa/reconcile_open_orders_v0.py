@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 SCHEMA_VERSION = "reconcile_open_orders_v0"
+SNAPSHOT_SCHEMA_VERSION = "ibkr_open_orders_snapshot_v0"
 SNAPSHOT_GLOB = "ibkr_open_orders_*.jsonl"
 
 
@@ -20,15 +22,38 @@ def _u(x: Any) -> str:
     return str(x or "").strip().upper()
 
 
+def _digits(s: str) -> str:
+    return re.sub(r"\D+", "", s or "")
+
+
+def _as_int(x: Any) -> Optional[int]:
+    if isinstance(x, int):
+        return x
+    if isinstance(x, str):
+        d = _digits(x)
+        if d:
+            try:
+                return int(d)
+            except Exception:
+                return None
+    return None
+
+
 def _parse_iso_z(s: str) -> Optional[datetime]:
+    """
+    Parse ISO timestamps safely. Supports trailing Z.
+    Returns aware UTC datetime or None.
+    """
     try:
-        s2 = s.strip()
+        s2 = str(s).strip()
+        if not s2:
+            return None
         if s2.endswith("Z"):
             s2 = s2[:-1] + "+00:00"
         dt = datetime.fromisoformat(s2)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
@@ -39,10 +64,37 @@ def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
     return files[0] if files else None
 
 
-def _sig_loose(c: Dict[str, Any]) -> Optional[str]:
+def _norm_exchange(c: Dict[str, Any]) -> str:
     """
-    Loose signature: symbol|secType|currency
-    (exchange ignored completely)
+    exchange normalization:
+      - exchange OR primaryExchange (fallback)
+      - SMART -> "" (wildcard)
+    """
+    ex = _u(c.get("exchange")) or _u(c.get("primaryExchange"))
+    if ex == "SMART":
+        return ""
+    return ex
+
+
+def _fut_yyyymm(c: Dict[str, Any]) -> str:
+    """
+    FUT month guard (YYYYMM):
+      - prefer lastTradeDateOrContractMonth, fallback to contractMonth
+      - supports YYYYMM or YYYYMMDD (use first 6 digits)
+      - returns "" if not available / not parseable
+    """
+    raw = str(c.get("lastTradeDateOrContractMonth") or c.get("contractMonth") or "").strip()
+    d = _digits(raw)
+    if len(d) >= 6:
+        return d[:6]
+    return ""
+
+
+def _sig_core(c: Dict[str, Any]) -> Optional[str]:
+    """
+    Core signature (exchange ignored):
+      symbol|secType|currency
+    Used as "signature_loose".
     """
     sym = _u(c.get("symbol"))
     if not sym:
@@ -54,22 +106,42 @@ def _sig_loose(c: Dict[str, Any]) -> Optional[str]:
 
 def _sig_strict(c: Dict[str, Any]) -> Optional[str]:
     """
-    Strict signature: symbol|secType|currency|exchange
-    IMPORTANT:
-      - exchange=SMART treated as wildcard (empty)
-      - if exchange missing, try primaryExchange
+    Strict signature (exchange-specific):
+      core|exchange
+    Only used when exchange is concrete (not SMART/empty).
     """
-    sym = _u(c.get("symbol"))
-    if not sym:
+    core = _sig_core(c)
+    if not core:
         return None
-    sec = _u(c.get("secType"))
-    cur = _u(c.get("currency"))
+    ex = _norm_exchange(c)
+    if not ex:
+        return None  # wildcard => strict signature disabled
+    return f"{core}|{ex}"
 
-    ex = _u(c.get("exchange")) or _u(c.get("primaryExchange"))
-    if ex == "SMART":
-        ex = ""  # wildcard
 
-    return f"{sym}|{sec}|{cur}|{ex}"
+def _filter_hits_contract_sensitive(contract_dict: Dict[str, Any], hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Contract-sensitive filtering on candidate hits.
+    Currently: FUT month guard
+      - If both sides have YYYYMM -> must match
+      - If either side missing -> wildcard (do not filter out)
+    """
+    sec = _u(contract_dict.get("secType"))
+    if sec != "FUT":
+        return hits
+
+    want = _fut_yyyymm(contract_dict)
+    if not want:
+        return hits
+
+    out: List[Dict[str, Any]] = []
+    for oo in hits:
+        c = oo.get("contract") if isinstance(oo.get("contract"), dict) else {}
+        got = _fut_yyyymm(c)
+        if got and got != want:
+            continue
+        out.append(oo)
+    return out
 
 
 @dataclass(frozen=True)
@@ -82,6 +154,13 @@ class SnapshotIndex:
     by_local_symbol: Dict[str, List[Dict[str, Any]]]
     by_sig_strict: Dict[str, List[Dict[str, Any]]]
     by_sig_loose: Dict[str, List[Dict[str, Any]]]
+    by_sig_core: Dict[str, List[Dict[str, Any]]]  # alias/back-compat
+
+    # robustness / validity
+    schema_ok: bool
+    has_start: bool
+    has_end: bool
+    parse_errors: int
 
 
 def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
@@ -94,7 +173,32 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
     by_sig_strict: Dict[str, List[Dict[str, Any]]] = {}
     by_sig_loose: Dict[str, List[Dict[str, Any]]] = {}
 
-    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+    schema_ok = True
+    has_start = False
+    has_end = False
+    parse_errors = 0
+
+    # Fail-soft open: return empty index instead of crashing
+    try:
+        f = path.open("r", encoding="utf-8-sig", errors="replace")
+    except Exception:
+        return SnapshotIndex(
+            path=path,
+            ts_start=None,
+            ts_end=None,
+            open_orders=[],
+            by_conid={},
+            by_local_symbol={},
+            by_sig_strict={},
+            by_sig_loose={},
+            by_sig_core={},
+            schema_ok=False,
+            has_start=False,
+            has_end=False,
+            parse_errors=0,
+        )
+
+    with f:
         for line in f:
             s = line.strip()
             if not s:
@@ -102,21 +206,31 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             try:
                 obj = json.loads(s)
             except Exception:
+                parse_errors += 1
                 continue
             if not isinstance(obj, dict):
                 continue
 
-            kind = _u(obj.get("kind"))
+            # allow both "kind" and "event" (robust to producer differences)
+            kind = _u(obj.get("kind") or obj.get("event"))
 
             if kind == "IBKR_SNAPSHOT_START":
-                ts = obj.get("ts")
+                has_start = True
+                sv = obj.get("schema_version")
+                if isinstance(sv, str) and sv.strip() and sv.strip() != SNAPSHOT_SCHEMA_VERSION:
+                    schema_ok = False
+                # ts may be "ts" or "ts_utc"
+                ts = obj.get("ts") or obj.get("ts_utc")
                 if isinstance(ts, str):
                     ts_start = _parse_iso_z(ts) or ts_start
+                continue
 
             if kind == "IBKR_SNAPSHOT_END":
-                ts = obj.get("ts")
+                has_end = True
+                ts = obj.get("ts") or obj.get("ts_utc")
                 if isinstance(ts, str):
                     ts_end = _parse_iso_z(ts) or ts_end
+                continue
 
             if kind != "IBKR_OPEN_ORDER":
                 continue
@@ -130,13 +244,13 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
                 "contract": contract,
                 "order": order,
                 "order_state": order_state,
-                "ts": obj.get("ts"),
+                "ts": obj.get("ts") or obj.get("ts_utc"),
             }
             open_orders.append(oo)
 
             # conId
-            conid = contract.get("conId")
-            if isinstance(conid, int):
+            conid = _as_int(contract.get("conId"))
+            if conid is not None:
                 by_conid.setdefault(conid, []).append(oo)
 
             # localSymbol
@@ -144,15 +258,15 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if isinstance(ls, str) and ls.strip():
                 by_local.setdefault(ls.strip().upper(), []).append(oo)
 
-            # strict signature
-            s1 = _sig_strict(contract)
-            if s1:
-                by_sig_strict.setdefault(s1, []).append(oo)
+            # strict signature (only if exchange concrete)
+            s_strict = _sig_strict(contract)
+            if s_strict:
+                by_sig_strict.setdefault(s_strict, []).append(oo)
 
-            # loose signature
-            s2 = _sig_loose(contract)
-            if s2:
-                by_sig_loose.setdefault(s2, []).append(oo)
+            # loose/core signature
+            s_loose = _sig_core(contract)
+            if s_loose:
+                by_sig_loose.setdefault(s_loose, []).append(oo)
 
     return SnapshotIndex(
         path=path,
@@ -163,49 +277,94 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
         by_local_symbol=by_local,
         by_sig_strict=by_sig_strict,
         by_sig_loose=by_sig_loose,
+        by_sig_core=by_sig_loose,  # alias/back-compat
+        schema_ok=schema_ok,
+        has_start=has_start,
+        has_end=has_end,
+        parse_errors=parse_errors,
     )
 
 
 def snapshot_age_seconds(idx: SnapshotIndex) -> Optional[float]:
-    ref = idx.ts_end or idx.ts_start
-    if ref is None:
-        return None
+    """
+    Prefer snapshot ts_end/ts_start; fallback to file mtime.
+    Never raises. Returns None only if both timestamp and mtime are unavailable.
+    """
     now = datetime.now(timezone.utc)
-    return float((now - ref).total_seconds())
+    ref = idx.ts_end or idx.ts_start
+    if ref is not None:
+        return float((now - ref).total_seconds())
+
+    # fallback: file mtime
+    try:
+        mtime = idx.path.stat().st_mtime
+        age = now.timestamp() - float(mtime)
+        return float(age) if age >= 0 else 0.0
+    except Exception:
+        return None
+
+
+def snapshot_validity(idx: SnapshotIndex) -> Tuple[bool, str]:
+    """
+    Fail-closed snapshot validity for reconcile gate.
+
+    Reasons:
+      - snapshot_unreadable (schema_ok=False + no markers)
+      - snapshot_invalid_schema
+      - snapshot_missing_markers
+      - snapshot_empty
+    """
+    if not idx.schema_ok and not (idx.has_start or idx.has_end):
+        return False, "snapshot_unreadable"
+    if not idx.schema_ok:
+        return False, "snapshot_invalid_schema"
+    if not (idx.has_start and idx.has_end):
+        return False, "snapshot_missing_markers"
+    if not idx.open_orders:
+        return False, "snapshot_empty"
+    return True, ""
 
 
 def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tuple[bool, str, List[Dict[str, Any]]]:
     """
-    Match priority:
+    Match priority (standard / Stage5E.2):
       1) conId
       2) localSymbol
-      3) strict signature: symbol|secType|currency|exchange (SMART wildcard)
-      4) loose signature:  symbol|secType|currency (no exchange)
+      3) signature_strict: core|exchange (only when exchange concrete)
+      4) signature_loose:  core (symbol|secType|currency), SMART wildcard by design
     Returns: (matched, match_by, matches)
     """
-    conid = contract_dict.get("conId")
-    if isinstance(conid, int):
+    conid = _as_int(contract_dict.get("conId"))
+    if conid is not None:
         hits = idx.by_conid.get(conid)
         if hits:
-            return True, "conId", hits[:10]
+            hits2 = _filter_hits_contract_sensitive(contract_dict, hits)
+            if hits2:
+                return True, "conId", hits2[:10]
 
     ls = contract_dict.get("localSymbol")
     if isinstance(ls, str) and ls.strip():
         key = ls.strip().upper()
         hits = idx.by_local_symbol.get(key)
         if hits:
-            return True, "localSymbol", hits[:10]
+            hits2 = _filter_hits_contract_sensitive(contract_dict, hits)
+            if hits2:
+                return True, "localSymbol", hits2[:10]
 
-    s1 = _sig_strict(contract_dict)
-    if s1:
-        hits = idx.by_sig_strict.get(s1)
+    s_strict = _sig_strict(contract_dict)
+    if s_strict:
+        hits = idx.by_sig_strict.get(s_strict)
         if hits:
-            return True, "signature_strict", hits[:10]
+            hits2 = _filter_hits_contract_sensitive(contract_dict, hits)
+            if hits2:
+                return True, "signature_strict", hits2[:10]
 
-    s2 = _sig_loose(contract_dict)
-    if s2:
-        hits = idx.by_sig_loose.get(s2)
+    s_loose = _sig_core(contract_dict)
+    if s_loose:
+        hits = idx.by_sig_loose.get(s_loose)
         if hits:
-            return True, "signature_loose", hits[:10]
+            hits2 = _filter_hits_contract_sensitive(contract_dict, hits)
+            if hits2:
+                return True, "signature_loose", hits2[:10]
 
     return False, "", []

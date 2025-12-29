@@ -17,6 +17,7 @@ from args.wa.reconcile_open_orders_v0 import (
     load_open_orders_snapshot,
     match_open_orders,
     snapshot_age_seconds,
+    snapshot_validity,
 )
 
 SCHEMA_VERSION = "wa_ibkr_executor_v0"
@@ -665,14 +666,18 @@ def main() -> int:
         ledger_path_resolved = str(lp.resolve())
         ledger = OrderLedgerV0(lp)
 
-    # Reconcile preflight init (Stage 5E.2)
+    # ---------------------------
+    # Reconcile preflight init (Stage 5E.2+ robust)
+    # ---------------------------
     reconcile_requested = _b01(args.reconcile)
     reconcile_enabled = bool(reconcile_requested and execute)
 
     snapshot_idx = None
     snapshot_used = ""
     snapshot_age_s: Optional[float] = None
+    snapshot_parse_errors: Optional[int] = None
     reconcile_block_all_reason = ""
+    snapshot_max_age_s = float(args.snapshot_max_age_s)
 
     if reconcile_enabled:
         sp_arg = str(args.snapshot_path or "").strip()
@@ -683,21 +688,36 @@ def main() -> int:
         else:
             sp = choose_latest_snapshot(repo_root)
 
-        if sp is None or (not sp.exists()):
+        if sp is None:
             reconcile_block_all_reason = "snapshot_missing"
         else:
             snapshot_used = str(sp)
-            try:
-                snapshot_idx = load_open_orders_snapshot(sp)
-                snapshot_age_s = snapshot_age_seconds(snapshot_idx)
 
-                max_age = float(args.snapshot_max_age_s)
-                if snapshot_age_s is not None and max_age > 0 and snapshot_age_s > max_age:
-                    reconcile_block_all_reason = f"snapshot_stale:{int(snapshot_age_s)}s"
+            if not sp.exists():
+                reconcile_block_all_reason = "snapshot_missing"
+            else:
+                try:
+                    snapshot_idx = load_open_orders_snapshot(sp)
+                except Exception as e:
+                    reconcile_block_all_reason = f"snapshot_exception:{type(e).__name__}"
                     snapshot_idx = None
-            except Exception as e:
-                reconcile_block_all_reason = f"snapshot_parse_error:{type(e).__name__}"
-                snapshot_idx = None
+                else:
+                    snapshot_parse_errors = getattr(snapshot_idx, "parse_errors", None)
+                    snapshot_age_s = snapshot_age_seconds(snapshot_idx)
+
+                    ok_snap, snap_reason = snapshot_validity(snapshot_idx)
+                    if not ok_snap:
+                        reconcile_block_all_reason = snap_reason
+                        snapshot_idx = None
+                    else:
+                        # age gate (0 disables)
+                        if snapshot_max_age_s > 0:
+                            if snapshot_age_s is None:
+                                reconcile_block_all_reason = "snapshot_age_unknown"
+                                snapshot_idx = None
+                            elif snapshot_age_s > snapshot_max_age_s:
+                                reconcile_block_all_reason = "snapshot_stale"
+                                snapshot_idx = None
 
     # IB connection (lazy)
     ib_app: Optional[_IBSimpleApp] = None
@@ -842,7 +862,8 @@ def main() -> int:
                             "details": {
                                 "snapshot_path": snapshot_used,
                                 "snapshot_age_s": snapshot_age_s,
-                                "snapshot_max_age_s": float(args.snapshot_max_age_s),
+                                "snapshot_max_age_s": snapshot_max_age_s,
+                                "snapshot_parse_errors": snapshot_parse_errors,
                             },
                         }
                     )
@@ -862,6 +883,8 @@ def main() -> int:
                                 "details": {
                                     "snapshot_path": snapshot_used,
                                     "snapshot_age_s": snapshot_age_s,
+                                    "snapshot_max_age_s": snapshot_max_age_s,
+                                    "snapshot_parse_errors": snapshot_parse_errors,
                                     "match_by": match_by,
                                     "matches": matches,
                                 },
@@ -1031,7 +1054,8 @@ def main() -> int:
             "enabled": bool(reconcile_enabled),
             "snapshot_path": snapshot_used,
             "snapshot_age_s": snapshot_age_s,
-            "snapshot_max_age_s": float(args.snapshot_max_age_s),
+            "snapshot_max_age_s": snapshot_max_age_s,
+            "snapshot_parse_errors": snapshot_parse_errors,
             "block_reason": reconcile_block_all_reason,
         },
         "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
@@ -1052,4 +1076,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

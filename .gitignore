@@ -88,4 +88,10 @@ args/data/order_ledger_recon_*.jsonl.lock
 # runtime recon ledgers (tests)
 args/data/order_ledger_recon_*.jsonl
 args/data/order_ledger_recon_*.jsonl.lock
+# Stage5E.2 reconcile demo artifacts
+args/data/ibkr_open_orders_*.jsonl
+args/data/orders_exec_events_*_recon_*.jsonl
+args/data/order_ledger_recon_*.jsonl
+args/data/order_ledger_recon_*.jsonl.lock
+
 
