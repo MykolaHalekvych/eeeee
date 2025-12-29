@@ -81,3 +81,8 @@ args/data/order_ledger_test.jsonl
 args/data/order_ledger_test.jsonl.lock
 args/data/order_ledger_recon_*.jsonl
 args/data/order_ledger_recon_*.jsonl.lock
+
+# runtime locks
+args/data/*.lock
+args/data/*lock*
+
