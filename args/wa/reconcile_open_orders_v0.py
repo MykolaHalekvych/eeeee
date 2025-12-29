@@ -39,11 +39,25 @@ def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
     return files[0] if files else None
 
 
-def _contract_signature(c: Dict[str, Any]) -> Optional[str]:
+def _sig_loose(c: Dict[str, Any]) -> Optional[str]:
     """
-    Signature for fallback matching.
-    IMPORTANT: exchange=SMART is treated as wildcard (ignored),
-    because openOrders snapshot often shows the real venue (e.g., COMEX).
+    Loose signature: symbol|secType|currency
+    (exchange ignored completely)
+    """
+    sym = _u(c.get("symbol"))
+    if not sym:
+        return None
+    sec = _u(c.get("secType"))
+    cur = _u(c.get("currency"))
+    return f"{sym}|{sec}|{cur}"
+
+
+def _sig_strict(c: Dict[str, Any]) -> Optional[str]:
+    """
+    Strict signature: symbol|secType|currency|exchange
+    IMPORTANT:
+      - exchange=SMART treated as wildcard (empty)
+      - if exchange missing, try primaryExchange
     """
     sym = _u(c.get("symbol"))
     if not sym:
@@ -66,7 +80,8 @@ class SnapshotIndex:
     open_orders: List[Dict[str, Any]]
     by_conid: Dict[int, List[Dict[str, Any]]]
     by_local_symbol: Dict[str, List[Dict[str, Any]]]
-    by_sig: Dict[str, List[Dict[str, Any]]]
+    by_sig_strict: Dict[str, List[Dict[str, Any]]]
+    by_sig_loose: Dict[str, List[Dict[str, Any]]]
 
 
 def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
@@ -76,7 +91,8 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
     open_orders: List[Dict[str, Any]] = []
     by_conid: Dict[int, List[Dict[str, Any]]] = {}
     by_local: Dict[str, List[Dict[str, Any]]] = {}
-    by_sig: Dict[str, List[Dict[str, Any]]] = {}
+    by_sig_strict: Dict[str, List[Dict[str, Any]]] = {}
+    by_sig_loose: Dict[str, List[Dict[str, Any]]] = {}
 
     with path.open("r", encoding="utf-8-sig", errors="replace") as f:
         for line in f:
@@ -118,20 +134,25 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             }
             open_orders.append(oo)
 
-            # Index by conId
+            # conId
             conid = contract.get("conId")
             if isinstance(conid, int):
                 by_conid.setdefault(conid, []).append(oo)
 
-            # Index by localSymbol
+            # localSymbol
             ls = contract.get("localSymbol")
             if isinstance(ls, str) and ls.strip():
                 by_local.setdefault(ls.strip().upper(), []).append(oo)
 
-            # Index by signature
-            sig = _contract_signature(contract)
-            if sig:
-                by_sig.setdefault(sig, []).append(oo)
+            # strict signature
+            s1 = _sig_strict(contract)
+            if s1:
+                by_sig_strict.setdefault(s1, []).append(oo)
+
+            # loose signature
+            s2 = _sig_loose(contract)
+            if s2:
+                by_sig_loose.setdefault(s2, []).append(oo)
 
     return SnapshotIndex(
         path=path,
@@ -140,7 +161,8 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
         open_orders=open_orders,
         by_conid=by_conid,
         by_local_symbol=by_local,
-        by_sig=by_sig,
+        by_sig_strict=by_sig_strict,
+        by_sig_loose=by_sig_loose,
     )
 
 
@@ -157,7 +179,8 @@ def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tupl
     Match priority:
       1) conId
       2) localSymbol
-      3) (symbol, secType, exchange, currency) signature
+      3) strict signature: symbol|secType|currency|exchange (SMART wildcard)
+      4) loose signature:  symbol|secType|currency (no exchange)
     Returns: (matched, match_by, matches)
     """
     conid = contract_dict.get("conId")
@@ -173,10 +196,16 @@ def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tupl
         if hits:
             return True, "localSymbol", hits[:10]
 
-    sig = _contract_signature(contract_dict)
-    if sig:
-        hits = idx.by_sig.get(sig)
+    s1 = _sig_strict(contract_dict)
+    if s1:
+        hits = idx.by_sig_strict.get(s1)
         if hits:
-            return True, "symbol/secType/exchange/currency", hits[:10]
+            return True, "signature_strict", hits[:10]
+
+    s2 = _sig_loose(contract_dict)
+    if s2:
+        hits = idx.by_sig_loose.get(s2)
+        if hits:
+            return True, "signature_loose", hits[:10]
 
     return False, "", []
