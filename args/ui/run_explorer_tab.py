@@ -138,6 +138,92 @@ def _latest_matching(dir_path: Path, prefix: str, suffix: str) -> Optional[Path]
         return None
 
 
+def _clip(s: str, n: int = 2000) -> str:
+    s2 = str(s or "")
+    return s2 if len(s2) <= n else (s2[:n] + "\n...[clipped]...")
+
+
+# -----------------------------
+# Stage 6 UI: Reconcile helpers
+# -----------------------------
+def _run_snapshot_refresh(repo: Path, out_path: Path, timeout_s: float = 30.0) -> Dict[str, Any]:
+    """
+    Safe action: refresh open-orders snapshot via snapshotter.
+    Does NOT trade and does NOT run executor.
+    """
+    cmd = [
+        "py",
+        "-3.11",
+        "-m",
+        "args.ibkr.ibkr_open_orders_snapshotter_v0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "7497",
+        "--client-id",
+        "11",
+        "--timeout-s",
+        "15",
+        "--wait-s",
+        "5",
+        "--out",
+        str(out_path),
+    ]
+    try:
+        cp = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=str(repo),
+        )
+        return {
+            "ok": cp.returncode == 0,
+            "returncode": cp.returncode,
+            "stdout": (cp.stdout or "").strip(),
+            "stderr": (cp.stderr or "").strip(),
+            "out_path": str(out_path),
+            "mtime_utc": _mtime_info(out_path).get("mtime_utc") if out_path.exists() else None,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": repr(e),
+            "out_path": str(out_path),
+            "mtime_utc": _mtime_info(out_path).get("mtime_utc") if out_path.exists() else None,
+        }
+
+
+def _scan_last_skip_reconcile(exec_events_path: Path, max_lines: int = 200_000) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort: scan exec events for last ORDER_SKIP_RECONCILE.
+    Works even if there is no run_report wiring.
+    """
+    last: Optional[Dict[str, Any]] = None
+    try:
+        with exec_events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
+            seen = 0
+            for line in f:
+                if seen >= max_lines:
+                    break
+                s = line.strip()
+                if not s:
+                    continue
+                seen += 1
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                kind = str(obj.get("kind") or obj.get("type") or "").strip().upper()
+                if kind == "ORDER_SKIP_RECONCILE":
+                    last = obj
+    except Exception:
+        return None
+    return last
+
+
 # -----------------------------
 # Control Plane (file-based)
 # -----------------------------
@@ -616,9 +702,6 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
 
 
 def _scan_tick_events(events_path: Path, max_ticks: int = 250, max_lines: int = 250_000) -> List[Dict[str, Any]]:
-    """
-    Load up to max_ticks TICK events (BOM-safe), bounded by max_lines.
-    """
     out: List[Dict[str, Any]] = []
     try:
         with events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
@@ -890,9 +973,13 @@ def render_run_explorer_tab() -> None:
     st.subheader("Run Explorer (OPS / Observability)")
 
     data_dir, logs_dir = default_dirs()
+    root = repo_root()
 
     # Load control state (BOM-safe)
     control_state = _load_control_state(data_dir)
+
+    # Operator mode is used to gate "actions" (safe-by-default)
+    operator_mode = bool(st.session_state.get("operator_mode", True))
 
     # -----------------------------
     # Control Plane panel
@@ -904,7 +991,6 @@ def render_run_explorer_tab() -> None:
             st.error(f"Failed to read control_state.json: {control_state.get('_error')}")
         st.caption(f"Path: {p}")
 
-        operator_mode = bool(st.session_state.get("operator_mode", True))
         current_mode = _normalize_global_mode(control_state.get("global_mode"), default="NO_TRADE")
         st.caption(f"File global_mode (loaded): {current_mode}")
 
@@ -988,6 +1074,72 @@ def render_run_explorer_tab() -> None:
             st.caption(f"Latest order_intents: {latest_oi.name} | {oi.get('mtime_utc')} | age {_fmt_age(oi.get('age_s', 0))}")
         else:
             st.caption("Latest order_intents: n/a")
+
+    # -----------------------------
+    # Stage 6 — Reconcile panel (open-orders snapshot)
+    # -----------------------------
+    with st.expander("Reconcile (Open Orders Snapshot)", expanded=True):
+        live_snapshot = data_dir / "ibkr_open_orders_live.jsonl"
+        m = _mtime_info(live_snapshot)
+        st.caption(f"Live snapshot path: {live_snapshot}")
+        if m.get("exists"):
+            st.caption(f"Live snapshot mtime: {m.get('mtime_utc')} | age {_fmt_age(m.get('age_s', 0.0))}")
+        else:
+            st.warning("Live snapshot missing (OK if not refreshed yet).")
+
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1:
+            if st.button("Open data folder", key="recon_open_data"):
+                safe_open_folder(data_dir)
+        with c2:
+            if st.button("Open logs folder", key="recon_open_logs"):
+                safe_open_folder(logs_dir)
+        with c3:
+            if operator_mode:
+                if st.button("Refresh Open Orders Snapshot", key="recon_refresh_snapshot"):
+                    res = _run_snapshot_refresh(root, live_snapshot, timeout_s=30.0)
+                    st.session_state["recon_last_refresh"] = res
+                    _st_rerun()
+            else:
+                st.caption("Operator mode OFF: refresh disabled.")
+
+        last_refresh = st.session_state.get("recon_last_refresh")
+        if isinstance(last_refresh, dict):
+            st.markdown("**Last refresh result**")
+            st.json(
+                {
+                    "ok": last_refresh.get("ok"),
+                    "returncode": last_refresh.get("returncode"),
+                    "out_path": last_refresh.get("out_path"),
+                    "mtime_utc": last_refresh.get("mtime_utc"),
+                }
+            )
+            if last_refresh.get("stdout"):
+                st.code(_clip(str(last_refresh.get("stdout")), 2000), language="text")
+            if last_refresh.get("stderr"):
+                st.code(_clip(str(last_refresh.get("stderr")), 2000), language="text")
+
+        # Best-effort: show latest executor reconcile event from latest orders_exec_events_*.jsonl
+        latest_exec = _latest_matching(data_dir, prefix="orders_exec_events_", suffix=".jsonl")
+        if latest_exec and latest_exec.exists():
+            st.markdown("**Latest executor events (orders_exec_events_*.jsonl)**")
+            li = _mtime_info(latest_exec)
+            st.caption(f"{latest_exec.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0.0))}")
+
+            last_skip = _scan_last_skip_reconcile(latest_exec)
+            if isinstance(last_skip, dict):
+                st.markdown("**Last ORDER_SKIP_RECONCILE**")
+                st.json(
+                    {
+                        "reason": last_skip.get("reason"),
+                        "ledger_key": last_skip.get("ledger_key"),
+                        "details": last_skip.get("details", {}),
+                    }
+                )
+            else:
+                st.caption("No ORDER_SKIP_RECONCILE found in latest executor events (OK).")
+        else:
+            st.caption("No orders_exec_events_*.jsonl found yet (run executor once).")
 
     operator_mode = bool(st.session_state.get("operator_mode", True))
 
@@ -1113,7 +1265,7 @@ def render_run_explorer_tab() -> None:
             # Step 5 Explain: pick a TICK
             ticks = _scan_tick_events(selected.events_path, max_ticks=250)
             if ticks:
-                # default to first problematic tick if any (violations or enforced_no_trade)
+
                 def score(t: Dict[str, Any]) -> int:
                     v = t.get("violations", [])
                     vcount = len(v) if isinstance(v, list) else 0
@@ -1248,4 +1400,6 @@ def render_run_explorer_tab() -> None:
     else:
         st.json(stat)
 
-    _auto_refresh_tick(enabled=(operator_mode and auto_refresh_enabled), interval_s=int(interval_s))
+    # Auto-refresh tick (last)
+    _auto_refresh_tick(auto_refresh_enabled and operator_mode, interval_s)
+

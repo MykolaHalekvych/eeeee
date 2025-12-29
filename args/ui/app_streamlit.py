@@ -1,5 +1,5 @@
+# args/ui/app_streamlit.py
 from __future__ import annotations
-from args.ui.run_explorer_tab import render_run_explorer_tab
 
 import datetime as _dt
 import inspect
@@ -15,6 +15,7 @@ import yaml
 from args.audit import event_store as _event_store
 from args.ma.ma_runtime import eval_ma
 from args.ma.policy_loader import load_policy
+from args.ui.run_explorer_tab import render_run_explorer_tab
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -270,7 +271,6 @@ div.stButton > button {
 # -----------------------------
 # Helpers (generic)
 # -----------------------------
-
 def _html_escape(x: Any) -> str:
     s = "" if x is None else str(x)
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -335,7 +335,6 @@ def git_porcelain() -> Tuple[int, str]:
 # -----------------------------
 # Control Panel actions
 # -----------------------------
-
 def header_status() -> None:
     st.title("ARGS Core v1 — Control Panel")
     st.caption(f"Repo: {REPO_ROOT}")
@@ -393,7 +392,6 @@ def run_checkpoint(tag: str) -> Tuple[int, str]:
 # -----------------------------
 # Dashboard helpers
 # -----------------------------
-
 def _badge_html(text: str) -> str:
     t = (text or "UNKNOWN").upper()
     key = t.replace("-", "_").replace(" ", "_")
@@ -514,7 +512,6 @@ def _append_event_safe(event: Dict[str, Any]) -> Tuple[int, str]:
 
 
 def _demo_ctx(policy_meta: Dict[str, Any]) -> Dict[str, Any]:
-    # Shape consistent with your existing events.jsonl / contract expectations
     return {
         "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
         "instrument": policy_meta.get("instrument", "HG"),
@@ -614,7 +611,6 @@ def _decision_to_css(decision: str) -> str:
 # -----------------------------
 # ARGS Dashboard
 # -----------------------------
-
 def render_args_dashboard() -> None:
     policy_meta = _read_yaml(POLICY_PATH)
     events = _load_events_jsonl(EVENTS_PATH)
@@ -643,7 +639,6 @@ def render_args_dashboard() -> None:
     tail_emph = "emph-yellow" if tail == "UNKNOWN" else "emph-blue"
     liq_emph = "emph-blue" if liq == "NORMAL" else "emph-yellow"
 
-    # Hero
     st.markdown(
         '<div class="args-hero">'
         '<div class="args-title">ARGS</div>'
@@ -652,7 +647,6 @@ def render_args_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
-    # Top strip
     st.markdown(
         (
             '<div class="metric-strip">'
@@ -668,7 +662,6 @@ def render_args_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
-    # --- Micro-UX strip (Dashboard) ---
     now_local = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     events_total = len(events) if isinstance(events, list) else 0
     last_ts = str(last.get("ts_utc") or last.get("ts") or "—")
@@ -699,7 +692,6 @@ def render_args_dashboard() -> None:
         if st.button("Refresh dashboard", key="dash_refresh"):
             st.rerun()
 
-    # Violations
     vv = last.get("violations") if isinstance(last.get("violations"), list) else []
     if not isinstance(vv, list):
         vv = []
@@ -751,11 +743,12 @@ def render_args_dashboard() -> None:
     snapshot_html = (
         '<div class="kv">'
         '<div class="k">Margin Usage</div>'
-        f'<div class="v {mu_emph}">{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>'
+        f'<div class="v {("emph-red" if (isinstance(mu, (int, float)) and isinstance(ml, (int, float)) and mu > ml) else "emph-green")}">'
+        f'{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>'
         '<div class="k">Tail Risk State</div>'
-        f'<div class="v {tail_emph}">{_html_escape(tail)}</div>'
+        f'<div class="v {("emph-yellow" if tail == "UNKNOWN" else "emph-blue")}">{_html_escape(tail)}</div>'
         '<div class="k">Liquidity</div>'
-        f'<div class="v {liq_emph}">{_html_escape(liq)}</div>'
+        f'<div class="v {("emph-blue" if liq == "NORMAL" else "emph-yellow")}">{_html_escape(liq)}</div>'
         '<div class="k">Regime Confidence</div>'
         f'<div class="v emph-blue">{_html_escape(conf_str)}</div>'
         "</div>"
@@ -763,22 +756,12 @@ def render_args_dashboard() -> None:
 
     c1, c2, c3 = st.columns(3, gap="medium")
     with c1:
-        st.markdown(
-            f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>', unsafe_allow_html=True)
     with c2:
-        st.markdown(
-            f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>', unsafe_allow_html=True)
     with c3:
-        st.markdown(
-            f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>', unsafe_allow_html=True)
 
-    # EVAL
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     cc1, cc2, cc3 = st.columns([1, 1, 1])
     with cc2:
@@ -813,7 +796,6 @@ def render_args_dashboard() -> None:
                 st.error(f"append_event failed: {out}")
             st.rerun()
 
-    # Event stream table
     rows = events[:8]
     if rows:
         trs = ""
@@ -858,7 +840,6 @@ def render_args_dashboard() -> None:
 # -----------------------------
 # Events (structured)
 # -----------------------------
-
 def render_events_view() -> None:
     st.subheader("Event Stream (structured)")
 
@@ -979,7 +960,6 @@ def render_events_view() -> None:
 # -----------------------------
 # Main
 # -----------------------------
-
 def main() -> None:
     st.set_page_config(page_title="ARGS", layout="wide")
     st.markdown(UI_CSS, unsafe_allow_html=True)
@@ -988,11 +968,13 @@ def main() -> None:
     operator_mode = st.sidebar.checkbox(
         "Operator mode (safe)",
         value=True,
-        help="ON = hide dev/destructive actions (negative test, checkpoint). OFF = Dev mode.",
+        help="ON = operator-safe (hides dev/destructive actions). OFF = Dev mode.",
         key="mode_operator",
     )
 
-    # NOTE: Added "Run Explorer" tab for Stage 19A/19B per-run artifacts.
+    # Make operator_mode visible to all tabs (Run Explorer uses st.session_state['operator_mode'])
+    st.session_state["operator_mode"] = bool(operator_mode)
+
     tab_args, tab_runexp, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
         ["ARGS Dashboard", "Run Explorer", "Control Panel", "Logs", "Events", "About"]
     )

@@ -1,4 +1,7 @@
-﻿__pycache__/
+﻿# -----------------------------
+# Python / venv
+# -----------------------------
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -6,92 +9,75 @@
 .venv/
 venv/
 .env
+
+# -----------------------------
+# Streamlit
+# -----------------------------
+.streamlit/
+
+# -----------------------------
+# Project runtime / evidence
+# -----------------------------
+# Events & logs (runtime only)
 args/data/events.jsonl
 args/logs/
 args/audit/archive/
 args/demo/archive/
-.streamlit/
-.streamlit/
-args/data/events_run.jsonl
-args/data/orders_paper.jsonl
+
+# Per-run artifacts (paper loop)
 args/data/events_run_*.jsonl
 args/data/orders_paper_*.jsonl
+args/logs/run_report_*_paper.json
 args/logs/run_report_*.json
+
+# IBKR bars / meta
 args/data/*_ibkr.csv
+args/data/*.meta.json
+
 # Local IBKR contract resolution outputs
 args/data/ibkr_*_contract_*.json
-args/data/*.meta.json
-# WA intents artifacts
-args/data/orders_intent_*.jsonl
-# WA payload artifacts (dry-run)
-args/data/orders_payload_*.jsonl
-# Sender dry-run artifacts
-args/data/orders_sendplan_*.jsonl
-# ARGS runtime position state (do not commit)
-args/data/position_state_v0.json
-args/data/position_state_v0.json
-args/data/order_intents_*.jsonl
-# runtime policy copy (must never be tracked)
+
+# Control plane state (runtime)
+args/data/control_state.json
+
+# Runtime policy copy (must never be tracked)
 args/data/invariants_hg_v0_copy.yaml
 args/data/invariants_*_copy.yaml
-# Runtime artifacts (paper/ops)
-args/data/ibkr_order_id_cursor_v1.json
-args/data/sent_orders_*.jsonl
-args/data/would_send_*.jsonl
+
+# ARGS runtime position state (do not commit)
+args/data/position_state_v0.json
+
+# -----------------------------
+# WA artifacts (intents / payload / sendplan)
+# -----------------------------
+args/data/order_intents_*.jsonl
+args/data/orders_intent_*.jsonl
 args/data/orders_payload_*.jsonl
 args/data/orders_sendplan_*.jsonl
-args/data/orders_intent_*.jsonl
-args/data/order_intents_*.jsonl
-args/data/events_run_*.jsonl
-args/logs/run_report_*_paper.json
-args/data/control_state.json
-# runtime artifacts
-args/data/orders_payload_*.jsonl
-args/data/orders_sendplan_*.jsonl
-args/data/orders_intent_*.jsonl
-args/data/order_intents_*.jsonl
-args/data/would_send_*.jsonl
+
+# Sender dry-run artifacts
 args/data/sent_orders_*.jsonl
-args/data/ibkr_order_id_cursor_v1.json
-args/data/control_state.json
-# runtime artifacts
-args/data/orders_payload_*.jsonl
-args/data/orders_sendplan_*.jsonl
-args/data/orders_intent_*.jsonl
-args/data/order_intents_*.jsonl
 args/data/would_send_*.jsonl
-args/data/sent_orders_*.jsonl
 args/data/ibkr_order_id_cursor_v1.json
-args/data/control_state.json
-# --- Stage 5.5 execution lifecycle / reconciliation ---
+
+# -----------------------------
+# Stage 5/6 execution lifecycle / reconciliation
+# -----------------------------
+# Executor event streams
 args/data/orders_exec_*.jsonl
+args/data/orders_exec_events_*.jsonl
+args/data/orders_exec_events_*_recon_*.jsonl
+
+# Reconcile artifacts
 args/data/orders_reconcile_*.json
+args/data/ibkr_open_orders_*.jsonl
+args/data/ibkr_open_orders_live.jsonl
+
+# Ledgers (idempotency + recon tests)
 args/data/ibkr_exec_ledger_v1*.json
-args/data/sent_orders_*.jsonl
-args/data/would_send_*.jsonl
-# runtime order ledger (idempotency)
 args/data/order_ledger_v0.jsonl
 args/data/order_ledger_v0.jsonl.lock
 args/data/order_ledger_test.jsonl
 args/data/order_ledger_test.jsonl.lock
-# runtime order ledger (idempotency)
-args/data/order_ledger_v0.jsonl
-args/data/order_ledger_v0.jsonl.lock
-args/data/ibkr_open_orders_*.jsonl
-# IBKR open orders snapshots (runtime)
-args/data/ibkr_open_orders_*.jsonl
-# runtime recon ledgers (tests)
 args/data/order_ledger_recon_*.jsonl
 args/data/order_ledger_recon_*.jsonl.lock
-
-
-# runtime recon ledgers (tests)
-args/data/order_ledger_recon_*.jsonl
-args/data/order_ledger_recon_*.jsonl.lock
-# Stage5E.2 reconcile demo artifacts
-args/data/ibkr_open_orders_*.jsonl
-args/data/orders_exec_events_*_recon_*.jsonl
-args/data/order_ledger_recon_*.jsonl
-args/data/order_ledger_recon_*.jsonl.lock
-
-

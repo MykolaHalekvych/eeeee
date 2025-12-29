@@ -1,4 +1,3 @@
-
 # args/wa/wa_ibkr_executor_v0.py
 from __future__ import annotations
 
@@ -580,6 +579,7 @@ def main() -> int:
 
     # Reconcile gate (Stage 5E.2)
     ap.add_argument("--reconcile", default="0", help="0/1. Preflight open-orders snapshot blocks submit if match found.")
+    ap.add_argument("--reconcile-empty-ok", default="1", help="0/1. When 1, snapshot_empty does NOT block reconcile (Stage6 live default).")
     ap.add_argument("--snapshot-path", default="", help="Optional snapshot jsonl path. Default: latest args/data/ibkr_open_orders_*.jsonl")
     ap.add_argument("--snapshot-max-age-s", type=float, default=600.0, help="Max allowed age of snapshot in seconds (default 600). 0 disables age check.")
 
@@ -671,6 +671,7 @@ def main() -> int:
     # ---------------------------
     reconcile_requested = _b01(args.reconcile)
     reconcile_enabled = bool(reconcile_requested and execute)
+    reconcile_empty_ok = _b01(args.reconcile_empty_ok)
 
     snapshot_idx = None
     snapshot_used = ""
@@ -706,6 +707,12 @@ def main() -> int:
                     snapshot_age_s = snapshot_age_seconds(snapshot_idx)
 
                     ok_snap, snap_reason = snapshot_validity(snapshot_idx)
+
+                    # Stage 6 behavior: empty snapshot can be valid ("no open orders observed")
+                    if (not ok_snap) and snap_reason == "snapshot_empty" and reconcile_empty_ok:
+                        ok_snap = True
+                        snap_reason = ""
+
                     if not ok_snap:
                         reconcile_block_all_reason = snap_reason
                         snapshot_idx = None
@@ -864,6 +871,7 @@ def main() -> int:
                                 "snapshot_age_s": snapshot_age_s,
                                 "snapshot_max_age_s": snapshot_max_age_s,
                                 "snapshot_parse_errors": snapshot_parse_errors,
+                                "empty_ok": bool(reconcile_empty_ok),
                             },
                         }
                     )
@@ -885,6 +893,7 @@ def main() -> int:
                                     "snapshot_age_s": snapshot_age_s,
                                     "snapshot_max_age_s": snapshot_max_age_s,
                                     "snapshot_parse_errors": snapshot_parse_errors,
+                                    "empty_ok": bool(reconcile_empty_ok),
                                     "match_by": match_by,
                                     "matches": matches,
                                 },
@@ -1052,6 +1061,7 @@ def main() -> int:
         "reconcile": {
             "requested": bool(reconcile_requested),
             "enabled": bool(reconcile_enabled),
+            "empty_ok": bool(reconcile_empty_ok),
             "snapshot_path": snapshot_used,
             "snapshot_age_s": snapshot_age_s,
             "snapshot_max_age_s": snapshot_max_age_s,
