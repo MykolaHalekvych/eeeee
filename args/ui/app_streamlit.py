@@ -15,6 +15,7 @@ import yaml
 from args.audit import event_store as _event_store
 from args.ma.ma_runtime import eval_ma
 from args.ma.policy_loader import load_policy
+from args.ui.ops_controls_tab import render_ops_controls  # Stage 6: OPS control plane UI
 from args.ui.run_explorer_tab import render_run_explorer_tab
 
 
@@ -435,7 +436,7 @@ def _load_events_jsonl(path: Path) -> List[Dict[str, Any]]:
                 out.append(obj)
         except Exception:
             continue
-    out.sort(key=lambda e: str(e.get("ts_utc") or e.get("ts") or e.get("ts_utc") or ""), reverse=True)
+    out.sort(key=lambda e: str(e.get("ts_utc") or e.get("ts") or ""), reverse=True)
     return out
 
 
@@ -611,7 +612,7 @@ def _decision_to_css(decision: str) -> str:
 # -----------------------------
 # ARGS Dashboard
 # -----------------------------
-def render_args_dashboard() -> None:
+def render_args_dashboard(operator_mode: bool) -> None:
     policy_meta = _read_yaml(POLICY_PATH)
     events = _load_events_jsonl(EVENTS_PATH)
     last = events[0] if events else {}
@@ -631,13 +632,6 @@ def render_args_dashboard() -> None:
 
     mu_pct = f"{mu * 100:.0f}%" if isinstance(mu, (int, float)) else "41%"
     ml_pct = f"{ml * 100:.0f}%" if isinstance(ml, (int, float)) else "35%"
-
-    mu_emph = "emph-yellow"
-    if isinstance(mu, (int, float)) and isinstance(ml, (int, float)):
-        mu_emph = "emph-red" if mu > ml else "emph-green"
-
-    tail_emph = "emph-yellow" if tail == "UNKNOWN" else "emph-blue"
-    liq_emph = "emph-blue" if liq == "NORMAL" else "emph-yellow"
 
     st.markdown(
         '<div class="args-hero">'
@@ -763,78 +757,43 @@ def render_args_dashboard() -> None:
         st.markdown(f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>', unsafe_allow_html=True)
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    # Stage 6 safety: event-writing actions hidden in Operator mode
     cc1, cc2, cc3 = st.columns([1, 1, 1])
     with cc2:
-        if st.button("EVAL MA", use_container_width=True, key="dash_eval_ma"):
-            policy = load_policy(POLICY_PATH)
-            ctx = _demo_ctx(policy_meta)
-            res = eval_ma(policy, ctx)
+        if operator_mode:
+            st.info("Operator mode: EVAL MA is disabled (writes events).")
+        else:
+            if st.button("EVAL MA (writes event)", use_container_width=True, key="dash_eval_ma"):
+                policy = load_policy(POLICY_PATH)
+                ctx = _demo_ctx(policy_meta)
+                res = eval_ma(policy, ctx)
 
-            decision2, vv2, risk_env2 = _normalize_eval_result(res)
-            system_mode2 = _derive_system_mode(decision2)
+                decision2, vv2, risk_env2 = _normalize_eval_result(res)
+                system_mode2 = _derive_system_mode(decision2)
 
-            ev = {
-                "event_id": uuid.uuid4().hex,
-                "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                "policy_name": str(policy_meta.get("policy_name") or policy_name),
-                "schema_version": str(policy_meta.get("schema_version") or schema_version),
-                "instrument": ctx.get("instrument"),
-                "timeframe": ctx.get("timeframe"),
-                "environment": ctx.get("environment"),
-                "ma_decision": decision2,
-                "system_mode": system_mode2,
-                "violations": vv2,
-                "risk_envelope": risk_env2,
-                "ctx_snapshot": ctx.get("ctx_snapshot", {}),
-            }
+                ev = {
+                    "event_id": uuid.uuid4().hex,
+                    "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "policy_name": str(policy_meta.get("policy_name") or policy_name),
+                    "schema_version": str(policy_meta.get("schema_version") or schema_version),
+                    "instrument": ctx.get("instrument"),
+                    "timeframe": ctx.get("timeframe"),
+                    "environment": ctx.get("environment"),
+                    "ma_decision": decision2,
+                    "system_mode": system_mode2,
+                    "violations": vv2,
+                    "risk_envelope": risk_env2,
+                    "ctx_snapshot": ctx.get("ctx_snapshot", {}),
+                }
 
-            mu2, ml2, tail2, _, _ = _extract_snapshot(ev)
-            ev["top_reason"] = _pick_top_reason(ev, mu2, ml2, tail2)
+                mu2, ml2, tail2, _, _ = _extract_snapshot(ev)
+                ev["top_reason"] = _pick_top_reason(ev, mu2, ml2, tail2)
 
-            code, out = _append_event_safe(ev)
-            if code != 0:
-                st.error(f"append_event failed: {out}")
-            st.rerun()
-
-    rows = events[:8]
-    if rows:
-        trs = ""
-        for e in rows:
-            ts = str(e.get("ts_utc") or e.get("ts") or "")
-            tshort = ts.split("T")[-1].replace("Z", "")[:8] if "T" in ts else ts[:8]
-
-            d = str(e.get("ma_decision") or "UNKNOWN").upper().replace("-", "_")
-            d_show = d.replace("_", "-")
-
-            mu_e, ml_e, tail_e, _, _ = _extract_snapshot(e)
-            reason = str(e.get("top_reason") or _pick_top_reason(e, mu_e, ml_e, tail_e))
-            pol = str(e.get("policy_name") or e.get("policy_file") or "")
-
-            dcls = _decision_to_css(d)
-            trs += (
-                "<tr>"
-                f"<td>{_html_escape(tshort)}</td>"
-                f"<td class='event-decision {dcls}'>{_html_escape(d_show)}</td>"
-                f"<td>{_html_escape(reason)}</td>"
-                f"<td>{_html_escape(pol)}</td>"
-                "</tr>"
-            )
-
-        table_html = (
-            '<div class="event-wrap">'
-            '<div class="event-title">EVENT STREAM</div>'
-            '<table class="event-table">'
-            "<thead><tr>"
-            '<th style="width:120px;">Time</th>'
-            '<th style="width:140px;">Decision</th>'
-            "<th>Reason</th>"
-            '<th style="width:260px;">Policy</th>'
-            "</tr></thead>"
-            f"<tbody>{trs}</tbody>"
-            "</table>"
-            "</div>"
-        )
-        st.markdown(table_html, unsafe_allow_html=True)
+                code, out = _append_event_safe(ev)
+                if code != 0:
+                    st.error(f"append_event failed: {out}")
+                st.rerun()
 
 
 # -----------------------------
@@ -908,43 +867,6 @@ def render_events_view() -> None:
 
     rows = filtered[: int(limit)]
 
-    trs = ""
-    for e in rows:
-        ts = str(e.get("ts_utc") or e.get("ts") or "")
-        tshort = ts.split("T")[-1].replace("Z", "")[:8] if "T" in ts else ts[:8]
-
-        d = str(e.get("_decision_norm") or "UNKNOWN")
-        d_show = d.replace("_", "-")
-        dcls = _decision_to_css(d)
-
-        reason = str(e.get("_reason") or "")
-        pol = str(e.get("_policy") or "")
-
-        trs += (
-            "<tr>"
-            f"<td>{_html_escape(tshort)}</td>"
-            f"<td class='event-decision {dcls}'>{_html_escape(d_show)}</td>"
-            f"<td>{_html_escape(reason)}</td>"
-            f"<td>{_html_escape(pol)}</td>"
-            "</tr>"
-        )
-
-    table_html = (
-        '<div class="event-wrap">'
-        '<div class="event-title">EVENT STREAM</div>'
-        '<table class="event-table">'
-        "<thead><tr>"
-        '<th style="width:120px;">Time</th>'
-        '<th style="width:140px;">Decision</th>'
-        "<th>Reason</th>"
-        '<th style="width:260px;">Policy</th>'
-        "</tr></thead>"
-        f"<tbody>{trs}</tbody>"
-        "</table>"
-        "</div>"
-    )
-    st.markdown(table_html, unsafe_allow_html=True)
-
     st.markdown("### Event details")
 
     def _label(e: Dict[str, Any]) -> str:
@@ -958,34 +880,39 @@ def render_events_view() -> None:
 
 
 # -----------------------------
-# Main
+# Main (Stage 6 layout)
 # -----------------------------
 def main() -> None:
     st.set_page_config(page_title="ARGS", layout="wide")
     st.markdown(UI_CSS, unsafe_allow_html=True)
 
-    st.sidebar.markdown("### Mode")
+    st.sidebar.markdown("### OPS Mode")
+
     operator_mode = st.sidebar.checkbox(
-        "Operator mode (safe)",
+        "Operator mode (safe-by-default)",
         value=True,
-        help="ON = operator-safe (hides dev/destructive actions). OFF = Dev mode.",
+        help="ON = safe operator mode (no dev/destructive actions). OFF = dev mode.",
         key="mode_operator",
     )
 
-    # Make operator_mode visible to all tabs (Run Explorer uses st.session_state['operator_mode'])
+    # Shared across tabs (OPS Controls uses this key too)
     st.session_state["operator_mode"] = bool(operator_mode)
 
-    tab_args, tab_runexp, tab_dashboard, tab_logs, tab_events, tab_about = st.tabs(
-        ["ARGS Dashboard", "Run Explorer", "Control Panel", "Logs", "Events", "About"]
+    # Stage 6: OPS Controls first, then Run Explorer
+    tab_ops, tab_runexp, tab_args, tab_cp, tab_logs, tab_events, tab_about = st.tabs(
+        ["OPS Controls", "Run Explorer", "ARGS Dashboard", "Control Panel", "Logs", "Events", "About"]
     )
 
-    with tab_args:
-        render_args_dashboard()
+    with tab_ops:
+        render_ops_controls()
 
     with tab_runexp:
         render_run_explorer_tab()
 
-    with tab_dashboard:
+    with tab_args:
+        render_args_dashboard(operator_mode=bool(operator_mode))
+
+    with tab_cp:
         header_status()
 
         cA, cB = st.columns(2)
@@ -1008,6 +935,7 @@ def main() -> None:
                 st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                 st.session_state["sanity_results"] = run_sanity_suite()
 
+            # Stage 6 safety: hide dev-only actions in operator mode
             if operator_mode:
                 st.info("Operator mode: Negative test and Checkpoint are hidden.")
             else:
@@ -1015,7 +943,7 @@ def main() -> None:
                     st.session_state["neg_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                     st.session_state["neg_result"] = run_negative_test()
 
-                tag = st.text_input("Checkpoint tag", value="ui_polish", key="cp_checkpoint_tag")
+                tag = st.text_input("Checkpoint tag", value="stage6_ops", key="cp_checkpoint_tag")
                 if st.button("Run checkpoint.ps1", key="cp_run_checkpoint"):
                     st.session_state["chk_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                     st.session_state["chk_result"] = run_checkpoint(tag)
@@ -1092,9 +1020,9 @@ def main() -> None:
         st.subheader("About / Commands")
         st.markdown(
             """
-- Sanity suite: runs regression / policy diff / replay / meta-audit
-- Operator mode hides negative test + checkpoint actions
-- Run Explorer tab shows per-run artifacts (events_run_*, orders_paper_*, run_report_*)
+Stage 6 (OPS 24×7) UI:
+- OPS Controls tab manipulates only file-based control plane (stop.flag) and shows health (snapshot, task scheduler, processes, logs).
+- No BUY/SELL, no manual overrides.
 
 Run UI:
 - `py -3.11 -m streamlit run .\\args\\ui\\app_streamlit.py`
@@ -1104,4 +1032,3 @@ Run UI:
 
 if __name__ == "__main__":
     main()
-
