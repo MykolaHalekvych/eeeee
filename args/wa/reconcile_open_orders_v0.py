@@ -41,16 +41,21 @@ def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
 
 def _contract_signature(c: Dict[str, Any]) -> Optional[str]:
     """
-    Fallback signature match when conId/localSymbol absent:
-      symbol + secType + exchange + currency
+    Signature for fallback matching.
+    IMPORTANT: exchange=SMART is treated as wildcard (ignored),
+    because openOrders snapshot often shows the real venue (e.g., COMEX).
     """
     sym = _u(c.get("symbol"))
     if not sym:
         return None
     sec = _u(c.get("secType"))
-    ex = _u(c.get("exchange"))
     cur = _u(c.get("currency"))
-    return f"{sym}|{sec}|{ex}|{cur}"
+
+    ex = _u(c.get("exchange")) or _u(c.get("primaryExchange"))
+    if ex == "SMART":
+        ex = ""  # wildcard
+
+    return f"{sym}|{sec}|{cur}|{ex}"
 
 
 @dataclass(frozen=True)
