@@ -16,6 +16,10 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _u(x: Any) -> str:
+    return str(x or "").strip().upper()
+
+
 def _parse_iso_z(s: str) -> Optional[datetime]:
     try:
         s2 = s.strip()
@@ -35,6 +39,20 @@ def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
     return files[0] if files else None
 
 
+def _contract_signature(c: Dict[str, Any]) -> Optional[str]:
+    """
+    Fallback signature match when conId/localSymbol absent:
+      symbol + secType + exchange + currency
+    """
+    sym = _u(c.get("symbol"))
+    if not sym:
+        return None
+    sec = _u(c.get("secType"))
+    ex = _u(c.get("exchange"))
+    cur = _u(c.get("currency"))
+    return f"{sym}|{sec}|{ex}|{cur}"
+
+
 @dataclass(frozen=True)
 class SnapshotIndex:
     path: Path
@@ -43,6 +61,7 @@ class SnapshotIndex:
     open_orders: List[Dict[str, Any]]
     by_conid: Dict[int, List[Dict[str, Any]]]
     by_local_symbol: Dict[str, List[Dict[str, Any]]]
+    by_sig: Dict[str, List[Dict[str, Any]]]
 
 
 def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
@@ -52,6 +71,7 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
     open_orders: List[Dict[str, Any]] = []
     by_conid: Dict[int, List[Dict[str, Any]]] = {}
     by_local: Dict[str, List[Dict[str, Any]]] = {}
+    by_sig: Dict[str, List[Dict[str, Any]]] = {}
 
     with path.open("r", encoding="utf-8-sig", errors="replace") as f:
         for line in f:
@@ -65,7 +85,7 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if not isinstance(obj, dict):
                 continue
 
-            kind = str(obj.get("kind") or "").strip().upper()
+            kind = _u(obj.get("kind"))
 
             if kind == "IBKR_SNAPSHOT_START":
                 ts = obj.get("ts")
@@ -80,23 +100,33 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if kind != "IBKR_OPEN_ORDER":
                 continue
 
-            oo = {
+            contract = obj.get("contract") if isinstance(obj.get("contract"), dict) else {}
+            order = obj.get("order") if isinstance(obj.get("order"), dict) else {}
+            order_state = obj.get("order_state") if isinstance(obj.get("order_state"), dict) else {}
+
+            oo: Dict[str, Any] = {
                 "order_id": obj.get("order_id"),
-                "contract": obj.get("contract") if isinstance(obj.get("contract"), dict) else {},
-                "order": obj.get("order") if isinstance(obj.get("order"), dict) else {},
-                "order_state": obj.get("order_state") if isinstance(obj.get("order_state"), dict) else {},
+                "contract": contract,
+                "order": order,
+                "order_state": order_state,
                 "ts": obj.get("ts"),
             }
             open_orders.append(oo)
 
-            c = oo["contract"]
-            conid = c.get("conId")
+            # Index by conId
+            conid = contract.get("conId")
             if isinstance(conid, int):
                 by_conid.setdefault(conid, []).append(oo)
 
-            ls = c.get("localSymbol")
+            # Index by localSymbol
+            ls = contract.get("localSymbol")
             if isinstance(ls, str) and ls.strip():
                 by_local.setdefault(ls.strip().upper(), []).append(oo)
+
+            # Index by signature
+            sig = _contract_signature(contract)
+            if sig:
+                by_sig.setdefault(sig, []).append(oo)
 
     return SnapshotIndex(
         path=path,
@@ -105,6 +135,7 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
         open_orders=open_orders,
         by_conid=by_conid,
         by_local_symbol=by_local,
+        by_sig=by_sig,
     )
 
 
@@ -121,16 +152,26 @@ def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tupl
     Match priority:
       1) conId
       2) localSymbol
+      3) (symbol, secType, exchange, currency) signature
     Returns: (matched, match_by, matches)
     """
     conid = contract_dict.get("conId")
-    if isinstance(conid, int) and conid in idx.by_conid:
-        return True, "conId", idx.by_conid[conid][:10]
+    if isinstance(conid, int):
+        hits = idx.by_conid.get(conid)
+        if hits:
+            return True, "conId", hits[:10]
 
     ls = contract_dict.get("localSymbol")
     if isinstance(ls, str) and ls.strip():
         key = ls.strip().upper()
-        if key in idx.by_local_symbol:
-            return True, "localSymbol", idx.by_local_symbol[key][:10]
+        hits = idx.by_local_symbol.get(key)
+        if hits:
+            return True, "localSymbol", hits[:10]
+
+    sig = _contract_signature(contract_dict)
+    if sig:
+        hits = idx.by_sig.get(sig)
+        if hits:
+            return True, "symbol/secType/exchange/currency", hits[:10]
 
     return False, "", []
