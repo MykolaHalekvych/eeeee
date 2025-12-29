@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 
 def _now_utc_iso() -> str:
@@ -14,6 +14,13 @@ def _now_utc_iso() -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _resolve_sendplan(repo_root: Path, run_id: str) -> Path:
+    p = repo_root / "args" / "data" / f"orders_sendplan_{run_id}.jsonl"
+    if not p.exists():
+        raise FileNotFoundError(f"sendplan not found: {p}")
+    return p
 
 
 def _read_first_actionable_plan(sendplan_path: Path) -> Dict[str, Any]:
@@ -31,40 +38,36 @@ def _read_first_actionable_plan(sendplan_path: Path) -> Dict[str, Any]:
     raise RuntimeError(f"No actionable PLAN_IBKR_* found in {sendplan_path}")
 
 
-def _resolve_sendplan(repo_root: Path, run_id: str) -> Path:
-    p = repo_root / "args" / "data" / f"orders_sendplan_{run_id}.jsonl"
-    if not p.exists():
-        raise FileNotFoundError(f"sendplan not found: {p}")
-    return p
+def _load_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+    return obj if isinstance(obj, dict) else None
 
 
-def _load_contract_fallback(repo_root: Path) -> Dict[str, Any]:
+def _find_contract_like(d: Any) -> Optional[Dict[str, Any]]:
     """
-    Uses contract resolver artifact: args/data/ibkr_hg_contract_v1.json
-    Accepts:
-      - {"picked": {...}}
-      - {...} (already contract dict)
+    Recursively search for a dict that has conId and/or localSymbol.
+    Returns first match found.
     """
-    p = repo_root / "args" / "data" / "ibkr_hg_contract_v1.json"
-    if not p.exists():
-        raise FileNotFoundError(f"Missing contract resolver file: {p}")
+    if isinstance(d, dict):
+        conid = d.get("conId")
+        ls = d.get("localSymbol")
+        if isinstance(conid, int) or (isinstance(ls, str) and ls.strip()):
+            return d
 
-    obj = json.loads(p.read_text(encoding="utf-8-sig", errors="replace"))
-    if not isinstance(obj, dict):
-        raise RuntimeError("ibkr_hg_contract_v1.json is not a dict")
+        for v in d.values():
+            m = _find_contract_like(v)
+            if m is not None:
+                return m
 
-    picked = obj.get("picked")
-    if isinstance(picked, dict) and picked:
-        return dict(picked)
-    return dict(obj)
+    if isinstance(d, list):
+        for v in d:
+            m = _find_contract_like(v)
+            if m is not None:
+                return m
 
-
-def _pick_contract(repo_root: Path, plan: Dict[str, Any]) -> Dict[str, Any]:
-    for k in ("contract", "ibkr_contract"):
-        v = plan.get(k)
-        if isinstance(v, dict) and v:
-            return dict(v)
-    return _load_contract_fallback(repo_root)
+    return None
 
 
 def main() -> int:
@@ -80,11 +83,28 @@ def main() -> int:
     sendplan_path = _resolve_sendplan(repo_root, run_id)
     plan = _read_first_actionable_plan(sendplan_path)
 
-    contract = _pick_contract(repo_root, plan)
+    # Try contract from plan first
+    contract = None
+    for k in ("contract", "ibkr_contract"):
+        v = plan.get(k)
+        if isinstance(v, dict) and v:
+            contract = v
+            break
 
+    # Fallback: resolver artifact
+    if contract is None:
+        resolver_path = repo_root / "args" / "data" / "ibkr_hg_contract_v1.json"
+        resolver_obj = _load_json_if_exists(resolver_path)
+        if resolver_obj is not None:
+            contract = _find_contract_like(resolver_obj)
+
+    # Last resort: raw HG contract json if you have it elsewhere (optional)
+    if contract is None:
+        raise RuntimeError("Cannot locate contract dict with conId/localSymbol in plan or ibkr_hg_contract_v1.json")
+
+    # Ensure match keys exist
     conid = contract.get("conId")
     local_symbol = contract.get("localSymbol")
-
     if conid is None and (not isinstance(local_symbol, str) or not local_symbol.strip()):
         raise RuntimeError("Contract has neither conId nor localSymbol; cannot build match snapshot")
 
