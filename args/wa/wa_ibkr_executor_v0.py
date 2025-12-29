@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from args.wa.order_ledger_v0 import OrderLedgerV0, compute_idempotency_key_from_plan
+from args.wa.reconcile_open_orders_v0 import (
+    choose_latest_snapshot,
+    load_open_orders_snapshot,
+    match_open_orders,
+    snapshot_age_seconds,
+)
 
 SCHEMA_VERSION = "wa_ibkr_executor_v0"
 SOURCE = "IBKR_EXECUTOR_V0"
@@ -27,6 +33,7 @@ ACTIONABLE_PLAN_KINDS = {
 # ---------------------------
 # small utilities
 # ---------------------------
+
 
 def _b01(x: Any) -> bool:
     if isinstance(x, bool):
@@ -140,6 +147,7 @@ def _compute_ledger_key(plan: Dict[str, Any], *, prefix: str) -> Tuple[str, str]
 # plan extractors
 # ---------------------------
 
+
 def _default_contract_path(repo_root: Path, instrument: str) -> Optional[Path]:
     inst = _norm(instrument)
     data_dir = repo_root / "args" / "data"
@@ -230,10 +238,11 @@ def _dict_to_ib_order(order_dict: Dict[str, Any]):
 # IBKR connection (minimal)
 # ---------------------------
 
+
 @dataclass(frozen=True)
 class IbkrConn:
     host: str = "127.0.0.1"
-    port: int = 7497          # paper default (often 7497). TWS live commonly 7496.
+    port: int = 7497  # paper default (often 7497). TWS live commonly 7496.
     client_id: int = 11
     timeout_s: float = 15.0
 
@@ -415,6 +424,7 @@ class _IBSimpleApp:
 # sender_real bridge (best-effort)
 # ---------------------------
 
+
 def _try_submit_via_sender_real(
     *,
     contract_dict: Dict[str, Any],
@@ -494,6 +504,7 @@ def _try_submit_via_sender_real(
 # plan/events helpers
 # ---------------------------
 
+
 def _is_actionable_plan(plan: Dict[str, Any]) -> bool:
     pk = _norm(plan.get("plan_kind"))
     if pk in ACTIONABLE_PLAN_KINDS:
@@ -549,6 +560,7 @@ def _finalize_ledger_safe(
 # main
 # ---------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="wa_ibkr_executor_v0")
 
@@ -564,6 +576,11 @@ def main() -> int:
     ap.add_argument("--ledger-path", default="args/data/order_ledger_v0.jsonl")
     ap.add_argument("--ledger-enabled", default="1", help="0/1. Enabled only when execute=1 (SAFE default 1)")
     ap.add_argument("--ledger-allow-retry", default="0", help="0/1. SAFE default 0 (no retry after REJECT/ERROR)")
+
+    # Reconcile gate (Stage 5E.2)
+    ap.add_argument("--reconcile", default="0", help="0/1. Preflight open-orders snapshot blocks submit if match found.")
+    ap.add_argument("--snapshot-path", default="", help="Optional snapshot jsonl path. Default: latest args/data/ibkr_open_orders_*.jsonl")
+    ap.add_argument("--snapshot-max-age-s", type=float, default=600.0, help="Max allowed age of snapshot in seconds (default 600). 0 disables age check.")
 
     # Output
     ap.add_argument("--out", default="", help="Optional output JSONL for exec events. Default: args/data/orders_exec_events_<run_id>.jsonl")
@@ -609,6 +626,7 @@ def main() -> int:
     orders_attempted = 0
     orders_skipped = 0
     orders_skipped_duplicate = 0
+    orders_skipped_reconcile = 0
     acks = 0
     rejects = 0
     parse_errors = 0
@@ -646,6 +664,40 @@ def main() -> int:
             lp = repo_root / lp
         ledger_path_resolved = str(lp.resolve())
         ledger = OrderLedgerV0(lp)
+
+    # Reconcile preflight init (Stage 5E.2)
+    reconcile_requested = _b01(args.reconcile)
+    reconcile_enabled = bool(reconcile_requested and execute)
+
+    snapshot_idx = None
+    snapshot_used = ""
+    snapshot_age_s: Optional[float] = None
+    reconcile_block_all_reason = ""
+
+    if reconcile_enabled:
+        sp_arg = str(args.snapshot_path or "").strip()
+        if sp_arg:
+            sp = Path(sp_arg)
+            if not sp.is_absolute():
+                sp = repo_root / sp
+        else:
+            sp = choose_latest_snapshot(repo_root)
+
+        if sp is None or (not sp.exists()):
+            reconcile_block_all_reason = "snapshot_missing"
+        else:
+            snapshot_used = str(sp)
+            try:
+                snapshot_idx = load_open_orders_snapshot(sp)
+                snapshot_age_s = snapshot_age_seconds(snapshot_idx)
+
+                max_age = float(args.snapshot_max_age_s)
+                if snapshot_age_s is not None and max_age > 0 and snapshot_age_s > max_age:
+                    reconcile_block_all_reason = f"snapshot_stale:{int(snapshot_age_s)}s"
+                    snapshot_idx = None
+            except Exception as e:
+                reconcile_block_all_reason = f"snapshot_parse_error:{type(e).__name__}"
+                snapshot_idx = None
 
     # IB connection (lazy)
     ib_app: Optional[_IBSimpleApp] = None
@@ -777,6 +829,47 @@ def main() -> int:
                 _emit_event(fout, evt)
                 rejects += 1
                 continue
+
+            # Stage 5E.2: reconcile gate BEFORE ledger.reserve
+            if reconcile_enabled:
+                if reconcile_block_all_reason:
+                    evt = _build_event_base(plan, exec_id=exec_id)
+                    evt.update(
+                        {
+                            "kind": "ORDER_SKIP_RECONCILE",
+                            "reason": reconcile_block_all_reason,
+                            "ledger_key": ledger_key,
+                            "details": {
+                                "snapshot_path": snapshot_used,
+                                "snapshot_age_s": snapshot_age_s,
+                                "snapshot_max_age_s": float(args.snapshot_max_age_s),
+                            },
+                        }
+                    )
+                    _emit_event(fout, evt)
+                    orders_skipped_reconcile += 1
+                    continue
+
+                if snapshot_idx is not None:
+                    matched, match_by, matches = match_open_orders(snapshot_idx, contract_dict)
+                    if matched:
+                        evt = _build_event_base(plan, exec_id=exec_id)
+                        evt.update(
+                            {
+                                "kind": "ORDER_SKIP_RECONCILE",
+                                "reason": "open_order_exists",
+                                "ledger_key": ledger_key,
+                                "details": {
+                                    "snapshot_path": snapshot_used,
+                                    "snapshot_age_s": snapshot_age_s,
+                                    "match_by": match_by,
+                                    "matches": matches,
+                                },
+                            }
+                        )
+                        _emit_event(fout, evt)
+                        orders_skipped_reconcile += 1
+                        continue
 
             # Ledger dedupe: reserve BEFORE submit (only when ledger enabled)
             if ledger is not None and ledger_key:
@@ -933,12 +1026,21 @@ def main() -> int:
             "path": ledger_path_resolved,
             "allow_retry": ledger_allow_retry,
         },
+        "reconcile": {
+            "requested": bool(reconcile_requested),
+            "enabled": bool(reconcile_enabled),
+            "snapshot_path": snapshot_used,
+            "snapshot_age_s": snapshot_age_s,
+            "snapshot_max_age_s": float(args.snapshot_max_age_s),
+            "block_reason": reconcile_block_all_reason,
+        },
         "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
         "plans_seen": plans_seen,
         "plans_actionable": plans_actionable,
         "orders_attempted": orders_attempted,
         "orders_skipped": orders_skipped,
         "orders_skipped_duplicate": orders_skipped_duplicate,
+        "orders_skipped_reconcile": orders_skipped_reconcile,
         "acks": acks,
         "rejects": rejects,
         "order_status_events": status_events,
@@ -950,3 +1052,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
