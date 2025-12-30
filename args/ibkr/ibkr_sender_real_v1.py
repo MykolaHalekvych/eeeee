@@ -10,8 +10,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+# Optional dependency: central control plane.
+# If import fails for any reason, we fall back to local safe readers (DRY_RUN default).
+try:
+    from args.control.execution_mode_v0 import get_execution_mode as _get_execution_mode  # type: ignore
+    from args.control.execution_mode_v0 import is_stop_flag_present as _is_stop_flag_present  # type: ignore
+except Exception:
+    _get_execution_mode = None
+    _is_stop_flag_present = None
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
+EXEC_MODE_PATH = DATA_DIR / "execution_mode.json"  # local arming: DRY_RUN/EXIT_ONLY/FULL (safe-by-default)
+STOP_FLAG_PATH = DATA_DIR / "stop.flag"
 
 # Guardrails
 K_LIMIT_ORDERS_DEFAULT = 1           # per invocation
@@ -23,6 +35,78 @@ ORDER_ID_FLOOR = 1000
 
 # Stage 5.5: execution lifecycle logs + idempotency ledger
 EXEC_LEDGER_PATH_DEFAULT = DATA_DIR / "ibkr_exec_ledger_v1.json"
+
+
+# -----------------------------
+# Local safe control readers (fallback)
+# -----------------------------
+def _read_json_obj(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _norm_exec_mode(x: Any) -> str:
+    s = str(x or "").strip().upper().replace("-", "_")
+    if s in {"DRY_RUN", "EXIT_ONLY", "FULL"}:
+        return s
+    return "DRY_RUN"
+
+
+def _get_exec_mode(repo_root: Path) -> str:
+    # Prefer centralized control module (if present).
+    if _get_execution_mode is not None:
+        try:
+            return _norm_exec_mode(_get_execution_mode(repo_root))
+        except Exception:
+            return "DRY_RUN"
+
+    # Fallback: read args/data/execution_mode.json directly
+    data_dir = repo_root / "args" / "data"
+    p = data_dir / "execution_mode.json"
+    obj = _read_json_obj(p)
+    if isinstance(obj, dict):
+        return _norm_exec_mode(obj.get("mode"))
+    return "DRY_RUN"
+
+
+def _get_stop_flag(repo_root: Path) -> bool:
+    if _is_stop_flag_present is not None:
+        try:
+            return bool(_is_stop_flag_present(repo_root))
+        except Exception:
+            return False
+    # Fallback
+    return bool((repo_root / "args" / "data" / "stop.flag").exists())
+
+
+def _decorate_ibkr_error_details(*, error_code: int, error_string: str) -> Dict[str, Any]:
+    """
+    Adds actionable operator hints for known IBKR errors.
+    Keep it small and deterministic.
+    """
+    details: Dict[str, Any] = {
+        "error_code": int(error_code),
+        "error_string": str(error_string),
+    }
+
+    # IBKR: "Error validating request.. cause - The API interface is currently in Read-Only mode."
+    if int(error_code) == 321:
+        details["operator_hint"] = (
+            "IBKR API вернул Read-Only mode. Обычно это включён флаг 'Read-Only API' в TWS/IB Gateway "
+            "или у аккаунта/сессии нет прав на торговые операции."
+        )
+        details["operator_action"] = (
+            "Проверь настройки TWS/IB Gateway: отключи 'Read-Only API', перезапусти TWS/Gateway, "
+            "убедись что подключаешься к правильному порту (paper обычно 7497, live часто 7496), "
+            "и что аккаунт действительно в режиме Paper/Live как ожидается."
+        )
+
+    return details
 
 
 # -----------------------------
@@ -44,7 +128,7 @@ def load_control_state(path: Path) -> Dict[str, Any]:
 
     try:
         # BOM-tolerant for Windows/PowerShell Set-Content UTF8
-        obj = json.loads(path.read_text(encoding="utf-8-sig"))
+        obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
         if not isinstance(obj, dict):
             return {"armed": False, "simulate": False, "source": "invalid_defaults"}
 
@@ -81,7 +165,7 @@ def extract_run_mode(run_report: Dict[str, Any]) -> str:
 
 
 def load_run_report(path: Path) -> Dict[str, Any]:
-    obj = json.loads(path.read_text(encoding="utf-8"))
+    obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     if not isinstance(obj, dict):
         raise ValueError("run_report is not a JSON object")
     return obj
@@ -96,7 +180,8 @@ def iter_jsonl_strict(path: Path) -> Tuple[Iterable[Dict[str, Any]], Dict[str, i
     def gen():
         if not path.exists():
             return
-        with path.open("r", encoding="utf-8", errors="replace") as f:
+        # utf-8-sig to tolerate BOM on Windows/PowerShell pipelines
+        with path.open("r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 s = line.strip()
                 if not s:
@@ -182,7 +267,7 @@ def compute_send_key(run_id: str, sendplan_item: Dict[str, Any]) -> str:
 def _load_ledger(path: Path) -> Dict[str, Any]:
     if path.exists():
         try:
-            obj = json.loads(path.read_text(encoding="utf-8"))
+            obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
             if isinstance(obj, dict):
                 return obj
         except Exception:
@@ -260,7 +345,7 @@ class IbkrConn:
 def load_ibkr_connection(path: Path) -> IbkrConn:
     if not path.exists():
         return IbkrConn(host="localhost", port=7497, client_id=101)
-    obj = json.loads(path.read_text(encoding="utf-8"))
+    obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     if not isinstance(obj, dict):
         return IbkrConn(host="localhost", port=7497, client_id=101)
     host = str(obj.get("host") or "localhost")
@@ -280,7 +365,7 @@ def _load_cursor() -> Dict[str, Any]:
     if not CURSOR_PATH.exists():
         return {}
     try:
-        obj = json.loads(CURSOR_PATH.read_text(encoding="utf-8"))
+        obj = json.loads(CURSOR_PATH.read_text(encoding="utf-8-sig", errors="replace"))
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
@@ -434,11 +519,15 @@ class _IbkrApp:
                 except Exception:
                     rid = reqId
 
-                rec = {
+                code_i = int(errorCode) if str(errorCode).lstrip("-").isdigit() else int(errorCode) if isinstance(errorCode, int) else 0
+                msg_s = str(errorString)
+
+                rec: Dict[str, Any] = {
                     "event": "error",
                     "reqId": rid,
-                    "code": int(errorCode),
-                    "msg": str(errorString),
+                    "code": code_i,
+                    "msg": msg_s,
+                    "details": _decorate_ibkr_error_details(error_code=code_i, error_string=msg_s),
                 }
 
                 # best-effort: if reqId looks like orderId, attach send_key
@@ -454,7 +543,7 @@ class _IbkrApp:
                 if advancedOrderRejectJson:
                     rec["advanced_reject_json"] = str(advancedOrderRejectJson)
 
-                self._outer._errors.append({"reqId": rid, "code": int(errorCode), "msg": str(errorString)})
+                self._outer._errors.append({"reqId": rid, "code": code_i, "msg": msg_s})
                 _log(rec)
 
             def orderStatus(
@@ -550,6 +639,7 @@ class _IbkrApp:
                     "run_id": self._run_id,
                     "event": "connect_timeout",
                     "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                    "operator_hint": "TWS/IB Gateway не ответил nextValidId. Проверь что запущен, порт верный, API разрешён, firewall не блокирует.",
                 })
             try:
                 self._app.disconnect()
@@ -612,11 +702,14 @@ def real_sender(
     if not run_id:
         raise ValueError("run_report missing run_id")
 
-    mode = extract_run_mode(report)
+    run_mode = extract_run_mode(report)
 
     control = load_control_state(control_state_path)
     armed = bool(control.get("armed") is True)
     simulate = bool(control.get("simulate") is True)
+
+    exec_mode = _get_exec_mode(REPO_ROOT)     # DRY_RUN / EXIT_ONLY / FULL
+    stop_flag = _get_stop_flag(REPO_ROOT)     # emergency stop
 
     # per invocation limit
     try:
@@ -637,6 +730,21 @@ def real_sender(
     sent_path = DATA_DIR / f"sent_orders_{run_id}.jsonl"
     would_path = DATA_DIR / f"would_send_{run_id}.jsonl"
     exec_path = DATA_DIR / f"orders_exec_{run_id}.jsonl"
+
+    # BOOT log (always)
+    _append_exec(exec_path, {
+        "kind": "EXEC_EVENT",
+        "ts": _utc_now_z(),
+        "run_id": run_id,
+        "send_key": f"{run_id}:BOOT",
+        "status": "BOOT",
+        "armed": bool(armed),
+        "simulate": bool(simulate),
+        "exec_mode": exec_mode,
+        "stop_flag": bool(stop_flag),
+        "run_mode": run_mode,
+        "control_source": str(control.get("source") or ""),
+    })
 
     # Ledger path (optional override)
     lp = control.get("ledger_path")
@@ -674,13 +782,25 @@ def real_sender(
         total += 1
         _validate_sendplan_record(rec, errors)
         plans.append(rec)
+        if str(rec.get("kind") or "").strip().upper() == "SENDPLAN_ORDER":
+            order_plans += 1
         if len(errors) >= 50:
             break
 
     parse_errors = int(stats.get("parse_errors") or 0)
 
-    # DISARMED
-    if not armed:
+    # -----------------------------
+    # DISARM / STOP behavior
+    # -----------------------------
+    disarm_reason = ""
+    if stop_flag:
+        disarm_reason = "STOP_FLAG"
+    elif not armed:
+        disarm_reason = "DISARMED"
+    elif (not simulate) and exec_mode == "DRY_RUN":
+        disarm_reason = "EXEC_MODE_DRY_RUN"
+
+    if disarm_reason:
         for rec in plans:
             kind = str(rec.get("kind") or "").strip().upper()
             send_key = compute_send_key(run_id, rec)
@@ -690,9 +810,11 @@ def real_sender(
                 "run_id": run_id,
                 "send_key": send_key,
                 "status": "WOULD_SEND",
-                "armed": False,
-                "simulate": False,
-                "reason": "DISARMED",
+                "armed": bool(armed),
+                "simulate": bool(simulate),
+                "exec_mode": exec_mode,
+                "stop_flag": bool(stop_flag),
+                "reason": disarm_reason,
                 "plan_kind": kind,
             })
             append_jsonl(
@@ -700,10 +822,12 @@ def real_sender(
                 {
                     "kind": "WOULD_SEND",
                     "run_id": run_id,
-                    "mode": mode,
+                    "mode": run_mode,
+                    "exec_mode": exec_mode,
+                    "stop_flag": bool(stop_flag),
                     "plan_kind": kind,
                     "idempotency_key": rec.get("idempotency_key"),
-                    "reason": "DISARMED",
+                    "reason": disarm_reason,
                     "send_key": send_key,
                     "sendplan": rec,
                 },
@@ -711,10 +835,13 @@ def real_sender(
             would += 1
 
         return {
-            "armed": False,
-            "simulate": False,
+            "armed": bool(armed),
+            "simulate": bool(simulate),
+            "exec_mode": exec_mode,
+            "stop_flag": bool(stop_flag),
+            "disarm_reason": disarm_reason,
             "run_id": run_id,
-            "mode": mode,
+            "mode": run_mode,
             "k_limit_orders": k_limit_i,
             "run_limit_orders": run_limit_i,
             "sendplan_path": str(sendplan_path),
@@ -726,20 +853,23 @@ def real_sender(
             "total": total,
             "would": would,
             "sent": 0,
+            "executed_orders": 0,
             "skipped": 0,
             "parse_errors": parse_errors,
             "errors_count": len(errors),
             "errors_head": errors[:8],
         }
 
-    # ARMED + SIMULATE (Stage 5.5 safe tests, no IBKR calls)
+    # -----------------------------
+    # ARMED + SIMULATE (safe tests, no IBKR calls)
+    # -----------------------------
     if simulate:
         conn_sim = load_ibkr_connection(DATA_DIR / "ibkr_connection_v0.json")
         cursor_last_before = _get_cursor_last(conn_sim)
         next_oid = max(int(cursor_last_before) + 1, int(ORDER_ID_FLOOR))
         last_oid_used: Optional[int] = None
 
-        # Cancel-all always allowed (simulated)
+        # Cancel-all always allowed (simulated) unless STOP_FLAG (already handled above)
         for rec in plans:
             kind = str(rec.get("kind") or "").strip().upper()
             if kind == "SENDPLAN_CANCEL_ALL":
@@ -752,19 +882,79 @@ def real_sender(
                     "send_key": send_key,
                     "status": "CANCEL_ALL_SIM",
                     "simulate": True,
+                    "exec_mode": exec_mode,
+                    "run_mode": run_mode,
                 })
                 append_jsonl(
                     sent_path,
                     {
                         "kind": "SENT_CANCEL_ALL_SIM",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "send_key": send_key,
                         "simulate": True,
                         "reason": rec.get("reason") or "CANCEL_ALL",
                     },
                 )
                 sent += 1
+
+        # EXIT_ONLY: block ALL SENDPLAN_ORDER (simulated)
+        if exec_mode == "EXIT_ONLY":
+            for rec in plans:
+                if str(rec.get("kind") or "").strip().upper() == "SENDPLAN_ORDER":
+                    send_key = compute_send_key(run_id, rec)
+                    _append_exec(exec_path, {
+                        "kind": "EXEC_EVENT",
+                        "ts": _utc_now_z(),
+                        "run_id": run_id,
+                        "send_key": send_key,
+                        "status": "BLOCKED_EXEC_MODE",
+                        "simulate": True,
+                        "exec_mode": "EXIT_ONLY",
+                        "reason": "EXEC_MODE_EXIT_ONLY_BLOCKS_ORDERS",
+                    })
+                    append_jsonl(
+                        would_path,
+                        {
+                            "kind": "WOULD_SEND",
+                            "run_id": run_id,
+                            "mode": run_mode,
+                            "exec_mode": "EXIT_ONLY",
+                            "plan_kind": "SENDPLAN_ORDER",
+                            "idempotency_key": rec.get("idempotency_key"),
+                            "reason": "EXEC_MODE_EXIT_ONLY_BLOCKS_ORDERS",
+                            "send_key": send_key,
+                            "sendplan": rec,
+                        },
+                    )
+                    skipped += 1
+
+            return {
+                "armed": True,
+                "simulate": True,
+                "exec_mode": "EXIT_ONLY",
+                "stop_flag": False,
+                "run_id": run_id,
+                "mode": run_mode,
+                "k_limit_orders": k_limit_i,
+                "run_limit_orders": run_limit_i,
+                "sendplan_path": str(sendplan_path),
+                "run_report_path": str(run_report_path),
+                "would_send_out": str(would_path),
+                "sent_out": str(sent_path),
+                "exec_out": str(exec_path),
+                "ledger_path": str(ledger_path),
+                "total": total,
+                "order_plans": order_plans,
+                "cancel_all": cancel_all,
+                "sent": sent,
+                "executed_orders": 0,
+                "skipped": skipped,
+                "parse_errors": parse_errors,
+                "errors_count": len(errors),
+                "errors_head": errors[:8],
+            }
 
         # run-level limit reached -> skip all orders
         if already_sent_count >= run_limit_i:
@@ -778,6 +968,7 @@ def real_sender(
                         "send_key": send_key,
                         "status": "BLOCKED_RUN_LIMIT",
                         "simulate": True,
+                        "exec_mode": exec_mode,
                         "reason": f"RUN_LIMIT_REACHED={run_limit_i}",
                     })
                     append_jsonl(
@@ -785,7 +976,8 @@ def real_sender(
                         {
                             "kind": "WOULD_SEND",
                             "run_id": run_id,
-                            "mode": mode,
+                            "mode": run_mode,
+                            "exec_mode": exec_mode,
                             "plan_kind": "SENDPLAN_ORDER",
                             "idempotency_key": rec.get("idempotency_key"),
                             "reason": f"RUN_LIMIT_REACHED={run_limit_i}",
@@ -798,8 +990,10 @@ def real_sender(
             return {
                 "armed": True,
                 "simulate": True,
+                "exec_mode": exec_mode,
+                "stop_flag": False,
                 "run_id": run_id,
-                "mode": mode,
+                "mode": run_mode,
                 "k_limit_orders": k_limit_i,
                 "run_limit_orders": run_limit_i,
                 "sendplan_path": str(sendplan_path),
@@ -809,7 +1003,7 @@ def real_sender(
                 "exec_out": str(exec_path),
                 "ledger_path": str(ledger_path),
                 "total": total,
-                "order_plans": 0,
+                "order_plans": order_plans,
                 "cancel_all": cancel_all,
                 "sent": sent,
                 "executed_orders": 0,
@@ -824,10 +1018,9 @@ def real_sender(
             kind = str(rec.get("kind") or "").strip().upper()
             if kind != "SENDPLAN_ORDER":
                 continue
-            order_plans += 1
             send_key = compute_send_key(run_id, rec)
 
-            if mode != "ALLOW_NEW_ENTRIES":
+            if run_mode != "ALLOW_NEW_ENTRIES":
                 _append_exec(exec_path, {
                     "kind": "EXEC_EVENT",
                     "ts": _utc_now_z(),
@@ -835,17 +1028,19 @@ def real_sender(
                     "send_key": send_key,
                     "status": "BLOCKED_MODE",
                     "simulate": True,
-                    "reason": mode,
+                    "exec_mode": exec_mode,
+                    "reason": run_mode,
                 })
                 append_jsonl(
                     would_path,
                     {
                         "kind": "WOULD_SEND",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "plan_kind": kind,
                         "idempotency_key": rec.get("idempotency_key"),
-                        "reason": f"MODE_BLOCKS_ORDERS:{mode}",
+                        "reason": f"MODE_BLOCKS_ORDERS:{run_mode}",
                         "send_key": send_key,
                         "sendplan": rec,
                     },
@@ -861,6 +1056,7 @@ def real_sender(
                     "send_key": send_key,
                     "status": "BLOCKED_K_LIMIT",
                     "simulate": True,
+                    "exec_mode": exec_mode,
                     "reason": f"K_LIMIT={k_limit_i}",
                 })
                 append_jsonl(
@@ -868,7 +1064,8 @@ def real_sender(
                     {
                         "kind": "WOULD_SEND",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "plan_kind": kind,
                         "idempotency_key": rec.get("idempotency_key"),
                         "reason": f"K_LIMIT={k_limit_i}",
@@ -889,6 +1086,7 @@ def real_sender(
                     "send_key": send_key,
                     "status": "DEDUPED",
                     "simulate": True,
+                    "exec_mode": exec_mode,
                 })
                 skipped += 1
                 continue
@@ -900,8 +1098,8 @@ def real_sender(
             _ledger_mark(ledger, send_key, state="RESERVED", order_id=oid, simulate=True)
             _save_ledger_atomic(ledger_path, ledger)
 
-            _append_exec(exec_path, {"kind": "EXEC_EVENT", "ts": _utc_now_z(), "run_id": run_id, "send_key": send_key, "order_id": oid, "status": "SUBMITTED", "simulate": True})
-            _append_exec(exec_path, {"kind": "EXEC_EVENT", "ts": _utc_now_z(), "run_id": run_id, "send_key": send_key, "order_id": oid, "status": "ACK", "simulate": True})
+            _append_exec(exec_path, {"kind": "EXEC_EVENT", "ts": _utc_now_z(), "run_id": run_id, "send_key": send_key, "order_id": oid, "status": "SUBMITTED", "simulate": True, "exec_mode": exec_mode})
+            _append_exec(exec_path, {"kind": "EXEC_EVENT", "ts": _utc_now_z(), "run_id": run_id, "send_key": send_key, "order_id": oid, "status": "ACK", "simulate": True, "exec_mode": exec_mode})
 
             _ledger_mark(ledger, send_key, state="SENT_SIM", order_id=oid, simulate=True)
             _save_ledger_atomic(ledger_path, ledger)
@@ -911,7 +1109,8 @@ def real_sender(
                 {
                     "kind": "SENT_ORDER_SIM",
                     "run_id": run_id,
-                    "mode": mode,
+                    "mode": run_mode,
+                    "exec_mode": exec_mode,
                     "idempotency_key": rec.get("idempotency_key"),
                     "send_key": send_key,
                     "ibkr_order_id": oid,
@@ -935,8 +1134,10 @@ def real_sender(
         return {
             "armed": True,
             "simulate": True,
+            "exec_mode": exec_mode,
+            "stop_flag": False,
             "run_id": run_id,
-            "mode": mode,
+            "mode": run_mode,
             "k_limit_orders": k_limit_i,
             "run_limit_orders": run_limit_i,
             "sendplan_path": str(sendplan_path),
@@ -956,8 +1157,81 @@ def real_sender(
             "errors_head": errors[:8],
         }
 
-    # ARMED (real IBKR)
+    # -----------------------------
+    # ARMED (real IBKR) - exec_mode must be FULL or EXIT_ONLY here
+    # -----------------------------
     conn = load_ibkr_connection(DATA_DIR / "ibkr_connection_v0.json")
+
+    # Determine if we actually need to connect:
+    has_cancel_all = any(str(p.get("kind") or "").strip().upper() == "SENDPLAN_CANCEL_ALL" for p in plans)
+
+    global_order_block_reason = ""
+    if exec_mode == "EXIT_ONLY":
+        global_order_block_reason = "EXEC_MODE_EXIT_ONLY_BLOCKS_ORDERS"
+    elif run_mode != "ALLOW_NEW_ENTRIES":
+        global_order_block_reason = f"MODE_BLOCKS_ORDERS:{run_mode}"
+    elif already_sent_count >= run_limit_i:
+        global_order_block_reason = f"RUN_LIMIT_REACHED={run_limit_i}"
+
+    # If orders are globally blocked and no cancel_all -> skip connect entirely.
+    if global_order_block_reason and (not has_cancel_all):
+        for rec in plans:
+            if str(rec.get("kind") or "").strip().upper() != "SENDPLAN_ORDER":
+                continue
+            send_key = compute_send_key(run_id, rec)
+            _append_exec(exec_path, {
+                "kind": "EXEC_EVENT",
+                "ts": _utc_now_z(),
+                "run_id": run_id,
+                "send_key": send_key,
+                "status": "BLOCKED_GLOBAL",
+                "simulate": False,
+                "exec_mode": exec_mode,
+                "reason": global_order_block_reason,
+            })
+            append_jsonl(
+                would_path,
+                {
+                    "kind": "WOULD_SEND",
+                    "run_id": run_id,
+                    "mode": run_mode,
+                    "exec_mode": exec_mode,
+                    "plan_kind": "SENDPLAN_ORDER",
+                    "idempotency_key": rec.get("idempotency_key"),
+                    "reason": global_order_block_reason,
+                    "send_key": send_key,
+                    "sendplan": rec,
+                },
+            )
+            skipped += 1
+
+        return {
+            "armed": True,
+            "simulate": False,
+            "exec_mode": exec_mode,
+            "stop_flag": False,
+            "run_id": run_id,
+            "mode": run_mode,
+            "k_limit_orders": k_limit_i,
+            "run_limit_orders": run_limit_i,
+            "sendplan_path": str(sendplan_path),
+            "run_report_path": str(run_report_path),
+            "would_send_out": str(would_path),
+            "sent_out": str(sent_path),
+            "exec_out": str(exec_path),
+            "ledger_path": str(ledger_path),
+            "total": total,
+            "order_plans": order_plans,
+            "cancel_all": 0,
+            "sent": 0,
+            "executed_orders": 0,
+            "skipped": skipped,
+            "parse_errors": parse_errors,
+            "errors_count": len(errors),
+            "errors_head": errors[:8],
+            "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+        }
+
     app = _IbkrApp(run_id=run_id, exec_path=exec_path)
 
     server_next_valid_id: Optional[int] = None
@@ -980,13 +1254,15 @@ def real_sender(
             "send_key": f"{run_id}:CONNECT",
             "status": "CONNECTED",
             "simulate": False,
+            "exec_mode": exec_mode,
+            "run_mode": run_mode,
             "server_next_valid_id": server_next_valid_id,
             "cursor_last_before": cursor_last_before,
             "start_order_id": start_order_id,
             "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
         })
 
-        # Cancel-all always allowed
+        # Cancel-all always allowed in REAL when not STOP_FLAG (already handled)
         for rec in plans:
             kind = str(rec.get("kind") or "").strip().upper()
             if kind == "SENDPLAN_CANCEL_ALL":
@@ -1000,13 +1276,15 @@ def real_sender(
                     "send_key": send_key,
                     "status": "CANCEL_ALL_SENT",
                     "simulate": False,
+                    "exec_mode": exec_mode,
                 })
                 append_jsonl(
                     sent_path,
                     {
                         "kind": "SENT_CANCEL_ALL",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "send_key": send_key,
                         "ts": rec.get("ts"),
                         "index": rec.get("index"),
@@ -1020,6 +1298,70 @@ def real_sender(
                 )
                 sent += 1
 
+        # If exec_mode EXIT_ONLY: block ALL order submissions (after cancel_all)
+        if exec_mode == "EXIT_ONLY":
+            for rec in plans:
+                if str(rec.get("kind") or "").strip().upper() != "SENDPLAN_ORDER":
+                    continue
+                send_key = compute_send_key(run_id, rec)
+                _append_exec(exec_path, {
+                    "kind": "EXEC_EVENT",
+                    "ts": _utc_now_z(),
+                    "run_id": run_id,
+                    "send_key": send_key,
+                    "status": "BLOCKED_EXEC_MODE",
+                    "simulate": False,
+                    "exec_mode": "EXIT_ONLY",
+                    "reason": "EXEC_MODE_EXIT_ONLY_BLOCKS_ORDERS",
+                })
+                append_jsonl(
+                    would_path,
+                    {
+                        "kind": "WOULD_SEND",
+                        "run_id": run_id,
+                        "mode": run_mode,
+                        "exec_mode": "EXIT_ONLY",
+                        "plan_kind": "SENDPLAN_ORDER",
+                        "idempotency_key": rec.get("idempotency_key"),
+                        "reason": "EXEC_MODE_EXIT_ONLY_BLOCKS_ORDERS",
+                        "send_key": send_key,
+                        "sendplan": rec,
+                    },
+                )
+                skipped += 1
+
+            ibkr_errors_head = app.errors[:8]
+            return {
+                "armed": True,
+                "simulate": False,
+                "exec_mode": "EXIT_ONLY",
+                "stop_flag": False,
+                "run_id": run_id,
+                "mode": run_mode,
+                "k_limit_orders": k_limit_i,
+                "run_limit_orders": run_limit_i,
+                "server_next_valid_id": server_next_valid_id,
+                "cursor_last_before": cursor_last_before,
+                "start_order_id": start_order_id,
+                "sendplan_path": str(sendplan_path),
+                "run_report_path": str(run_report_path),
+                "would_send_out": str(would_path),
+                "sent_out": str(sent_path),
+                "exec_out": str(exec_path),
+                "ledger_path": str(ledger_path),
+                "total": total,
+                "order_plans": order_plans,
+                "cancel_all": cancel_all,
+                "sent": sent,
+                "executed_orders": 0,
+                "skipped": skipped,
+                "parse_errors": parse_errors,
+                "errors_count": len(errors),
+                "errors_head": errors[:8],
+                "ibkr_errors_head": ibkr_errors_head,
+                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+            }
+
         # run-level limit reached -> skip all orders
         if already_sent_count >= run_limit_i:
             for rec in plans:
@@ -1032,6 +1374,7 @@ def real_sender(
                         "send_key": send_key,
                         "status": "BLOCKED_RUN_LIMIT",
                         "simulate": False,
+                        "exec_mode": exec_mode,
                         "reason": f"RUN_LIMIT_REACHED={run_limit_i}",
                     })
                     append_jsonl(
@@ -1039,7 +1382,8 @@ def real_sender(
                         {
                             "kind": "WOULD_SEND",
                             "run_id": run_id,
-                            "mode": mode,
+                            "mode": run_mode,
+                            "exec_mode": exec_mode,
                             "plan_kind": "SENDPLAN_ORDER",
                             "idempotency_key": rec.get("idempotency_key"),
                             "reason": f"RUN_LIMIT_REACHED={run_limit_i}",
@@ -1053,8 +1397,10 @@ def real_sender(
             return {
                 "armed": True,
                 "simulate": False,
+                "exec_mode": exec_mode,
+                "stop_flag": False,
                 "run_id": run_id,
-                "mode": mode,
+                "mode": run_mode,
                 "k_limit_orders": k_limit_i,
                 "run_limit_orders": run_limit_i,
                 "server_next_valid_id": server_next_valid_id,
@@ -1067,7 +1413,7 @@ def real_sender(
                 "exec_out": str(exec_path),
                 "ledger_path": str(ledger_path),
                 "total": total,
-                "order_plans": 0,
+                "order_plans": order_plans,
                 "cancel_all": cancel_all,
                 "sent": sent,
                 "executed_orders": 0,
@@ -1079,16 +1425,15 @@ def real_sender(
                 "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
             }
 
-        # Execute orders
+        # Execute orders (REAL)
         for rec in plans:
             kind = str(rec.get("kind") or "").strip().upper()
             if kind != "SENDPLAN_ORDER":
                 continue
-            order_plans += 1
 
             send_key = compute_send_key(run_id, rec)
 
-            if mode != "ALLOW_NEW_ENTRIES":
+            if run_mode != "ALLOW_NEW_ENTRIES":
                 _append_exec(exec_path, {
                     "kind": "EXEC_EVENT",
                     "ts": _utc_now_z(),
@@ -1096,17 +1441,19 @@ def real_sender(
                     "send_key": send_key,
                     "status": "BLOCKED_MODE",
                     "simulate": False,
-                    "reason": mode,
+                    "exec_mode": exec_mode,
+                    "reason": run_mode,
                 })
                 append_jsonl(
                     would_path,
                     {
                         "kind": "WOULD_SEND",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "plan_kind": kind,
                         "idempotency_key": rec.get("idempotency_key"),
-                        "reason": f"MODE_BLOCKS_ORDERS:{mode}",
+                        "reason": f"MODE_BLOCKS_ORDERS:{run_mode}",
                         "send_key": send_key,
                         "sendplan": rec,
                     },
@@ -1122,6 +1469,7 @@ def real_sender(
                     "send_key": send_key,
                     "status": "BLOCKED_K_LIMIT",
                     "simulate": False,
+                    "exec_mode": exec_mode,
                     "reason": f"K_LIMIT={k_limit_i}",
                 })
                 append_jsonl(
@@ -1129,7 +1477,8 @@ def real_sender(
                     {
                         "kind": "WOULD_SEND",
                         "run_id": run_id,
-                        "mode": mode,
+                        "mode": run_mode,
+                        "exec_mode": exec_mode,
                         "plan_kind": kind,
                         "idempotency_key": rec.get("idempotency_key"),
                         "reason": f"K_LIMIT={k_limit_i}",
@@ -1151,6 +1500,7 @@ def real_sender(
                     "send_key": send_key,
                     "status": "DEDUPED",
                     "simulate": False,
+                    "exec_mode": exec_mode,
                 })
                 skipped += 1
                 continue
@@ -1179,6 +1529,7 @@ def real_sender(
                 "order_id": int(oid),
                 "status": "SUBMITTED",
                 "simulate": False,
+                "exec_mode": exec_mode,
             })
 
             # tie callbacks to this send_key
@@ -1203,6 +1554,7 @@ def real_sender(
                 "order_id": int(oid),
                 "status": "ORDER_STATUS",
                 "simulate": False,
+                "exec_mode": exec_mode,
                 "ibkr_order_status": st,
             })
 
@@ -1215,7 +1567,8 @@ def real_sender(
                 {
                     "kind": "SENT_ORDER",
                     "run_id": run_id,
-                    "mode": mode,
+                    "mode": run_mode,
+                    "exec_mode": exec_mode,
                     "idempotency_key": key,
                     "send_key": send_key,
                     "ibkr_order_id": oid,
@@ -1253,8 +1606,10 @@ def real_sender(
     return {
         "armed": True,
         "simulate": False,
+        "exec_mode": exec_mode,
+        "stop_flag": False,
         "run_id": run_id,
-        "mode": mode,
+        "mode": run_mode,
         "k_limit_orders": k_limit_i,
         "run_limit_orders": run_limit_i,
         "server_next_valid_id": server_next_valid_id,
