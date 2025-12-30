@@ -1,883 +1,1028 @@
+#requires -Version 5.1
 <#
-STAGE7_WATCHDOG_V1_STABLE (StrictMode-safe)
-
-- JSON-only stdout: SUMMARY only
-- Full JSON written to args/data/ops_health.json (best-effort, also on crash)
-- Optional remediation is strictly operator-safe and skipped if stop.flag exists
+Stage 7: Ops Watchdog (production-stable)
+- Windows PowerShell 5.1+
+- StrictMode-safe
+- Exactly one JSON in stdout (summary-only)
+- Best-effort writes args/data/ops_health.json even on crash
+- Optional remediation is operator-safe and skipped if stop.flag exists
 - Exit codes: 0=OK, 1=WARN, 2=FAIL
-- HARD SAFETY: no BUY/SELL, no order placement, no trading actions
-- No external deps
+- Hard timeouts via Start-Job + Wait-Job -Timeout + Stop/Remove-Job
 #>
 
 [CmdletBinding()]
 param(
     [switch]$Remediate,
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "args/data/ops_config.yaml"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$VerbosePreference = "SilentlyContinue"
+$WarningPreference = "SilentlyContinue"
+$InformationPreference = "SilentlyContinue"
 
-# -------------------------
-# StrictMode-safe bootstrap
-# -------------------------
-$Script:RunId = ([Guid]::NewGuid()).ToString("N")
-$Script:RepoRoot = Split-Path -Parent $PSScriptRoot
-$Script:DataDir  = Join-Path $Script:RepoRoot "args\data"
-$Script:LogsDir  = Join-Path $Script:RepoRoot "args\logs"
+# -----------------------------
+# Globals
+# -----------------------------
+$script:RepoRoot = ""
+$script:LogPath = ""
+$script:AuditJsonlPath = ""
+$script:DefaultHealthPath = ""
+$script:StopJobSupportsForce = $false
+$script:RemoveJobSupportsForce = $false
 
-$Script:HostName = $env:COMPUTERNAME
-if ([string]::IsNullOrWhiteSpace($Script:HostName)) {
-    try { $Script:HostName = [System.Net.Dns]::GetHostName() } catch { $Script:HostName = "UNKNOWN_HOST" }
-}
+# -----------------------------
+# Helpers (safe / strict)
+# -----------------------------
+function Get-UtcIsoNow { (Get-Date).ToUniversalTime().ToString("o") }
+function New-RunId { ([Guid]::NewGuid().ToString("D")) }
 
-$Script:HealthPathDefault = Join-Path $Script:DataDir "ops_health.json"
-$Script:HealthPath = $Script:HealthPathDefault
-$Script:WatchdogLogPath = Join-Path $Script:LogsDir "ops_watchdog.log"
-$Script:RemediationJsonlPath = Join-Path $Script:DataDir "ops_remediation.jsonl"
-
-if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = Join-Path $Script:DataDir "ops_config.yaml"
-}
-
-# -------------------------
-# Helpers (no stdout)
-# -------------------------
-function UtcIso { (Get-Date).ToUniversalTime().ToString("o") }
-
-function Ensure-Dir {
+function Ensure-Directory {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
-    try {
-        if (-not (Test-Path -LiteralPath $Path)) {
-            New-Item -ItemType Directory -Path $Path -Force -ErrorAction SilentlyContinue | Out-Null
-        }
-    } catch { }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
 }
 
-function Normalize-Path {
-    param([string]$p)
-    if ([string]::IsNullOrWhiteSpace($p)) { return "" }
-    try { return [System.IO.Path]::GetFullPath($p).TrimEnd('\') } catch { return $p }
+function Normalize-FullPathLiteral {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    try { [System.IO.Path]::GetFullPath($Path) } catch { $Path }
 }
 
-function Resolve-RepoPath {
-    param([string]$p)
-    if ([string]::IsNullOrWhiteSpace($p)) { return "" }
-    $pp = ($p.Trim() -replace '/', '\')
-    if ([System.IO.Path]::IsPathRooted($pp)) { return $pp }
-    return (Join-Path $Script:RepoRoot $pp)
+function Resolve-RepoPathLiteral {
+    param([string]$RepoRoot, [string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    if ([System.IO.Path]::IsPathRooted($Path)) { return (Normalize-FullPathLiteral -Path $Path) }
+    return (Normalize-FullPathLiteral -Path (Join-Path -Path $RepoRoot -ChildPath $Path))
 }
 
-function Is-UnderDir {
-    param([string]$candidate, [string]$dir)
-    if ([string]::IsNullOrWhiteSpace($candidate) -or [string]::IsNullOrWhiteSpace($dir)) { return $false }
-    $c = (Normalize-Path $candidate).ToLowerInvariant()
-    $d = (Normalize-Path $dir).ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($c) -or [string]::IsNullOrWhiteSpace($d)) { return $false }
-    return $c.StartsWith($d + "\")
-}
-
-function Write-FileUtf8NoBom {
-    param([string]$Path, [string]$Text)
-    try {
-        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        Ensure-Dir (Split-Path -Parent $Path)
-        $enc = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($Path, $Text, $enc)
-        return $true
-    } catch { return $false }
-}
-
-function Append-FileUtf8NoBom {
-    param([string]$Path, [string]$Line)
-    try {
-        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        Ensure-Dir (Split-Path -Parent $Path)
-        $enc = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::AppendAllText($Path, $Line + [Environment]::NewLine, $enc)
-        return $true
-    } catch { return $false }
-}
-
-function LogLine {
-    param([string]$Level, [string]$Message)
-    try {
-        $line = ("{0} [{1}] run_id={2} {3}" -f (UtcIso), $Level, $Script:RunId, $Message)
-        $null = Append-FileUtf8NoBom -Path $Script:WatchdogLogPath -Line $line
-    } catch { }
-}
-
-function Safe-Int {
-    param($x, [int]$d, [int]$min=0, [int]$max=2147483647)
-    try {
-        $v = [int]$x
-        if ($v -lt $min) { return $min }
-        if ($v -gt $max) { return $max }
-        return $v
-    } catch { return $d }
-}
-
-function Safe-Double {
-    param($x, [double]$d, [double]$min=0.0, [double]$max=1.0E15)
-    try {
-        $v = [double]$x
-        if ($v -lt $min) { return $min }
-        if ($v -gt $max) { return $max }
-        return $v
-    } catch { return $d }
+function Resolve-RepoPathPattern {
+    param([string]$RepoRoot, [string]$Pattern)
+    if ([string]::IsNullOrWhiteSpace($Pattern)) { return $Pattern }
+    if ([System.IO.Path]::IsPathRooted($Pattern)) { return $Pattern }
+    return (Join-Path -Path $RepoRoot -ChildPath $Pattern)
 }
 
 function Split-List {
-    param([string]$s)
-    if ([string]::IsNullOrWhiteSpace($s)) { return @() }
-    $parts = ($s.Trim() -split '[;,]')
-    $out = New-Object System.Collections.Generic.List[string]
-    foreach ($p in $parts) {
-        $t = ($p -as [string]).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($t)) { $out.Add($t) | Out-Null }
-    }
-    return $out.ToArray()
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+    @($Value -split "[;,]" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
-function Parse-FlatYaml {
+function To-IntSafe {
+    param([string]$Value, [int]$Default)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $Default }
+    $n = 0
+    if ([int]::TryParse($Value, [ref]$n)) { return $n }
+    $Default
+}
+
+function Write-LogLine {
+    param([ValidateSet("INFO","WARN","ERROR")][string]$Level, [string]$Message)
+    if ([string]::IsNullOrWhiteSpace($script:LogPath)) { return }
+    $ts = Get-UtcIsoNow
+    $line = "$ts [$Level] $Message"
+    try { Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
+}
+
+function Append-AuditJsonl {
+    param([string]$RunId, [string]$Action, [string]$Outcome, [hashtable]$Details)
+    if ([string]::IsNullOrWhiteSpace($script:AuditJsonlPath)) { return }
+    $obj = @{
+        ts_utc  = Get-UtcIsoNow
+        run_id  = $RunId
+        action  = $Action
+        outcome = $Outcome
+        details = @{}
+    }
+    if ($null -ne $Details) { $obj.details = $Details }
+    $json = $obj | ConvertTo-Json -Compress -Depth 12
+    try { Add-Content -LiteralPath $script:AuditJsonlPath -Value $json -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
+}
+
+function Read-FlatYaml {
     param([string]$Path)
-    $cfg = @{}
-    $abs = Resolve-RepoPath $Path
-    if ([string]::IsNullOrWhiteSpace($abs) -or (-not (Test-Path -LiteralPath $abs))) { return $cfg }
+    $map = @{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $map }
+    $lines = @()
+    try { $lines = Get-Content -LiteralPath $Path -ErrorAction Stop } catch { return $map }
 
+    foreach ($raw in $lines) {
+        $line = [string]$raw
+        if ($null -eq $line) { continue }
+        $line = $line.Trim()
+        if ($line.Length -eq 0) { continue }
+        if ($line.StartsWith("#")) { continue }
+
+        $hashIdx = $line.IndexOf("#")
+        if ($hashIdx -ge 0) {
+            $line = $line.Substring(0, $hashIdx).Trim()
+            if ($line.Length -eq 0) { continue }
+        }
+
+        if ($line -match "^\s*([^:]+)\s*:\s*(.*)\s*$") {
+            $key = $matches[1].Trim()
+            $val = $matches[2].Trim()
+            if ($val.Length -ge 2) {
+                if (($val.StartsWith('"') -and $val.EndsWith('"')) -or ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+                    $val = $val.Substring(1, $val.Length - 2)
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($key)) { $map[$key] = $val }
+        }
+    }
+    $map
+}
+
+function Test-IsUnderDir {
+    param([string]$Path, [string]$Dir)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($Dir)) { return $false }
+    $pFull = Normalize-FullPathLiteral -Path $Path
+    $dFull = Normalize-FullPathLiteral -Path $Dir
+    if ([string]::IsNullOrWhiteSpace($pFull)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($dFull)) { return $false }
+    if (-not $dFull.EndsWith("\")) { $dFull = $dFull + "\" }
+    $pFull.StartsWith($dFull, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Init-JobForceSupport {
     try {
-        $lines = Get-Content -LiteralPath $abs -ErrorAction Stop
-        foreach ($raw in $lines) {
-            $line = ($raw -as [string]).Trim()
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            if ($line.StartsWith("#")) { continue }
-            if ($line.Contains("#")) { $line = ($line.Split("#",2)[0]).Trim() }
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            if (-not $line.Contains(":")) { continue }
-
-            $kv = $line.Split(":", 2)
-            $k = ($kv[0] -as [string]).Trim()
-            $v = ($kv[1] -as [string]).Trim()
-            if ([string]::IsNullOrWhiteSpace($k)) { continue }
-
-            if ((($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) -and $v.Length -ge 2) {
-                $v = $v.Substring(1, $v.Length - 2)
-            }
-
-            $low = $v.ToLowerInvariant()
-            if ($low -eq "true")  { $cfg[$k] = $true; continue }
-            if ($low -eq "false") { $cfg[$k] = $false; continue }
-
-            $iv = 0
-            if ([int]::TryParse($v, [ref]$iv)) { $cfg[$k] = $iv; continue }
-
-            $dv = 0.0
-            if ([double]::TryParse($v, [ref]$dv)) { $cfg[$k] = $dv; continue }
-
-            $cfg[$k] = $v
-        }
-    } catch {
-        LogLine "WARN" ("config parse failed: {0}" -f $_.Exception.Message)
-    }
-
-    return $cfg
-}
-
-function Merge-Config {
-    param([hashtable]$defaults, [hashtable]$overrides)
-    $d = @{}
-    foreach ($k in $defaults.Keys) { $d[$k] = $defaults[$k] }
-    foreach ($k in $overrides.Keys) { $d[$k] = $overrides[$k] }
-    return $d
-}
-
-function Write-HealthJson {
-    param([string]$jsonFull)
-    $ok = $false
-    $ok = $ok -or (Write-FileUtf8NoBom $Script:HealthPathDefault $jsonFull)
-    $ok = $ok -or (Write-FileUtf8NoBom $Script:HealthPath $jsonFull)
-    return $ok
-}
-
-# -------------------------
-# HARD TIMEOUT runner (Job)
-# -------------------------
-function Invoke-JobTimeout {
-    param(
-        [scriptblock]$ScriptBlock,
-        [object[]]$ArgumentList,
-        [int]$TimeoutSec
-    )
-
-    $TimeoutSec = Safe-Int $TimeoutSec 8 1 120
-    $job = $null
+        $cmdStop = Get-Command Stop-Job -ErrorAction Stop
+        if ($cmdStop.Parameters.ContainsKey("Force")) { $script:StopJobSupportsForce = $true }
+    } catch { }
     try {
-        $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
-        $done = Wait-Job -Job $job -Timeout $TimeoutSec
-        if ($null -eq $done) {
-            try { Stop-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
-            try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
-            return @{ ok=$false; timed_out=$true; error="TIMEOUT"; value=$null }
-        }
-
-        $res = $null
-        try { $res = Receive-Job -Job $job -ErrorAction SilentlyContinue } catch { $res = $null }
-        try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
-        return @{ ok=$true; timed_out=$false; error=$null; value=$res }
-    } catch {
-        try {
-            if ($null -ne $job) {
-                Stop-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
-                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
-            }
-        } catch { }
-        return @{ ok=$false; timed_out=$false; error=$_.Exception.Message; value=$null }
-    }
-}
-
-# -------------------------
-# Log helpers
-# -------------------------
-function Tail-File {
-    param([string]$path, [int]$n, [int]$timeoutSec = 3)
-    if ([string]::IsNullOrWhiteSpace($path) -or $n -le 0) { return @() }
-    if (-not (Test-Path -LiteralPath $path)) { return @() }
-
-    $r = Invoke-JobTimeout -TimeoutSec $timeoutSec -ArgumentList @($path, $n) -ScriptBlock {
-        param($p, $k)
-        try { return @(Get-Content -LiteralPath $p -Tail $k -ErrorAction Stop) } catch { return @() }
-    }
-
-    if (-not $r.ok) { return @() }
-    return @($r.value)
-}
-
-function RedFlagHits {
-    param([object[]]$lines, [string[]]$patterns)
-
-    $hits = New-Object System.Collections.Generic.List[string]
-    foreach ($ln in @($lines)) {
-        if ($null -eq $ln) { continue }
-        $s = [string]$ln
-        if ($s.Length -eq 0) { continue }
-
-        foreach ($pat in @($patterns)) {
-            if ([string]::IsNullOrWhiteSpace($pat)) { continue }
-            try {
-                if ($s -match $pat) { $hits.Add($s) | Out-Null; break }
-            } catch { }
-        }
-    }
-    return $hits.ToArray()
-}
-
-function Get-LogsStatus {
-    param([string]$mainLog, [string]$cycleGlob, [int]$tailLines, [string]$patternsStr)
-
-    $tailLines = Safe-Int $tailLines 120 0 5000
-    $patterns = Split-List $patternsStr
-    if (@($patterns).Count -eq 0) { $patterns = @("ERROR","FATAL","CRITICAL","Exception","Traceback","Unhandled","Terminating") }
-
-    $mainAbs = Resolve-RepoPath $mainLog
-    $cycleAbsGlob = Resolve-RepoPath $cycleGlob
-
-    $mainTail = Tail-File $mainAbs $tailLines 3
-    $mainHits = RedFlagHits -lines $mainTail -patterns $patterns
-
-    $cycleSel  = $null
-    $cycleTail = @()
-    $cycleHits = @()
-
-    # HARD timeout for glob enumeration + select newest file
-    $rr = Invoke-JobTimeout -TimeoutSec 6 -ArgumentList @($cycleAbsGlob) -ScriptBlock {
-        param($glob)
-        if ([string]::IsNullOrWhiteSpace($glob)) { return $null }
-        $items = @()
-        try { $items = @(Get-ChildItem -Path $glob -File -ErrorAction SilentlyContinue) } catch { $items = @() }
-        if (@($items).Count -le 0) { return $null }
-        try { return @($items | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1)[0].FullName } catch { return $null }
-    }
-
-    if ($rr.ok -and -not $rr.timed_out -and -not [string]::IsNullOrWhiteSpace($rr.value)) {
-        $cycleSel = [string]$rr.value
-        $cycleTail = Tail-File $cycleSel $tailLines 3
-        $cycleHits = RedFlagHits -lines $cycleTail -patterns $patterns
-    }
-
-    $mainExists = $false
-    try { if (-not [string]::IsNullOrWhiteSpace($mainAbs)) { $mainExists = Test-Path -LiteralPath $mainAbs } } catch { $mainExists = $false }
-
-    $cycleExists = $false
-    try { if (-not [string]::IsNullOrWhiteSpace($cycleSel)) { $cycleExists = Test-Path -LiteralPath $cycleSel } } catch { $cycleExists = $false }
-
-    return @{
-        red_flag_patterns = @($patterns)
-        main_log = @{
-            path = $mainAbs
-            exists = $mainExists
-            tail = @($mainTail)
-            red_flags_count = [int](@($mainHits).Count)
-            red_flags_sample = @($mainHits | Select-Object -First 10)
-        }
-        cycle_log = @{
-            glob = $cycleAbsGlob
-            selected_path = $cycleSel
-            exists = $cycleExists
-            tail = @($cycleTail)
-            red_flags_count = [int](@($cycleHits).Count)
-            red_flags_sample = @($cycleHits | Select-Object -First 10)
-        }
-    }
-}
-
-# -------------------------
-# Other collectors (timeout-protected)
-# -------------------------
-function Get-TaskStatusSafe {
-    param([string]$taskName, [int]$expectedIntervalMin, [int]$timeoutSec)
-
-    $expectedIntervalMin = Safe-Int $expectedIntervalMin 5 1 1440
-    $timeoutSec = Safe-Int $timeoutSec 6 1 60
-
-    $st = @{
-        name = $taskName
-        exists = $false
-        enabled = $null
-        state = "UNKNOWN"
-        last_run_time = $null
-        next_run_time = $null
-        last_task_result = $null
-        last_task_result_hex = $null
-        age_since_last_run_min = $null
-        missed_runs_est = $null
-        info_error = $null
-        timed_out = $false
-    }
-
-    if ([string]::IsNullOrWhiteSpace($taskName)) { $st.state="MISSING"; $st.info_error="task_name_not_configured"; return $st }
-    if ($null -eq (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) { $st.info_error="scheduledtask_cmdlets_missing"; return $st }
-
-    $r = Invoke-JobTimeout -TimeoutSec $timeoutSec -ArgumentList @($taskName, $expectedIntervalMin) -ScriptBlock {
-        param($tn, $exp)
-        $ErrorActionPreference = "Stop"
-        Import-Module ScheduledTasks -ErrorAction SilentlyContinue | Out-Null
-
-        $out = @{
-            name = $tn
-            exists = $false
-            enabled = $null
-            state = "MISSING"
-            last_run_time = $null
-            next_run_time = $null
-            last_task_result = $null
-            last_task_result_hex = $null
-            age_since_last_run_min = $null
-            missed_runs_est = $null
-            info_error = $null
-        }
-
-        try {
-            $task = Get-ScheduledTask -TaskName $tn -ErrorAction Stop
-            $info = Get-ScheduledTaskInfo -TaskName $tn -ErrorAction Stop
-
-            $out.exists = $true
-            $out.state = ($task.State -as [string])
-
-            $en = $null
-            try { if ($null -ne $task.Settings -and $null -ne $task.Settings.Enabled) { $en = [bool]$task.Settings.Enabled } } catch { $en = $null }
-            if ($null -eq $en) { $en = ($out.state -ne "Disabled") }
-            $out.enabled = $en
-
-            if ($info.LastRunTime -and $info.LastRunTime -gt [DateTime]"2000-01-01") {
-                $out.last_run_time = $info.LastRunTime.ToUniversalTime().ToString("o")
-                $age = (New-TimeSpan -Start $info.LastRunTime -End (Get-Date)).TotalMinutes
-                $out.age_since_last_run_min = [math]::Round($age, 2)
-                $missed = [math]::Max(0, [math]::Floor($age / $exp) - 1)
-                $out.missed_runs_est = [int]$missed
-            }
-
-            if ($info.NextRunTime -and $info.NextRunTime -gt [DateTime]"2000-01-01") {
-                $out.next_run_time = $info.NextRunTime.ToUniversalTime().ToString("o")
-            }
-
-            $out.last_task_result = $info.LastTaskResult
-            try { $out.last_task_result_hex = ('0x{0:X8}' -f [int]$info.LastTaskResult) } catch { $out.last_task_result_hex = $null }
-        } catch {
-            $out.info_error = $_.Exception.Message
-        }
-
-        return $out
-    }
-
-    if (-not $r.ok) {
-        $st.info_error = $r.error
-        $st.timed_out = [bool]$r.timed_out
-        return $st
-    }
-
-    if ($null -eq $r.value) {
-        $st.info_error = "TASK_QUERY_EMPTY"
-        return $st
-    }
-
-    return $r.value
-}
-
-function Get-OpsProcessesSafe {
-    param([string]$wrapName, [string]$innerName, [int]$timeoutSec)
-
-    $timeoutSec = Safe-Int $timeoutSec 10 1 60
-    $wrap = ($wrapName -as [string]).ToLowerInvariant()
-    $inn  = ($innerName -as [string]).ToLowerInvariant()
-    $repo = (Normalize-Path $Script:RepoRoot).ToLowerInvariant()
-
-    $out = @{
-        error = $null
-        timed_out = $false
-        wrapper_count = 0
-        inner_count = 0
-        total_count = 0
-        processes = @()
-    }
-
-    if ([string]::IsNullOrWhiteSpace($wrap) -and [string]::IsNullOrWhiteSpace($inn)) {
-        $out.error = "process_patterns_not_configured"
-        return $out
-    }
-
-    $r = Invoke-JobTimeout -TimeoutSec $timeoutSec -ArgumentList @() -ScriptBlock {
-        $ErrorActionPreference = "Stop"
-        if ($null -ne (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
-            return @(Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction Stop)
-        }
-        return @(Get-WmiObject -Class Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction Stop)
-    }
-
-    if (-not $r.ok) {
-        $out.error = $r.error
-        $out.timed_out = [bool]$r.timed_out
-        return $out
-    }
-
-    $items = New-Object System.Collections.Generic.List[object]
-    foreach ($p in @($r.value)) {
-        if ($null -eq $p) { continue }
-        $cmd = $p.CommandLine
-        if ([string]::IsNullOrWhiteSpace($cmd)) { continue }
-        $cl = $cmd.ToLowerInvariant()
-
-        $isW = (-not [string]::IsNullOrWhiteSpace($wrap)) -and $cl.Contains($wrap)
-        $isI = (-not [string]::IsNullOrWhiteSpace($inn))  -and $cl.Contains($inn)
-        if (-not ($isW -or $isI)) { continue }
-
-        $scoped = $false
-        if (-not [string]::IsNullOrWhiteSpace($repo) -and $cl.Contains($repo)) { $scoped = $true }
-        if (-not $scoped -and ($cl.Contains("\scripts\") -or $cl.Contains("/scripts/"))) { $scoped = $true }
-
-        $typ = if ($isW) { "WRAPPER" } elseif ($isI) { "INNER" } else { "UNKNOWN" }
-
-        $items.Add(@{
-            type = $typ
-            pid  = [int]$p.ProcessId
-            ppid = [int]$p.ParentProcessId
-            name = ($p.Name -as [string])
-            scoped_to_repo = $scoped
-            command_line = $cmd
-        }) | Out-Null
-    }
-
-    $out.wrapper_count = [int](@($items | Where-Object { $_.type -eq "WRAPPER" }).Count)
-    $out.inner_count   = [int](@($items | Where-Object { $_.type -eq "INNER" }).Count)
-    $out.total_count   = [int]$items.Count
-    $out.processes     = $items.ToArray()
-
-    return $out
-}
-
-function Get-SnapshotStatus {
-    param([string]$globs, [double]$warnAgeMin, [double]$failAgeMin, [int]$minBytes)
-
-    $warnAgeMin = Safe-Double $warnAgeMin 7.0 0.0
-    $failAgeMin = Safe-Double $failAgeMin 20.0 0.0
-    $minBytes   = Safe-Int $minBytes 16 0
-
-    $paths   = Split-List $globs
-    $checked = New-Object System.Collections.Generic.List[string]
-    $files   = New-Object System.Collections.Generic.List[object]
-
-    foreach ($g in $paths) {
-        $abs = Resolve-RepoPath $g
-        if ([string]::IsNullOrWhiteSpace($abs)) { continue }
-        $checked.Add($abs) | Out-Null
-
-        $rr = Invoke-JobTimeout -TimeoutSec 6 -ArgumentList @($abs) -ScriptBlock {
-            param($p)
-            try { return @(Get-ChildItem -Path $p -File -ErrorAction SilentlyContinue) } catch { return @() }
-        }
-
-        if ($rr.ok -and $rr.value) {
-            foreach ($it in @($rr.value)) {
-                if ($null -ne $it) { $files.Add($it) | Out-Null }
-            }
-        }
-    }
-
-    $st = @{
-        paths_checked = $checked.ToArray()
-        selected_path = $null
-        exists = $false
-        mtime_utc = $null
-        age_min = $null
-        bytes = $null
-        warn_age_min = $warnAgeMin
-        fail_age_min = $failAgeMin
-        min_bytes = $minBytes
-        status = "MISSING"
-        info_error = $null
-    }
-
-    if ($files.Count -eq 0) {
-        if ($checked.Count -eq 0) { $st.info_error = "snapshot_globs_not_configured_or_no_matches" }
-        return $st
-    }
-
-    $sel = $null
-    try { $sel = @($files | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1)[0] } catch { $sel = $null }
-    if ($null -eq $sel) { $st.status="FAIL"; $st.info_error="snapshot_select_failed"; return $st }
-
-    try {
-        $st.selected_path = $sel.FullName
-        $st.exists = $true
-        $st.bytes = [int64]$sel.Length
-        $st.mtime_utc = $sel.LastWriteTime.ToUniversalTime().ToString("o")
-        $age = (New-TimeSpan -Start $sel.LastWriteTime -End (Get-Date)).TotalMinutes
-        $st.age_min = [math]::Round($age, 2)
-
-        if ($st.bytes -lt $minBytes)        { $st.status = "FAIL" }
-        elseif ($age -gt $failAgeMin)       { $st.status = "FAIL" }
-        elseif ($age -gt $warnAgeMin)       { $st.status = "WARN" }
-        else                                { $st.status = "OK" }
-    } catch {
-        $st.status = "FAIL"
-        $st.info_error = $_.Exception.Message
-    }
-
-    return $st
-}
-
-function Get-Locks {
-    param([string]$lockList, [double]$staleAgeMin)
-
-    $staleAgeMin = Safe-Double $staleAgeMin 30.0 0.0
-    $paths = Split-List $lockList
-
-    $items = New-Object System.Collections.Generic.List[object]
-    foreach ($p in $paths) {
-        $abs = Resolve-RepoPath $p
-        if ([string]::IsNullOrWhiteSpace($abs)) { continue }
-
-        $exists = $false
-        try { $exists = Test-Path -LiteralPath $abs } catch { $exists = $false }
-
-        $it = @{
-            path = $abs
-            exists = $exists
-            age_min = $null
-            stale = $null
-            info_error = $null
-        }
-
-        if ($exists) {
-            try {
-                $fi = Get-Item -LiteralPath $abs -ErrorAction Stop
-                $age = (New-TimeSpan -Start $fi.LastWriteTime -End (Get-Date)).TotalMinutes
-                $it.age_min = [math]::Round($age, 2)
-                $it.stale = ([double]$it.age_min -gt $staleAgeMin)
-            } catch {
-                $it.info_error = $_.Exception.Message
-            }
-        }
-
-        $items.Add($it) | Out-Null
-    }
-
-    $staleCount = 0
-    foreach ($it in $items) {
-        if ($null -eq $it) { continue }
-        if ($it.exists -eq $true -and $it.stale -eq $true) { $staleCount++ }
-    }
-
-    return @{
-        stale_age_threshold_min = $staleAgeMin
-        stale_count = [int]$staleCount
-        locks = $items.ToArray()
-    }
-}
-
-function Compute-HealthLevel {
-    param([object[]]$Findings)
-
-    $hasFail = $false
-    $hasWarn = $false
-    foreach ($x in @($Findings)) {
-        if ($null -eq $x) { continue }
-        $sev = $null
-        try { $sev = $x.severity } catch { $sev = $null }
-        if ($sev -eq "FAIL") { $hasFail = $true; break }
-        if ($sev -eq "WARN") { $hasWarn = $true }
-    }
-    if ($hasFail) { return "FAIL" }
-    if ($hasWarn) { return "WARN" }
-    return "OK"
-}
-
-function Remediate-LogJsonl {
-    param([hashtable]$entry)
-    try {
-        Ensure-Dir (Split-Path -Parent $Script:RemediationJsonlPath)
-        $line = ($entry | ConvertTo-Json -Compress -Depth 12)
-        $null = Append-FileUtf8NoBom -Path $Script:RemediationJsonlPath -Line $line
+        $cmdRem = Get-Command Remove-Job -ErrorAction Stop
+        if ($cmdRem.Parameters.ContainsKey("Force")) { $script:RemoveJobSupportsForce = $true }
     } catch { }
 }
 
-# -------------------------
-# Main
-# -------------------------
-Ensure-Dir $Script:DataDir
-Ensure-Dir $Script:LogsDir
-
-$defaults = @{
-    wrapper_task_name = "ARGS_AutoLoop_5m"
-    watchdog_task_name = "ARGS_OpsWatchdog_1m"
-    wrapper_interval_min = 5
-
-    wrapper_script_name = "ops_loop_5m_stage6c.ps1"
-    inner_script_name = "auto_loop_5m.ps1"
-
-    max_wrapper_processes = 1
-    max_inner_processes = 1
-
-    stop_flag_path = "args/data/stop.flag"
-
-    snapshot_path_globs = "args/data/ibkr_open_orders_live*.jsonl;args/data/ibkr_open_orders_live*.json"
-    snapshot_warn_age_min = 7
-    snapshot_fail_age_min = 20
-    snapshot_min_bytes = 16
-
-    lock_paths = "args/data/ops_stage6c.lock;args/data/auto_loop.lock"
-    lock_stale_min = 30
-
-    main_log_path = "args/logs/ops_stage6c.log"
-    cycle_log_glob = "args/logs/auto_loop_*.log"
-    log_tail_lines = 120
-    log_red_flag_patterns = "ERROR;FATAL;CRITICAL;Exception;Traceback;Unhandled;Terminating;Stack trace"
-
-    health_output_path = "args/data/ops_health.json"
-
-    task_timeout_sec = 6
-    process_timeout_sec = 10
+function Stop-And-RemoveJobSafe {
+    param([System.Management.Automation.Job]$Job)
+    if ($null -eq $Job) { return }
+    try {
+        if ($script:StopJobSupportsForce) { Stop-Job -Id $Job.Id -Force -ErrorAction SilentlyContinue | Out-Null }
+        else { Stop-Job -Id $Job.Id -ErrorAction SilentlyContinue | Out-Null }
+    } catch { }
+    try {
+        if ($script:RemoveJobSupportsForce) { Remove-Job -Id $Job.Id -Force -ErrorAction SilentlyContinue | Out-Null }
+        else { Remove-Job -Id $Job.Id -ErrorAction SilentlyContinue | Out-Null }
+    } catch { }
 }
 
-$exitCode = 2
-$resultJson = "{}"
+function Invoke-WithTimeout {
+    param(
+        [scriptblock]$ScriptBlock,
+        [int]$TimeoutSec,
+        [string]$Name = "op",
+        [object[]]$ArgumentList = @()
+    )
+
+    $result = @{
+        name        = $Name
+        success     = $false
+        timed_out   = $false
+        error       = $null
+        data        = $null
+        duration_ms = 0
+    }
+
+    $job = $null
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+        $completed = Wait-Job -Id $job.Id -Timeout $TimeoutSec
+        if ($null -eq $completed) {
+            $result.timed_out = $true
+            $result.error = "TIMEOUT after ${TimeoutSec}s"
+            Stop-And-RemoveJobSafe -Job $job
+            return $result
+        }
+        $jobErr = $null
+        $data = Receive-Job -Id $job.Id -ErrorAction SilentlyContinue -ErrorVariable jobErr
+        $result.data = $data
+        if ($null -ne $jobErr -and $jobErr.Count -gt 0) {
+            $result.error = ($jobErr | Select-Object -First 1 | ForEach-Object { $_.ToString() })
+        }
+        $result.success = ([string]::IsNullOrWhiteSpace([string]$result.error))
+    } catch {
+        $result.error = $_.Exception.Message
+    } finally {
+        if ($null -ne $job) { Stop-And-RemoveJobSafe -Job $job }
+        $sw.Stop()
+        $result.duration_ms = [int]$sw.ElapsedMilliseconds
+    }
+    $result
+}
+
+function Add-Finding {
+    param(
+        [System.Collections.ArrayList]$Findings,
+        [ValidateSet("WARN","FAIL")][string]$Severity,
+        [string]$Code,
+        [string]$Message,
+        [hashtable]$Details
+    )
+    $item = @{
+        severity = $Severity
+        code     = $Code
+        message  = $Message
+        details  = @{}
+    }
+    if ($null -ne $Details) { $item.details = $Details }
+    [void]$Findings.Add($item)
+}
+
+function Pick-Error {
+    param([object]$Primary, [object]$Fallback)
+    $p = ""
+    if ($null -ne $Primary) { $p = [string]$Primary }
+    if (-not [string]::IsNullOrWhiteSpace($p)) { return $p }
+    $f = ""
+    if ($null -ne $Fallback) { $f = [string]$Fallback }
+    if (-not [string]::IsNullOrWhiteSpace($f)) { return $f }
+    return $null
+}
+
+# -----------------------------
+# Safe ops (timeouts)
+# -----------------------------
+function Get-ScheduledTaskStatusSafe {
+    param([string]$TaskName, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$Name)
+        $out = @{
+            name             = $Name
+            exists           = $null
+            state            = $null
+            last_run_utc     = $null
+            next_run_utc     = $null
+            last_task_result = $null
+            error            = $null
+        }
+        try {
+            $task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
+            $out.exists = $true
+            try { $out.state = [string]$task.State } catch { }
+            try {
+                $info = Get-ScheduledTaskInfo -TaskName $Name -ErrorAction Stop
+                if ($null -ne $info.LastRunTime -and $info.LastRunTime -ne [datetime]::MinValue) {
+                    $out.last_run_utc = $info.LastRunTime.ToUniversalTime().ToString("o")
+                }
+                if ($null -ne $info.NextRunTime -and $info.NextRunTime -ne [datetime]::MinValue) {
+                    $out.next_run_utc = $info.NextRunTime.ToUniversalTime().ToString("o")
+                }
+                $out.last_task_result = $info.LastTaskResult
+            } catch {
+                $out.error = $_.Exception.Message
+            }
+        } catch {
+            $msg = $_.Exception.Message
+            if ($msg -match "cannot find" -or $msg -match "No MSFT_ScheduledTask objects found" -or $msg -match "The system cannot find") {
+                $out.exists = $false
+            } else {
+                $out.exists = $null
+                $out.error = $msg
+            }
+        }
+        $out
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name ("scheduledtask:" + $TaskName) -ArgumentList @($TaskName)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        name             = $TaskName
+        exists           = $d.exists
+        state            = $d.state
+        last_run_utc     = $d.last_run_utc
+        next_run_utc     = $d.next_run_utc
+        last_task_result = $d.last_task_result
+        timed_out        = $r.timed_out
+        error            = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms      = $r.duration_ms
+    }
+}
+
+function Get-LatestFileFromGlobsSafe {
+    param([string[]]$Globs, [int]$TimeoutSec)
+
+    $sb = {
+        param([object]$PatternsBox)
+        $Patterns = @($PatternsBox)
+        $res = @{
+            found = $false
+            newest_path = $null
+            newest_bytes = $null
+            newest_lastwrite_utc = $null
+            match_count = 0
+            error = $null
+        }
+        try {
+            $newest = $null
+            foreach ($pat in $Patterns) {
+                if ([string]::IsNullOrWhiteSpace([string]$pat)) { continue }
+                foreach ($f in Get-ChildItem -Path $pat -File -ErrorAction SilentlyContinue) {
+                    $res.match_count++
+                    if ($null -eq $newest -or $f.LastWriteTimeUtc -gt $newest.LastWriteTimeUtc) { $newest = $f }
+                }
+            }
+            if ($null -ne $newest) {
+                $res.found = $true
+                $res.newest_path = $newest.FullName
+                $res.newest_bytes = [int64]$newest.Length
+                $res.newest_lastwrite_utc = $newest.LastWriteTimeUtc.ToString("o")
+            }
+        } catch {
+            $res.error = $_.Exception.Message
+        }
+        $res
+    }
+
+    # IMPORTANT: box the array as a single argument
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name "glob:newest" -ArgumentList @([object]$Globs)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        found = [bool]$d.found
+        newest_path = $d.newest_path
+        newest_bytes = $d.newest_bytes
+        newest_lastwrite_utc = $d.newest_lastwrite_utc
+        match_count = [int]$d.match_count
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Get-ProcessCountsSafe {
+    param([string]$WrapperScriptName, [string]$InnerScriptName, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$WrapperName, [string]$InnerName)
+        $out = @{
+            wrapper_count = 0
+            inner_count = 0
+            total_count = 0
+            sample_wrapper_pids = @()
+            sample_inner_pids = @()
+            error = $null
+        }
+        try {
+            $wp = [regex]::Escape($WrapperName)
+            $ip = [regex]::Escape($InnerName)
+
+            $procs = @()
+            try { $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction Stop) }
+            catch { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) }
+
+            foreach ($p in $procs) {
+                $cmd = $p.CommandLine
+                if ([string]::IsNullOrWhiteSpace($cmd)) { continue }
+                if ($cmd -match $wp) {
+                    $out.wrapper_count++
+                    if ($out.sample_wrapper_pids.Count -lt 6) { $out.sample_wrapper_pids += $p.ProcessId }
+                }
+                if ($cmd -match $ip) {
+                    $out.inner_count++
+                    if ($out.sample_inner_pids.Count -lt 6) { $out.sample_inner_pids += $p.ProcessId }
+                }
+            }
+            $out.total_count = $out.wrapper_count + $out.inner_count
+        } catch {
+            $out.error = $_.Exception.Message
+        }
+        $out
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name "cim:process_counts" -ArgumentList @($WrapperScriptName, $InnerScriptName)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        wrapper_count = $d.wrapper_count
+        inner_count = $d.inner_count
+        total_count = $d.total_count
+        sample_wrapper_pids = @($d.sample_wrapper_pids)
+        sample_inner_pids = @($d.sample_inner_pids)
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Get-RecentFilesFromGlobSafe {
+    param([string]$Glob, [int]$MaxFiles, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$Pattern, [int]$TakeN)
+        $out = @{ total_matches = 0; files = @(); error = $null }
+        try {
+            $buf = @()
+            foreach ($f in Get-ChildItem -Path $Pattern -File -ErrorAction SilentlyContinue) {
+                $out.total_matches++
+                $buf += @{ path = $f.FullName; lastwrite_utc = $f.LastWriteTimeUtc.ToString("o") }
+                if ($buf.Count -gt 1000) {
+                    $buf = @($buf | Sort-Object lastwrite_utc -Descending | Select-Object -First ([Math]::Max(10, $TakeN*4)))
+                }
+            }
+            $out.files = @($buf | Sort-Object lastwrite_utc -Descending | Select-Object -First $TakeN)
+        } catch { $out.error = $_.Exception.Message }
+        $out
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name "glob:recent_files" -ArgumentList @($Glob, $MaxFiles)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        total_matches = [int]$d.total_matches
+        files = @($d.files)
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Get-FileTailRedFlagsSafe {
+    param([string]$Path, [int]$TailLines, [string[]]$PatternStrings, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$LiteralPath, [int]$Lines, [object]$PatternsBox)
+        $Patterns = @($PatternsBox)
+        $out = @{
+            path = $LiteralPath
+            exists = $false
+            red_flag_hits = 0
+            red_flag_patterns = @()
+            sample_hits = @()
+            tail = @()
+            error = $null
+        }
+        try {
+            if (Test-Path -LiteralPath $LiteralPath) {
+                $out.exists = $true
+                $tail = Get-Content -LiteralPath $LiteralPath -Tail $Lines -ErrorAction Stop
+                if ($tail -isnot [System.Array]) { $tail = @($tail) }
+                $out.tail = @($tail)
+
+                $regexes = @()
+                foreach ($p in $Patterns) {
+                    if ([string]::IsNullOrWhiteSpace([string]$p)) { continue }
+                    try { $regexes += (New-Object System.Text.RegularExpressions.Regex($p, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) }
+                    catch { $regexes += (New-Object System.Text.RegularExpressions.Regex([regex]::Escape($p), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) }
+                }
+
+                $matched = @{}
+                $samples = @()
+
+                foreach ($line in $out.tail) {
+                    foreach ($rx in $regexes) {
+                        if ($rx.IsMatch([string]$line)) {
+                            $out.red_flag_hits++
+                            $matched[$rx.ToString()] = $true
+                            if ($samples.Count -lt 12) { $samples += @{ pattern = $rx.ToString(); line = [string]$line } }
+                        }
+                    }
+                }
+
+                $out.red_flag_patterns = @($matched.Keys)
+                $out.sample_hits = @($samples)
+            }
+        } catch { $out.error = $_.Exception.Message }
+        $out
+    }
+
+    # IMPORTANT: box the pattern array as a single argument
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name "tail:redflags" -ArgumentList @($Path, $TailLines, [object]$PatternStrings)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        path = $Path
+        exists = [bool]$d.exists
+        red_flag_hits = [int]$d.red_flag_hits
+        red_flag_patterns = @($d.red_flag_patterns)
+        sample_hits = @($d.sample_hits)
+        tail = @($d.tail)
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Write-JsonFileSafe {
+    param([string]$Path, [string]$Json, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$OutPath, [string]$Content)
+        $o = @{ success = $false; error = $null }
+        try {
+            $dir = Split-Path -Parent $OutPath
+            if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            }
+            Set-Content -LiteralPath $OutPath -Value $Content -Encoding UTF8 -Force
+            $o.success = $true
+        } catch { $o.error = $_.Exception.Message }
+        $o
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name ("writejson:" + $Path) -ArgumentList @($Path, $Json)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        success = [bool]$d.success
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Remove-ItemSafeWithTimeout {
+    param([string]$Path, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$P)
+        $o = @{ success = $false; error = $null }
+        try {
+            if (Test-Path -LiteralPath $P) { Remove-Item -LiteralPath $P -Force -ErrorAction Stop }
+            $o.success = $true
+        } catch { $o.error = $_.Exception.Message }
+        $o
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name ("rm:" + $Path) -ArgumentList @($Path)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        success = [bool]$d.success
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+function Stop-ScheduledTaskSafeWithTimeout {
+    param([string]$TaskName, [int]$TimeoutSec)
+
+    $sb = {
+        param([string]$Name)
+        $o = @{ success = $false; error = $null }
+        try {
+            $cmd = Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue
+            if ($null -eq $cmd) { $o.error = "Stop-ScheduledTask cmdlet not available"; return $o }
+            Stop-ScheduledTask -TaskName $Name -ErrorAction Stop | Out-Null
+            $o.success = $true
+        } catch { $o.error = $_.Exception.Message }
+        $o
+    }
+
+    $r = Invoke-WithTimeout -ScriptBlock $sb -TimeoutSec $TimeoutSec -Name ("stop_task:" + $TaskName) -ArgumentList @($TaskName)
+    $d = $r.data | Select-Object -First 1
+
+    @{
+        success = [bool]$d.success
+        timed_out = $r.timed_out
+        error = (Pick-Error -Primary $d.error -Fallback $r.error)
+        duration_ms = $r.duration_ms
+    }
+}
+
+# -----------------------------
+# MAIN (only final JSON to stdout)
+# -----------------------------
+Init-JobForceSupport
+
+$runId = New-RunId
+$tsUtc = Get-UtcIsoNow
+$hostName = $env:COMPUTERNAME
+$scriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $scriptPath
+$repoRoot = Split-Path -Parent $scriptDir
+$script:RepoRoot = $repoRoot
+
+$script:LogPath = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path "args/logs/ops_watchdog.log"
+Ensure-Directory -Path (Split-Path -Parent $script:LogPath)
+
+$script:AuditJsonlPath = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path "args/data/ops_remediation.jsonl"
+Ensure-Directory -Path (Split-Path -Parent $script:AuditJsonlPath)
+
+$script:DefaultHealthPath = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path "args/data/ops_health.json"
+Ensure-Directory -Path (Split-Path -Parent $script:DefaultHealthPath)
+
+Write-LogLine -Level "INFO" -Message "Stage7 start run_id=$runId script=$scriptPath repo_root=$repoRoot remediate=$($Remediate.IsPresent)"
+
+# Resolve config path
+$configPathFull = $ConfigPath
+if (-not [System.IO.Path]::IsPathRooted($configPathFull)) { $configPathFull = Join-Path -Path $repoRoot -ChildPath $configPathFull }
+$configPathFull = Normalize-FullPathLiteral -Path $configPathFull
+
+$defaults = @{
+    wrapper_task_name       = "ARGS_AutoLoop_5m"
+    watchdog_task_name      = "ARGS_OpsWatchdog_1m"
+    wrapper_interval_min    = "5"
+    wrapper_script_name     = "ops_loop_5m_stage6c.ps1"
+    inner_script_name       = "auto_loop_5m.ps1"
+    max_wrapper_processes   = "1"
+    max_inner_processes     = "1"
+    stop_flag_path          = "args/data/stop.flag"
+    snapshot_path_globs     = "args/data/ibkr_open_orders_live*.jsonl;args/data/ibkr_open_orders_live*.json"
+    snapshot_warn_age_min   = "7"
+    snapshot_fail_age_min   = "20"
+    snapshot_min_bytes      = "16"
+    lock_paths              = "args/data/ops_stage6c.lock;args/data/auto_loop.lock"
+    lock_stale_min          = "30"
+    main_log_path           = "args/logs/ops_stage6c.log"
+    cycle_log_glob          = "args/logs/auto_loop_*.log"
+    log_tail_lines          = "120"
+    log_red_flag_patterns   = ""
+    health_output_path      = "args/data/ops_health.json"
+    task_timeout_sec        = "6"
+    process_timeout_sec     = "10"
+}
+
+$yaml = @{}
+try { $yaml = Read-FlatYaml -Path $configPathFull } catch { $yaml = @{} }
+
+$cfg = @{}
+foreach ($k in $defaults.Keys) {
+    $val = $null
+    if ($yaml.ContainsKey($k)) { $val = $yaml[$k] }
+    if ([string]::IsNullOrWhiteSpace([string]$val)) { $val = $defaults[$k] }
+    $cfg[$k] = [string]$val
+}
+
+$taskTimeoutSec     = To-IntSafe -Value $cfg.task_timeout_sec -Default 6
+$processTimeoutSec  = To-IntSafe -Value $cfg.process_timeout_sec -Default 10
+$maxWrapper         = To-IntSafe -Value $cfg.max_wrapper_processes -Default 1
+$maxInner           = To-IntSafe -Value $cfg.max_inner_processes -Default 1
+$snapshotWarnAgeMin = To-IntSafe -Value $cfg.snapshot_warn_age_min -Default 7
+$snapshotFailAgeMin = To-IntSafe -Value $cfg.snapshot_fail_age_min -Default 20
+$snapshotMinBytes   = [int64](To-IntSafe -Value $cfg.snapshot_min_bytes -Default 16)
+$lockStaleMin       = To-IntSafe -Value $cfg.lock_stale_min -Default 30
+$logTailLines       = To-IntSafe -Value $cfg.log_tail_lines -Default 120
+
+$stopFlagPath = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path $cfg.stop_flag_path
+$mainLogPath  = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path $cfg.main_log_path
+
+$snapshotGlobs = @()
+foreach ($g in Split-List -Value $cfg.snapshot_path_globs) { $snapshotGlobs += (Resolve-RepoPathPattern -RepoRoot $repoRoot -Pattern $g) }
+
+$cycleGlob = Resolve-RepoPathPattern -RepoRoot $repoRoot -Pattern $cfg.cycle_log_glob
+
+$lockPaths = @()
+foreach ($lp in Split-List -Value $cfg.lock_paths) { $lockPaths += (Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path $lp) }
+
+$healthOutputPathCfg = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path $cfg.health_output_path
+$redFlagPatterns = Split-List -Value $cfg.log_red_flag_patterns
+
+$stopFlagPresent = $false
+try { $stopFlagPresent = (Test-Path -LiteralPath $stopFlagPath) } catch { $stopFlagPresent = $false }
+$opsState = if ($stopFlagPresent) { "PAUSED" } else { "RUNNING" }
+
+$findings = New-Object System.Collections.ArrayList
+
+$payload = @{
+    stage = "Stage7"
+    run_id = $runId
+    ts_utc = $tsUtc
+    host = $hostName
+    repo_root = $repoRoot
+    script_path = $scriptPath
+    config_path = $configPathFull
+
+    remediate_requested = [bool]$Remediate.IsPresent
+    health_level = "OK"
+    ops_state = $opsState
+
+    stop_flag = @{ path = $stopFlagPath; present = $stopFlagPresent }
+    tasks = @{}
+    snapshot = @{}
+    processes = @{}
+    locks = @{}
+    logs = @{}
+    findings = @()
+    remediation = @{ attempted=$false; skipped=$false; skipped_reason=$null; actions=@() }
+}
 
 try {
-    LogLine "INFO" ("Starting Stage7 watchdog. Remediate={0}. ConfigPath={1}" -f ([bool]$Remediate), (Resolve-RepoPath $ConfigPath))
+    # Tasks
+    $wrapperTask = Get-ScheduledTaskStatusSafe -TaskName $cfg.wrapper_task_name -TimeoutSec $taskTimeoutSec
+    $watchdogTask = Get-ScheduledTaskStatusSafe -TaskName $cfg.watchdog_task_name -TimeoutSec $taskTimeoutSec
+    $payload.tasks = @{ wrapper = $wrapperTask; watchdog = $watchdogTask }
 
-    $cfgFile = Parse-FlatYaml $ConfigPath
-    $cfg = Merge-Config $defaults $cfgFile
+    if ($wrapperTask.timed_out -or -not [string]::IsNullOrWhiteSpace([string]$wrapperTask.error)) {
+        Add-Finding $findings "WARN" "TASK_WRAPPER_QUERY_ISSUE" "Unable to reliably query wrapper scheduled task" @{
+            task_name = $cfg.wrapper_task_name; timed_out = $wrapperTask.timed_out; error = $wrapperTask.error
+        }
+    } elseif ($wrapperTask.exists -eq $false) {
+        $sev = if ($stopFlagPresent) { "WARN" } else { "FAIL" }
+        Add-Finding $findings $sev "TASK_WRAPPER_MISSING" "Wrapper scheduled task not found" @{
+            task_name = $cfg.wrapper_task_name; stop_flag_present = $stopFlagPresent
+        }
+    }
 
-    if (-not [string]::IsNullOrWhiteSpace($cfg.health_output_path)) {
-        $Script:HealthPath = Resolve-RepoPath $cfg.health_output_path
+    # Snapshot
+    $snap = Get-LatestFileFromGlobsSafe -Globs $snapshotGlobs -TimeoutSec $taskTimeoutSec
+    $snapshotObj = @{
+        globs = @($snapshotGlobs)
+        found = $snap.found
+        path = $snap.newest_path
+        bytes = $snap.newest_bytes
+        lastwrite_utc = $snap.newest_lastwrite_utc
+        age_min = $null
+        min_bytes = $snapshotMinBytes
+        warn_age_min = $snapshotWarnAgeMin
+        fail_age_min = $snapshotFailAgeMin
+        status = "MISSING"
+        timed_out = $snap.timed_out
+        error = $snap.error
+        duration_ms = $snap.duration_ms
+        match_count = $snap.match_count
+    }
+
+    if ($snap.timed_out -or -not [string]::IsNullOrWhiteSpace([string]$snap.error)) {
+        $snapshotObj.status = "WARN"
+        Add-Finding $findings "WARN" "SNAPSHOT_QUERY_ISSUE" "Unable to reliably evaluate snapshot files (timeout/error)" @{
+            timed_out = $snap.timed_out; error = $snap.error; globs = @($snapshotGlobs)
+        }
+    } elseif (-not $snap.found) {
+        $snapshotObj.status = "MISSING"
+        Add-Finding $findings "FAIL" "SNAPSHOT_MISSING" "Snapshot file missing" @{ globs = @($snapshotGlobs) }
     } else {
-        $Script:HealthPath = $Script:HealthPathDefault
+        try {
+            $lw = [datetime]::Parse($snap.newest_lastwrite_utc)
+            $snapshotObj.age_min = [int][Math]::Floor(((Get-Date).ToUniversalTime() - $lw).TotalMinutes)
+        } catch { $snapshotObj.age_min = $null }
+
+        if ($null -eq $snapshotObj.bytes -or [int64]$snapshotObj.bytes -lt $snapshotMinBytes) {
+            $snapshotObj.status = "FAIL"
+            Add-Finding $findings "FAIL" "SNAPSHOT_TOO_SMALL" "Snapshot file size below minimum" @{
+                path = $snapshotObj.path; bytes = $snapshotObj.bytes; min_bytes = $snapshotMinBytes
+            }
+        } elseif ($null -ne $snapshotObj.age_min -and $snapshotObj.age_min -gt $snapshotFailAgeMin) {
+            $snapshotObj.status = "FAIL"
+            Add-Finding $findings "FAIL" "SNAPSHOT_STALE_FAIL" "Snapshot file too old (FAIL threshold)" @{
+                path = $snapshotObj.path; age_min = $snapshotObj.age_min; fail_age_min = $snapshotFailAgeMin
+            }
+        } elseif ($null -ne $snapshotObj.age_min -and $snapshotObj.age_min -gt $snapshotWarnAgeMin) {
+            $snapshotObj.status = "WARN"
+            Add-Finding $findings "WARN" "SNAPSHOT_STALE_WARN" "Snapshot file stale (WARN threshold)" @{
+                path = $snapshotObj.path; age_min = $snapshotObj.age_min; warn_age_min = $snapshotWarnAgeMin
+            }
+        } else {
+            $snapshotObj.status = "OK"
+        }
+    }
+    $payload.snapshot = $snapshotObj
+
+    # Processes
+    $proc = Get-ProcessCountsSafe -WrapperScriptName $cfg.wrapper_script_name -InnerScriptName $cfg.inner_script_name -TimeoutSec $processTimeoutSec
+    $payload.processes = @{
+        wrapper_script_name = $cfg.wrapper_script_name
+        inner_script_name = $cfg.inner_script_name
+        max_wrapper_processes = $maxWrapper
+        max_inner_processes = $maxInner
+        wrapper_count = $proc.wrapper_count
+        inner_count = $proc.inner_count
+        total_count = $proc.total_count
+        sample_wrapper_pids = @($proc.sample_wrapper_pids)
+        sample_inner_pids = @($proc.sample_inner_pids)
+        timed_out = $proc.timed_out
+        error = $proc.error
+        duration_ms = $proc.duration_ms
     }
 
-    $stopFlagAbs = Resolve-RepoPath $cfg.stop_flag_path
-    $stopPresent = $false
-    try { $stopPresent = (Test-Path -LiteralPath $stopFlagAbs) } catch { $stopPresent = $false }
-    $opsState = if ($stopPresent) { "PAUSED" } else { "RUNNING" }
-
-    $wrapperInterval = Safe-Int $cfg.wrapper_interval_min 5 1 1440
-    $taskT = Safe-Int $cfg.task_timeout_sec 6 1 60
-    $procT = Safe-Int $cfg.process_timeout_sec 10 1 60
-
-    $taskWrapper  = Get-TaskStatusSafe $cfg.wrapper_task_name  $wrapperInterval $taskT
-    $taskWatchdog = Get-TaskStatusSafe $cfg.watchdog_task_name 1 $taskT
-
-    $snapshot = Get-SnapshotStatus $cfg.snapshot_path_globs ([double]$cfg.snapshot_warn_age_min) ([double]$cfg.snapshot_fail_age_min) ([int]$cfg.snapshot_min_bytes)
-    $procs    = Get-OpsProcessesSafe $cfg.wrapper_script_name $cfg.inner_script_name $procT
-    $locks    = Get-Locks $cfg.lock_paths ([double]$cfg.lock_stale_min)
-    $logs     = Get-LogsStatus $cfg.main_log_path $cfg.cycle_log_glob ([int]$cfg.log_tail_lines) $cfg.log_red_flag_patterns
-
-    $findings = @()
-
-    function AddFinding([string]$sev, [string]$code, [string]$msg, [object]$details) {
-        $script:findings += ,@{ severity=$sev; code=$code; message=$msg; details=$details }
-    }
-    function Sev([string]$sev) {
-        if ($opsState -eq "PAUSED" -and $sev -eq "FAIL") { return "WARN" }
-        return $sev
-    }
-
-    if ($taskWrapper.exists -ne $true) {
-        AddFinding (Sev "FAIL") "TASK_WRAPPER_MISSING" "Wrapper scheduled task missing." @{ task=$cfg.wrapper_task_name; error=$taskWrapper.info_error; timed_out=$taskWrapper.timed_out }
-    }
-
-    if ($snapshot.status -eq "MISSING") {
-        AddFinding (Sev "FAIL") "SNAPSHOT_MISSING" "Snapshot not found." @{ checked=$snapshot.paths_checked; error=$snapshot.info_error }
-    } elseif ($snapshot.status -eq "FAIL") {
-        AddFinding (Sev "FAIL") "SNAPSHOT_STALE" "Snapshot stale/invalid." @{ path=$snapshot.selected_path; age_min=$snapshot.age_min; bytes=$snapshot.bytes; error=$snapshot.info_error }
-    } elseif ($snapshot.status -eq "WARN") {
-        AddFinding "WARN" "SNAPSHOT_WARN" "Snapshot older than warn threshold." @{ path=$snapshot.selected_path; age_min=$snapshot.age_min; warn_age_min=$snapshot.warn_age_min }
-    }
-
-    if ($procs.error) {
-        AddFinding "WARN" "PROC_ENUM_ERROR" "Failed to enumerate OPS processes." @{ error=$procs.error; timed_out=$procs.timed_out }
+    if ($proc.timed_out -or -not [string]::IsNullOrWhiteSpace([string]$proc.error)) {
+        Add-Finding $findings "WARN" "PROCESS_ENUMERATION_ISSUE" "Process enumeration failed/timeout" @{
+            timed_out = $proc.timed_out; error = $proc.error
+        }
     } else {
-        $maxW = Safe-Int $cfg.max_wrapper_processes 1 0 10
-        $maxI = Safe-Int $cfg.max_inner_processes 1 0 10
-        if (($procs.wrapper_count -gt $maxW) -or ($procs.inner_count -gt $maxI)) {
-            AddFinding (Sev "FAIL") "OPS_OVERLAP" "OPS processes overlap beyond limits." @{
-                wrapper_count=$procs.wrapper_count; max_wrapper=$maxW;
-                inner_count=$procs.inner_count; max_inner=$maxI
+        $tooMany = (($proc.wrapper_count -ne $null -and [int]$proc.wrapper_count -gt $maxWrapper) -or
+                    ($proc.inner_count -ne $null -and [int]$proc.inner_count -gt $maxInner))
+        if ($tooMany) {
+            $sev = if ($stopFlagPresent) { "WARN" } else { "FAIL" }
+            Add-Finding $findings $sev "PROCESS_LIMIT_EXCEEDED" "Process count exceeds configured limits" @{
+                wrapper_count=$proc.wrapper_count; max_wrapper_processes=$maxWrapper
+                inner_count=$proc.inner_count; max_inner_processes=$maxInner
+                stop_flag_present=$stopFlagPresent
+                sample_wrapper_pids=@($proc.sample_wrapper_pids)
+                sample_inner_pids=@($proc.sample_inner_pids)
             }
         }
     }
 
-    if ([int]$locks.stale_count -gt 0) {
-        AddFinding "WARN" "STALE_LOCKS" "Stale lock files detected." @{ stale_count=$locks.stale_count; threshold_min=$locks.stale_age_threshold_min }
-    }
-
-    if (([int]$logs.main_log.red_flags_count -gt 0) -or ([int]$logs.cycle_log.red_flags_count -gt 0)) {
-        AddFinding "WARN" "LOG_REDFLAGS" "Red-flag patterns found in logs." @{ main_red_flags=$logs.main_log.red_flags_count; cycle_red_flags=$logs.cycle_log.red_flags_count }
-    }
-
-    $health = Compute-HealthLevel $findings
-
-    # Remediation (safe-only) and skipped if stop.flag exists
-    if ([bool]$Remediate -and -not $stopPresent) {
-        $did = $false
-
-        if ([int]$locks.stale_count -gt 0) {
-            $dataDirAbs = Normalize-Path (Join-Path $Script:RepoRoot "args\data")
-            foreach ($lk in @($locks.locks)) {
-                if ($null -eq $lk) { continue }
-                if ($lk.exists -ne $true -or $lk.stale -ne $true) { continue }
-                if (-not (Is-UnderDir $lk.path $dataDirAbs)) { continue }
-                try {
-                    Remove-Item -LiteralPath $lk.path -Force -ErrorAction SilentlyContinue
-                    Remediate-LogJsonl @{ ts_utc=(UtcIso); run_id=$Script:RunId; action="REMOVE_LOCK"; outcome="OK"; details=@{path=$lk.path} }
-                    $did = $true
-                } catch { }
+    # Locks
+    $lockItems = @()
+    $staleCount = 0
+    foreach ($lp in $lockPaths) {
+        $exists = $false; $ageMin = $null; $stale = $false
+        try {
+            if (Test-Path -LiteralPath $lp) {
+                $exists = $true
+                $it = Get-Item -LiteralPath $lp -ErrorAction Stop
+                $ageMin = [int][Math]::Floor(((Get-Date).ToUniversalTime() - $it.LastWriteTimeUtc).TotalMinutes)
+                if ($ageMin -gt $lockStaleMin) { $stale = $true }
             }
+        } catch { }
+        if ($stale) {
+            $staleCount++
+            Add-Finding $findings "WARN" "LOCK_STALE" "Stale lock file detected" @{ path=$lp; age_min=$ageMin; stale_min=$lockStaleMin }
         }
+        $lockItems += @{ path=$lp; exists=$exists; age_min=$ageMin; stale=$stale; stale_min=$lockStaleMin }
+    }
+    $payload.locks = @{ paths=@($lockPaths); items=@($lockItems); stale_count=$staleCount }
 
-        if (-not $procs.error) {
-            $maxW = Safe-Int $cfg.max_wrapper_processes 1 0 10
-            $maxI = Safe-Int $cfg.max_inner_processes 1 0 10
-            if (($procs.wrapper_count -gt $maxW) -or ($procs.inner_count -gt $maxI)) {
-                if ($null -ne (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue)) {
-                    try {
-                        Stop-ScheduledTask -TaskName $cfg.wrapper_task_name -ErrorAction SilentlyContinue | Out-Null
-                        Remediate-LogJsonl @{ ts_utc=(UtcIso); run_id=$Script:RunId; action="STOP_TASK"; outcome="OK"; details=@{task=$cfg.wrapper_task_name} }
-                        $did = $true
-                    } catch { }
+    # Logs
+    $mainLog = Get-FileTailRedFlagsSafe -Path $mainLogPath -TailLines $logTailLines -PatternStrings $redFlagPatterns -TimeoutSec $taskTimeoutSec
+    $cycleEnum = Get-RecentFilesFromGlobSafe -Glob $cycleGlob -MaxFiles 3 -TimeoutSec $taskTimeoutSec
+
+    $cycleFilesChecked = @()
+    $cycleHits = 0
+    $cycleSamples = @()
+
+    if (-not $cycleEnum.timed_out -and [string]::IsNullOrWhiteSpace([string]$cycleEnum.error)) {
+        foreach ($f in $cycleEnum.files) {
+            $p = [string]$f.path
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            $r = Get-FileTailRedFlagsSafe -Path $p -TailLines $logTailLines -PatternStrings $redFlagPatterns -TimeoutSec $taskTimeoutSec
+            $cycleFilesChecked += @{
+                path=$p; lastwrite_utc=$f.lastwrite_utc
+                red_flag_hits=$r.red_flag_hits; timed_out=$r.timed_out; error=$r.error
+                red_flag_patterns=@($r.red_flag_patterns); sample_hits=@($r.sample_hits)
+            }
+            $cycleHits += [int]$r.red_flag_hits
+            foreach ($s in @($r.sample_hits)) { if ($cycleSamples.Count -ge 12) { break }; $cycleSamples += $s }
+        }
+    }
+
+    $payload.logs = @{
+        main = @{
+            path=$mainLog.path; exists=$mainLog.exists; tail_lines=$logTailLines
+            timed_out=$mainLog.timed_out; error=$mainLog.error
+            red_flag_hits=$mainLog.red_flag_hits
+            red_flag_patterns=@($mainLog.red_flag_patterns)
+            sample_hits=@($mainLog.sample_hits)
+            tail=@($mainLog.tail)
+        }
+        cycle = @{
+            glob=$cycleGlob; enum_timed_out=$cycleEnum.timed_out; enum_error=$cycleEnum.error
+            total_matches=$cycleEnum.total_matches
+            files_checked=@($cycleFilesChecked)
+            red_flag_hits=$cycleHits
+            sample_hits=@($cycleSamples)
+        }
+        red_flag_patterns=@($redFlagPatterns)
+    }
+
+    if ([int]$mainLog.red_flag_hits -gt 0) {
+        Add-Finding $findings "WARN" "LOG_RED_FLAGS_MAIN" "Red-flag patterns found in main log tail" @{
+            path=$mainLog.path; red_flag_hits=$mainLog.red_flag_hits; patterns=@($mainLog.red_flag_patterns)
+        }
+    }
+    if ([int]$cycleHits -gt 0) {
+        Add-Finding $findings "WARN" "LOG_RED_FLAGS_CYCLE" "Red-flag patterns found in cycle logs tail(s)" @{
+            glob=$cycleGlob; red_flag_hits=$cycleHits
+        }
+    }
+
+    # Remediation (safe-only)
+    if ($Remediate.IsPresent) {
+        if ($stopFlagPresent) {
+            $payload.remediation.skipped = $true
+            $payload.remediation.skipped_reason = "STOP_FLAG_PRESENT"
+        } else {
+            $payload.remediation.attempted = $true
+            $argsDataDir = Resolve-RepoPathLiteral -RepoRoot $repoRoot -Path "args/data"
+
+            foreach ($li in $lockItems) {
+                if (-not $li.exists) { continue }
+                if (-not $li.stale) { continue }
+                $lockPath = [string]$li.path
+
+                $action = "remove_stale_lock"
+                $details = @{ path=$lockPath; age_min=$li.age_min; stale_min=$lockStaleMin }
+
+                if (-not (Test-IsUnderDir -Path $lockPath -Dir $argsDataDir)) {
+                    $details.reason = "outside_args_data"
+                    $payload.remediation.actions += @{ action=$action; outcome="SKIP"; details=$details }
+                    Append-AuditJsonl -RunId $runId -Action $action -Outcome "SKIP" -Details $details
+                    continue
+                }
+
+                $rm = Remove-ItemSafeWithTimeout -Path $lockPath -TimeoutSec $taskTimeoutSec
+                if ($rm.timed_out -or -not $rm.success) {
+                    $details.error = $rm.error; $details.timed_out = $rm.timed_out
+                    $payload.remediation.actions += @{ action=$action; outcome="FAIL"; details=$details }
+                    Append-AuditJsonl -RunId $runId -Action $action -Outcome "FAIL" -Details $details
+                } else {
+                    $payload.remediation.actions += @{ action=$action; outcome="OK"; details=$details }
+                    Append-AuditJsonl -RunId $runId -Action $action -Outcome "OK" -Details $details
+                }
+            }
+
+            $limitsExceeded = $false
+            if ($proc.wrapper_count -ne $null -and [int]$proc.wrapper_count -gt $maxWrapper) { $limitsExceeded = $true }
+            if ($proc.inner_count -ne $null -and [int]$proc.inner_count -gt $maxInner) { $limitsExceeded = $true }
+
+            if ($limitsExceeded) {
+                $action = "stop_wrapper_scheduled_task"
+                $details = @{
+                    task_name=$cfg.wrapper_task_name
+                    wrapper_count=$proc.wrapper_count; inner_count=$proc.inner_count
+                    max_wrapper_processes=$maxWrapper; max_inner_processes=$maxInner
+                }
+
+                $st = Stop-ScheduledTaskSafeWithTimeout -TaskName $cfg.wrapper_task_name -TimeoutSec $taskTimeoutSec
+                if ($st.timed_out -or -not $st.success) {
+                    $details.error = $st.error; $details.timed_out = $st.timed_out
+                    $payload.remediation.actions += @{ action=$action; outcome="FAIL"; details=$details }
+                    Append-AuditJsonl -RunId $runId -Action $action -Outcome "FAIL" -Details $details
+                } else {
+                    $payload.remediation.actions += @{ action=$action; outcome="OK"; details=$details }
+                    Append-AuditJsonl -RunId $runId -Action $action -Outcome "OK" -Details $details
                 }
             }
         }
-
-        LogLine "INFO" ("Remediation executed={0}" -f $did)
     }
-
-    $result = @{
-        stage = "Stage7"
-        run_id = $Script:RunId
-        ts_utc = (UtcIso)
-        host = $Script:HostName
-        repo_root = (Normalize-Path $Script:RepoRoot)
-        script_path = (Normalize-Path (Join-Path $Script:RepoRoot "scripts\ops_watchdog_stage7.ps1"))
-        config_path = (Resolve-RepoPath $ConfigPath)
-
-        remediate_requested = [bool]$Remediate
-        health_level = $health
-        ops_state = $opsState
-
-        stop_flag = @{ path=$stopFlagAbs; present=$stopPresent }
-        tasks = @{ wrapper=$taskWrapper; watchdog=$taskWatchdog }
-        snapshot = $snapshot
-        processes = $procs
-        locks = $locks
-        logs = $logs
-        findings = @($findings)
-    }
-
-    # FULL -> file
-    $resultJsonFull = ($result | ConvertTo-Json -Depth 20)
-    $null = Write-HealthJson $resultJsonFull
-
-    # SUMMARY -> stdout
-    $summary = @{
-        stage = $result.stage
-        run_id = $result.run_id
-        ts_utc = $result.ts_utc
-        host = $result.host
-        health_level = $result.health_level
-        ops_state = $result.ops_state
-        config_path = $result.config_path
-        stale_locks = [int]($result.locks.stale_count)
-        main_red_flags = [int]($result.logs.main_log.red_flags_count)
-        cycle_red_flags = [int]($result.logs.cycle_log.red_flags_count)
-        proc_total = [int]($result.processes.total_count)
-        task_wrapper_exists = [bool]($result.tasks.wrapper.exists)
-        snapshot_status = [string]($result.snapshot.status)
-    }
-    $resultJson = ($summary | ConvertTo-Json -Depth 6)
-
-    if ($result.health_level -eq "OK") { $exitCode = 0 }
-    elseif ($result.health_level -eq "WARN") { $exitCode = 1 }
-    else { $exitCode = 2 }
-
-    LogLine "INFO" ("Watchdog complete. health={0} exit={1}" -f $result.health_level, $exitCode)
 }
 catch {
-    $err = ($_ | Out-String)
-    LogLine "ERROR" ("CRASH: {0}" -f $err)
-
-    $fallback = @{
-        stage = "Stage7"
-        run_id = $Script:RunId
-        ts_utc = (UtcIso)
-        host = $Script:HostName
-        repo_root = (Normalize-Path $Script:RepoRoot)
-        script_path = (Normalize-Path (Join-Path $Script:RepoRoot "scripts\ops_watchdog_stage7.ps1"))
-        config_path = (Resolve-RepoPath $ConfigPath)
-        remediate_requested = [bool]$Remediate
-        health_level = "FAIL"
-        ops_state = "UNKNOWN"
-        error = $err
+    Add-Finding $findings "FAIL" "WATCHDOG_EXCEPTION" "Watchdog exception occurred" @{
+        message = $_.Exception.Message
+        type = $_.Exception.GetType().FullName
     }
-
-    # FULL fallback -> file
-    $fallbackJsonFull = ($fallback | ConvertTo-Json -Depth 20)
-    $null = Write-HealthJson $fallbackJsonFull
-
-    # SUMMARY fallback -> stdout
-    $summary = @{
-        stage = $fallback.stage
-        run_id = $fallback.run_id
-        ts_utc = $fallback.ts_utc
-        host = $fallback.host
-        health_level = $fallback.health_level
-        ops_state = $fallback.ops_state
-        config_path = $fallback.config_path
-        error = $fallback.error
-    }
-    $resultJson = ($summary | ConvertTo-Json -Depth 6)
-    $exitCode = 2
 }
+finally {
+    # Health level from findings
+    $hasFail = $false; $hasWarn = $false
+    foreach ($f in $findings) {
+        if ($f.severity -eq "FAIL") { $hasFail = $true }
+        elseif ($f.severity -eq "WARN") { $hasWarn = $true }
+    }
+    $payload.findings = @($findings)
+    if ($hasFail) { $payload.health_level = "FAIL" }
+    elseif ($hasWarn) { $payload.health_level = "WARN" }
+    else { $payload.health_level = "OK" }
 
-Write-Output $resultJson
-exit $exitCode
+    # Best-effort full JSON write (never throw)
+    $fullJson = ""
+    try {
+        $fullJson = $payload | ConvertTo-Json -Depth 18
+    } catch {
+        $fullJson = (@{
+            stage="Stage7"; run_id=$runId; ts_utc=(Get-UtcIsoNow);
+            health_level="FAIL"; error="FULL_JSON_SERIALIZE_FAILED"; message=$_.Exception.Message
+        } | ConvertTo-Json -Compress -Depth 6)
+    }
+
+    try { [void](Write-JsonFileSafe -Path $script:DefaultHealthPath -Json $fullJson -TimeoutSec $taskTimeoutSec) } catch { }
+
+    try {
+        $dNorm = Normalize-FullPathLiteral -Path $script:DefaultHealthPath
+        $cNorm = Normalize-FullPathLiteral -Path $healthOutputPathCfg
+        if (-not [string]::IsNullOrWhiteSpace($cNorm) -and ($cNorm -ne $dNorm)) {
+            [void](Write-JsonFileSafe -Path $cNorm -Json $fullJson -TimeoutSec $taskTimeoutSec)
+        }
+    } catch { }
+
+    # Summary-only stdout (exactly one JSON)
+    $staleLocks = 0
+    try { $staleLocks = [int]$payload.locks.stale_count } catch { $staleLocks = 0 }
+
+    $mainRed = 0; $cycleRed = 0; $procTotal = 0
+    try { $mainRed = [int]$payload.logs.main.red_flag_hits } catch { }
+    try { $cycleRed = [int]$payload.logs.cycle.red_flag_hits } catch { }
+    try { if ($payload.processes.total_count -ne $null) { $procTotal = [int]$payload.processes.total_count } } catch { }
+
+    $taskWrapperExists = $null
+    try { $taskWrapperExists = $payload.tasks.wrapper.exists } catch { $taskWrapperExists = $null }
+
+    $snapshotStatus = $null
+    try { $snapshotStatus = $payload.snapshot.status } catch { $snapshotStatus = $null }
+
+    $summary = @{
+        stage="Stage7"
+        run_id=$runId
+        ts_utc=(Get-UtcIsoNow)
+        host=$hostName
+        health_level=$payload.health_level
+        ops_state=$payload.ops_state
+        stale_locks=$staleLocks
+        main_red_flags=$mainRed
+        cycle_red_flags=$cycleRed
+        proc_total=$procTotal
+        task_wrapper_exists=$taskWrapperExists
+        snapshot_status=$snapshotStatus
+    }
+
+    $exitCode = 0
+    if ($payload.health_level -eq "WARN") { $exitCode = 1 }
+    elseif ($payload.health_level -eq "FAIL") { $exitCode = 2 }
+
+    $summaryJson = $summary | ConvertTo-Json -Compress -Depth 8
+    [Console]::Out.WriteLine($summaryJson)
+    exit $exitCode
+}
