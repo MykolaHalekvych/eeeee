@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from args.ui.ops_watchdog_tab import render_ops_watchdog_tab
 
 import streamlit as st
 

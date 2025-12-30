@@ -97,5 +97,13 @@ scripts/ops_watchdog_stage7.ps1.bak
 
 # Stage7 watchdog local config + runtime outputs
 args/data/ops_config.yaml
-args/data/ops_health.jsonscripts/ops_watchdog_stage7.ps1.bak
+args/data/ops_health.json
+scripts/ops_watchdog_stage7.ps1.bak
+args/data/ops_config.yaml
+args/data/ops_health.json
+scripts/ops_watchdog_stage7.ps1.bak
 
+# Stage7 ops watchdog artifacts
+args/data/ops_remediation.jsonl
+args/data/ops_health.json
+args/logs/ops_watchdog.log
