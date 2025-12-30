@@ -500,18 +500,41 @@ function Get-FileTail {
 
 function Find-RedFlagsInLines {
     param(
-        [Parameter(Mandatory=$true)][string[]]$Lines,
-        [Parameter(Mandatory=$true)][string[]]$Patterns
+        [string[]]$Lines = @(),
+        [string[]]$Patterns = @()
     )
+
+    # Normalize: if caller passed a single string (PowerShell scalar), wrap into array
+    $linesArr = @()
+    foreach ($x in @($Lines)) {
+        if ($null -eq $x) { continue }
+        $s = [string]$x
+        if ($s.Length -eq 0) { continue }
+        $linesArr += $s
+    }
+
+    $patsArr = @()
+    foreach ($p in @($Patterns)) {
+        if ($null -eq $p) { continue }
+        $ps = ([string]$p).Trim()
+        if ($ps.Length -eq 0) { continue }
+        $patsArr += $ps
+    }
+
     $hits = New-Object System.Collections.Generic.List[string]
-    foreach ($ln in $Lines) {
-        foreach ($pat in $Patterns) {
-            if ([string]::IsNullOrWhiteSpace($pat)) { continue }
-            if ($ln -match $pat) { $hits.Add($ln); break }
+    if ($linesArr.Count -eq 0 -or $patsArr.Count -eq 0) { return $hits }
+
+    foreach ($ln in $linesArr) {
+        foreach ($pat in $patsArr) {
+            if ($ln -match $pat) {
+                $hits.Add($ln)
+                break
+            }
         }
     }
     return $hits
 }
+
 
 function Get-LogStatus {
     param(
