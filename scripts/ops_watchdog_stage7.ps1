@@ -6,9 +6,10 @@
   Collects operational health for Stage 6 control plane and outputs a machine-readable JSON:
   - Writes JSON to stdout
   - Writes JSON to args/data/ops_health.json
+
   Optional remediation mode (-Remediate) performs ONLY operator-safe actions:
     * stop/start Scheduled Task (wrapper)
-    * kill overlapping OPS processes (strict pattern)
+    * kill overlapping OPS processes (strict pattern + repo scoping)
     * remove stale lock files (only in args/data)
     * refresh snapshot via configured snapshot refresh script (safe allow-list)
 
@@ -36,7 +37,7 @@ $IbHost = $env:COMPUTERNAME
 # Repo root is parent of /scripts
 $Script:RepoRoot = Split-Path -Parent $PSScriptRoot
 
-# Default paths (can be overridden by config)
+# Default dirs
 $Script:DefaultDataDir = Join-Path $Script:RepoRoot "args\data"
 $Script:DefaultLogsDir = Join-Path $Script:RepoRoot "args\logs"
 
@@ -44,7 +45,7 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $Script:DefaultDataDir "ops_config.yaml"
 }
 
-# Establish default log/jsonl/health paths early so logging works even if config parsing fails
+# Default output paths (may be overridden by config)
 $Script:WatchdogLogPath = Join-Path $Script:DefaultLogsDir "ops_watchdog.log"
 $Script:RemediationJsonlPath = Join-Path $Script:DefaultDataDir "ops_remediation.jsonl"
 $Script:HealthOutputPath = Join-Path $Script:DefaultDataDir "ops_health.json"
@@ -52,46 +53,46 @@ $Script:HealthOutputPath = Join-Path $Script:DefaultDataDir "ops_health.json"
 $Script:RemediationActions = New-Object System.Collections.Generic.List[object]
 
 # -------------------------
-# Helpers
+# Helpers (safe under StrictMode)
 # -------------------------
-function New-UtcIsoTimestamp {
-    return (Get-Date).ToUniversalTime().ToString("o")
-}
+function New-UtcIsoTimestamp { (Get-Date).ToUniversalTime().ToString("o") }
 
 function Ensure-Directory {
-    param([Parameter(Mandatory=$true)][string]$Path)
+    param([AllowNull()][AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
     }
 }
 
 function Resolve-RepoPath {
-    param([Parameter(Mandatory=$true)][string]$PathValue)
+    param([AllowNull()][AllowEmptyString()][string]$PathValue)
 
-    $p = $PathValue.Trim()
-    if ([string]::IsNullOrWhiteSpace($p)) { return "" }
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return "" }
 
-    $p = $p -replace '/', '\'
-
-    if ([System.IO.Path]::IsPathRooted($p)) {
-        return $p
-    }
+    $p = ($PathValue -as [string]).Trim() -replace '/', '\'
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
     return (Join-Path $Script:RepoRoot $p)
 }
 
 function Normalize-FullPath {
-    param([Parameter(Mandatory=$true)][string]$PathValue)
+    param([AllowNull()][AllowEmptyString()][string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return "" }
     try { return [System.IO.Path]::GetFullPath($PathValue).TrimEnd('\') }
-    catch { return $PathValue.TrimEnd('\') }
+    catch { return ($PathValue.TrimEnd('\')) }
 }
 
 function Test-IsUnderDirectory {
     param(
-        [Parameter(Mandatory=$true)][string]$CandidatePath,
-        [Parameter(Mandatory=$true)][string]$DirectoryPath
+        [AllowNull()][AllowEmptyString()][string]$CandidatePath,
+        [AllowNull()][AllowEmptyString()][string]$DirectoryPath
     )
+    if ([string]::IsNullOrWhiteSpace($CandidatePath)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($DirectoryPath)) { return $false }
+
     $cand = (Normalize-FullPath $CandidatePath).ToLowerInvariant()
     $dir  = (Normalize-FullPath $DirectoryPath).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($cand) -or [string]::IsNullOrWhiteSpace($dir)) { return $false }
     return $cand.StartsWith($dir + "\")
 }
 
@@ -104,23 +105,30 @@ function Write-Log {
     $line = "$ts [$Level] run_id=$($Script:RunId) $Message"
     try {
         $logDir = Split-Path -Parent $Script:WatchdogLogPath
-        if (-not [string]::IsNullOrWhiteSpace($logDir)) { Ensure-Directory -Path $logDir }
+        Ensure-Directory -Path $logDir
         Add-Content -LiteralPath $Script:WatchdogLogPath -Value $line -Encoding UTF8
-    } catch { }
+    } catch {
+        # Never fail watchdog because of logging
+    }
 }
 
 function Parse-SimpleYamlKV {
-    param([Parameter(Mandatory=$true)][string]$YamlPath)
+    param([AllowNull()][AllowEmptyString()][string]$YamlPath)
 
     $cfg = @{}
-    if (-not (Test-Path -LiteralPath $YamlPath)) { return $cfg }
+    if ([string]::IsNullOrWhiteSpace($YamlPath)) { return $cfg }
 
-    $lines = Get-Content -LiteralPath $YamlPath -ErrorAction Stop
+    $p = Resolve-RepoPath -PathValue $YamlPath
+    if ([string]::IsNullOrWhiteSpace($p)) { return $cfg }
+    if (-not (Test-Path -LiteralPath $p)) { return $cfg }
+
+    $lines = Get-Content -LiteralPath $p -ErrorAction Stop
     foreach ($raw in $lines) {
         $line = ($raw -as [string]).Trim()
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         if ($line.StartsWith("#")) { continue }
 
+        # strip inline comment (simple)
         $hashIdx = $line.IndexOf("#")
         if ($hashIdx -ge 0) { $line = $line.Substring(0, $hashIdx).TrimEnd() }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -153,10 +161,9 @@ function Parse-SimpleYamlKV {
 
 function Read-OpsConfig {
     param(
-        [Parameter(Mandatory=$true)][string]$YamlPath,
+        [AllowNull()][AllowEmptyString()][string]$YamlPath,
         [Parameter(Mandatory=$true)][hashtable]$Defaults
     )
-
     $cfg = @{}
     foreach ($k in $Defaults.Keys) { $cfg[$k] = $Defaults[$k] }
 
@@ -164,17 +171,18 @@ function Read-OpsConfig {
         $fromFile = Parse-SimpleYamlKV -YamlPath $YamlPath
         foreach ($k in $fromFile.Keys) { $cfg[$k] = $fromFile[$k] }
     } catch {
-        Write-Log -Level "WARN" -Message "Failed to parse config at '$YamlPath'. Using defaults. Error: $($_.Exception.Message)"
+        Write-Log -Level "WARN" -Message "Failed to parse config '$YamlPath'. Using defaults. Error: $($_.Exception.Message)"
     }
+
     return $cfg
 }
 
 function Split-ListString {
-    param([Parameter(Mandatory=$true)][string]$Value)
-    $v = $Value.Trim()
-    if ([string]::IsNullOrWhiteSpace($v)) { return @() }
+    param([AllowNull()][AllowEmptyString()][string]$Value)
 
-    $parts = $v -split '[;,]'
+    if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+
+    $parts = ($Value -as [string]).Trim() -split '[;,]'
     $out = New-Object System.Collections.Generic.List[string]
     foreach ($p in $parts) {
         $t = ($p -as [string]).Trim()
@@ -183,13 +191,32 @@ function Split-ListString {
     return $out.ToArray()
 }
 
-function Get-TaskStatus {
-    param(
-        [Parameter(Mandatory=$true)][string]$TaskName,
-        [int]$ExpectedIntervalMin = 5
-    )
+function Clamp-Int {
+    param([AllowNull()]$Value, [int]$Default, [int]$Min = 0, [int]$Max = 2147483647)
+    try {
+        $v = [int]$Value
+        if ($v -lt $Min) { return $Min }
+        if ($v -gt $Max) { return $Max }
+        return $v
+    } catch { return $Default }
+}
 
-    $status = [ordered]@{
+function Clamp-Double {
+    param([AllowNull()]$Value, [double]$Default, [double]$Min = 0.0, [double]$Max = 1.0E15)
+    try {
+        $v = [double]$Value
+        if ($v -lt $Min) { return $Min }
+        if ($v -gt $Max) { return $Max }
+        return $v
+    } catch { return $Default }
+}
+
+# -------------------------
+# Health collectors (NEVER throw; always return structured objects)
+# -------------------------
+function New-TaskStatusDefault {
+    param([string]$TaskName)
+    return [ordered]@{
         name = $TaskName
         exists = $false
         enabled = $null
@@ -202,6 +229,23 @@ function Get-TaskStatus {
         missed_runs_est = $null
         info_error = $null
     }
+}
+
+function Get-TaskStatusSafe {
+    param(
+        [AllowNull()][AllowEmptyString()][string]$TaskName,
+        [int]$ExpectedIntervalMin = 5
+    )
+
+    $TaskName = ($TaskName -as [string])
+    if ([string]::IsNullOrWhiteSpace($TaskName)) {
+        $s = New-TaskStatusDefault -TaskName ""
+        $s.info_error = "task_name_not_configured"
+        return $s
+    }
+
+    $status = New-TaskStatusDefault -TaskName $TaskName
+    $ExpectedIntervalMin = (Clamp-Int -Value $ExpectedIntervalMin -Default 5 -Min 1 -Max 1440)
 
     try {
         $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
@@ -216,7 +260,6 @@ function Get-TaskStatus {
                 $enabled = [bool]$task.Settings.Enabled
             }
         } catch { $enabled = $null }
-
         if ($null -eq $enabled) { $enabled = ($status.state -ne "Disabled") }
         $status.enabled = $enabled
 
@@ -225,18 +268,15 @@ function Get-TaskStatus {
 
         $status.last_task_result = $info.LastTaskResult
         if ($null -ne $info.LastTaskResult) {
-            $status.last_task_result_hex = ('0x{0:X8}' -f [int]$info.LastTaskResult)
+            try { $status.last_task_result_hex = ('0x{0:X8}' -f [int]$info.LastTaskResult) } catch { $status.last_task_result_hex = $null }
         }
 
         if ($info.LastRunTime -and $info.LastRunTime -gt [DateTime]"2000-01-01") {
             $ageMin = (New-TimeSpan -Start $info.LastRunTime -End (Get-Date)).TotalMinutes
-            $ageMin = [math]::Round($ageMin, 2)
-            $status.age_since_last_run_min = $ageMin
+            $status.age_since_last_run_min = [math]::Round($ageMin, 2)
 
-            if ($ExpectedIntervalMin -gt 0) {
-                $missed = [math]::Max(0, [math]::Floor($ageMin / $ExpectedIntervalMin) - 1)
-                $status.missed_runs_est = [int]$missed
-            }
+            $missed = [math]::Max(0, [math]::Floor($ageMin / $ExpectedIntervalMin) - 1)
+            $status.missed_runs_est = [int]$missed
         }
     } catch {
         $status.info_error = $_.Exception.Message
@@ -245,13 +285,34 @@ function Get-TaskStatus {
     return $status
 }
 
-function Get-SnapshotStatus {
+function New-SnapshotStatusDefault {
+    param([string[]]$Checked)
+    return [ordered]@{
+        paths_checked = @($Checked)
+        selected_path = $null
+        exists = $false
+        mtime_utc = $null
+        age_min = $null
+        bytes = $null
+        warn_age_min = $null
+        fail_age_min = $null
+        min_bytes = $null
+        status = "MISSING"
+        info_error = $null
+    }
+}
+
+function Get-SnapshotStatusSafe {
     param(
-        [Parameter(Mandatory=$true)][string]$GlobString,
-        [Parameter(Mandatory=$true)][double]$WarnAgeMin,
-        [Parameter(Mandatory=$true)][double]$FailAgeMin,
-        [Parameter(Mandatory=$true)][int]$MinBytes
+        [AllowNull()][AllowEmptyString()][string]$GlobString,
+        [double]$WarnAgeMin,
+        [double]$FailAgeMin,
+        [int]$MinBytes
     )
+
+    $WarnAgeMin = Clamp-Double -Value $WarnAgeMin -Default 7.0 -Min 0.0
+    $FailAgeMin = Clamp-Double -Value $FailAgeMin -Default 20.0 -Min 0.0
+    $MinBytes   = Clamp-Int    -Value $MinBytes   -Default 16  -Min 0
 
     $globs = Split-ListString -Value $GlobString
     $checked = New-Object System.Collections.Generic.List[string]
@@ -259,33 +320,37 @@ function Get-SnapshotStatus {
 
     foreach ($g in $globs) {
         $abs = Resolve-RepoPath -PathValue $g
-        $checked.Add($abs)
+        if ([string]::IsNullOrWhiteSpace($abs)) { continue }
+        $checked.Add($abs) | Out-Null
 
         try {
-            $items = Get-ChildItem -Path $abs -File -ErrorAction SilentlyContinue
-            foreach ($it in $items) { $matches.Add($it) }
-        } catch { }
+            foreach ($it in @(Get-ChildItem -Path $abs -File -ErrorAction SilentlyContinue)) {
+                if ($null -ne $it) { $matches.Add($it) | Out-Null }
+            }
+        } catch {
+            # ignore per-glob failures
+        }
+    }
+
+    $status = New-SnapshotStatusDefault -Checked $checked.ToArray()
+    $status.warn_age_min = $WarnAgeMin
+    $status.fail_age_min = $FailAgeMin
+    $status.min_bytes = $MinBytes
+
+    if ($matches.Count -eq 0) {
+        if ($checked.Count -eq 0) { $status.info_error = "snapshot_globs_not_configured" }
+        return $status
     }
 
     $selected = $null
-    if ($matches.Count -gt 0) {
-        $selected = $matches | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
-    }
+    try {
+        $selected = @($matches | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1)[0]
+    } catch { $selected = $null }
 
-    $status = [ordered]@{
-        paths_checked = $checked.ToArray()
-        selected_path = $null
-        exists = $false
-        mtime_utc = $null
-        age_min = $null
-        bytes = $null
-        warn_age_min = $WarnAgeMin
-        fail_age_min = $FailAgeMin
-        min_bytes = $MinBytes
-        status = "MISSING"
+    if ($null -eq $selected) {
+        $status.info_error = "snapshot_select_failed"
+        return $status
     }
-
-    if ($null -eq $selected) { return $status }
 
     try {
         $status.selected_path = $selected.FullName
@@ -296,8 +361,7 @@ function Get-SnapshotStatus {
         $status.mtime_utc = $mtimeUtc.ToString("o")
 
         $ageMin = (New-TimeSpan -Start $selected.LastWriteTime -End (Get-Date)).TotalMinutes
-        $ageMin = [math]::Round($ageMin, 2)
-        $status.age_min = $ageMin
+        $status.age_min = [math]::Round($ageMin, 2)
 
         if ($status.bytes -lt $MinBytes) {
             $status.status = "FAIL"
@@ -310,13 +374,14 @@ function Get-SnapshotStatus {
         }
     } catch {
         $status.status = "FAIL"
+        $status.info_error = $_.Exception.Message
     }
 
     return $status
 }
 
 function Convert-WmiDateToDateTimeUtc {
-    param([string]$WmiDate)
+    param([AllowNull()][AllowEmptyString()][string]$WmiDate)
     if ([string]::IsNullOrWhiteSpace($WmiDate)) { return $null }
     try {
         $dt = [System.Management.ManagementDateTimeConverter]::ToDateTime($WmiDate)
@@ -324,31 +389,43 @@ function Convert-WmiDateToDateTimeUtc {
     } catch { return $null }
 }
 
-function Get-OpsProcessStatus {
+function Get-OpsProcessStatusSafe {
     param(
-        [Parameter(Mandatory=$true)][string]$WrapperScriptName,
-        [Parameter(Mandatory=$true)][string]$InnerScriptName
+        [AllowNull()][AllowEmptyString()][string]$WrapperScriptName,
+        [AllowNull()][AllowEmptyString()][string]$InnerScriptName
     )
 
-    $wrapperLower = $WrapperScriptName.ToLowerInvariant()
-    $innerLower   = $InnerScriptName.ToLowerInvariant()
+    $wrapperLower = ($WrapperScriptName -as [string]).ToLowerInvariant()
+    $innerLower   = ($InnerScriptName -as [string]).ToLowerInvariant()
     $repoLower    = (Normalize-FullPath $Script:RepoRoot).ToLowerInvariant()
 
     $items = New-Object System.Collections.Generic.List[object]
 
+    $empty = [ordered]@{
+        error = $null
+        wrapper_count = 0
+        inner_count = 0
+        total_count = 0
+        processes = @()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($wrapperLower) -and [string]::IsNullOrWhiteSpace($innerLower)) {
+        $empty.error = "process_patterns_not_configured"
+        return $empty
+    }
+
     try {
-        $procs = Get-CimInstance -ClassName Win32_Process -ErrorAction Stop
-        foreach ($p in $procs) {
+        foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
             $cmd = $p.CommandLine
             if ([string]::IsNullOrWhiteSpace($cmd)) { continue }
 
             $cmdLower = $cmd.ToLowerInvariant()
-            $isWrapper = $cmdLower.Contains($wrapperLower)
-            $isInner   = $cmdLower.Contains($innerLower)
+            $isWrapper = (-not [string]::IsNullOrWhiteSpace($wrapperLower)) -and $cmdLower.Contains($wrapperLower)
+            $isInner   = (-not [string]::IsNullOrWhiteSpace($innerLower))   -and $cmdLower.Contains($innerLower)
             if (-not ($isWrapper -or $isInner)) { continue }
 
             $scoped = $false
-            if ($cmdLower.Contains($repoLower)) { $scoped = $true }
+            if (-not [string]::IsNullOrWhiteSpace($repoLower) -and $cmdLower.Contains($repoLower)) { $scoped = $true }
             if ($cmdLower.Contains("\scripts\") -or $cmdLower.Contains("/scripts/")) { $scoped = $true }
 
             $ptype = if ($isWrapper) { "WRAPPER" } elseif ($isInner) { "INNER" } else { "UNKNOWN" }
@@ -364,7 +441,7 @@ function Get-OpsProcessStatus {
                 created_utc = $createdIso
                 scoped_to_repo = $scoped
                 command_line = $cmd
-            })
+            }) | Out-Null
         }
     } catch {
         return [ordered]@{
@@ -384,26 +461,27 @@ function Get-OpsProcessStatus {
         wrapper_count = $wr.Count
         inner_count = $in.Count
         total_count = $items.Count
-        processes = ($items | Sort-Object -Property created_utc)
+        processes = @($items | Sort-Object -Property created_utc)
     }
 }
 
 function Extract-PidFromLockContent {
-    param([string]$Text)
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
 
+    # Try JSON
     try {
         $obj = $Text | ConvertFrom-Json -ErrorAction Stop
-        if ($null -ne $obj.pid) {
-            $pidVal = $null
-            if ([int]::TryParse(($obj.pid -as [string]), [ref]$pidVal)) { return $pidVal }
-        }
-        if ($null -ne $obj.PID) {
-            $pidVal = $null
-            if ([int]::TryParse(($obj.PID -as [string]), [ref]$pidVal)) { return $pidVal }
+        foreach ($key in @("pid","PID")) {
+            if ($null -ne $obj.$key) {
+                $pidVal = $null
+                if ([int]::TryParse(($obj.$key -as [string]), [ref]$pidVal)) { return $pidVal }
+            }
         }
     } catch { }
 
+    # Fallback: first integer token
     $m = [regex]::Match($Text, '\b(\d{1,9})\b')
     if ($m.Success) {
         $pidVal = $null
@@ -412,19 +490,22 @@ function Extract-PidFromLockContent {
     return $null
 }
 
-function Get-LockStatus {
+function Get-LockStatusSafe {
     param(
-        [Parameter(Mandatory=$true)][string]$LockPathsString,
-        [Parameter(Mandatory=$true)][double]$StaleAgeMin
+        [AllowNull()][AllowEmptyString()][string]$LockPathsString,
+        [double]$StaleAgeMin
     )
 
+    $StaleAgeMin = Clamp-Double -Value $StaleAgeMin -Default 30.0 -Min 0.0
     $paths = Split-ListString -Value $LockPathsString
+
     $items = New-Object System.Collections.Generic.List[object]
 
     foreach ($p in $paths) {
         $abs = Resolve-RepoPath -PathValue $p
-        $exists = Test-Path -LiteralPath $abs
+        if ([string]::IsNullOrWhiteSpace($abs)) { continue }
 
+        $exists = Test-Path -LiteralPath $abs
         $item = [ordered]@{
             path = $abs
             exists = $exists
@@ -435,6 +516,7 @@ function Get-LockStatus {
             pid_running = $null
             stale = $null
             stale_reason = $null
+            info_error = $null
         }
 
         if ($exists) {
@@ -473,38 +555,44 @@ function Get-LockStatus {
             } catch {
                 $item.stale = $null
                 $item.stale_reason = "LOCK_READ_ERROR"
+                $item.info_error = $_.Exception.Message
             }
         }
 
-        $items.Add($item)
+        $items.Add($item) | Out-Null
     }
 
-    $staleCount = @($items | Where-Object { $_.exists -eq $true -and $_.stale -eq $true }).Count
+    $staleCount = @(@($items) | Where-Object { $_.exists -eq $true -and $_.stale -eq $true }).Count
 
     return [ordered]@{
         stale_age_threshold_min = $StaleAgeMin
         stale_count = $staleCount
-        locks = $items
+        locks = @($items)
     }
 }
 
-function Get-FileTail {
+function Get-FileTailSafe {
     param(
-        [Parameter(Mandatory=$true)][string]$Path,
-        [Parameter(Mandatory=$true)][int]$TailLines
+        [AllowNull()][AllowEmptyString()][string]$Path,
+        [int]$TailLines
     )
+    $TailLines = Clamp-Int -Value $TailLines -Default 120 -Min 0 -Max 5000
+    if ([string]::IsNullOrWhiteSpace($Path)) { return @() }
+    if ($TailLines -le 0) { return @() }
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
-    try { return @(Get-Content -LiteralPath $Path -Tail $TailLines -ErrorAction Stop) }
-    catch { return @() }
+    try {
+        return @(Get-Content -LiteralPath $Path -Tail $TailLines -ErrorAction Stop)
+    } catch {
+        return @()
+    }
 }
 
 function Find-RedFlagsInLines {
     param(
-        [string[]]$Lines = @(),
-        [string[]]$Patterns = @()
+        [AllowNull()]$Lines = @(),
+        [AllowNull()]$Patterns = @()
     )
 
-    # Normalize: if caller passed a single string (PowerShell scalar), wrap into array
     $linesArr = @()
     foreach ($x in @($Lines)) {
         if ($null -eq $x) { continue }
@@ -526,73 +614,113 @@ function Find-RedFlagsInLines {
 
     foreach ($ln in $linesArr) {
         foreach ($pat in $patsArr) {
-            if ($ln -match $pat) {
-                $hits.Add($ln)
-                break
-            }
+            if ($ln -match $pat) { $hits.Add($ln) | Out-Null; break }
         }
     }
     return $hits
 }
 
-
-function Get-LogStatus {
-    param(
-        [Parameter(Mandatory=$true)][string]$MainLogPath,
-        [Parameter(Mandatory=$true)][string]$CycleLogGlob,
-        [Parameter(Mandatory=$true)][int]$TailLines,
-        [Parameter(Mandatory=$true)][string]$RedFlagPatternsString
-    )
-
-    $patterns = Split-ListString -Value $RedFlagPatternsString
-    if ($patterns.Count -eq 0) {
-        $patterns = @("ERROR","FATAL","CRITICAL","Exception","Traceback","Unhandled","Terminating")
-    }
-
-    $mainAbs = Resolve-RepoPath -PathValue $MainLogPath
-    $cycleGlobAbs = Resolve-RepoPath -PathValue $CycleLogGlob
-
-    $mainTail = Get-FileTail -Path $mainAbs -TailLines $TailLines
-    $mainHits = Find-RedFlagsInLines -Lines $mainTail -Patterns $patterns
-
-    $latestCycle = $null
-    try {
-        $cycleItems = Get-ChildItem -Path $cycleGlobAbs -File -ErrorAction SilentlyContinue
-        if ($null -ne $cycleItems -and $cycleItems.Count -gt 0) {
-            $latestCycle = $cycleItems | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
-        }
-    } catch { $latestCycle = $null }
-
-    $cycleAbs = if ($null -ne $latestCycle) { $latestCycle.FullName } else { $null }
-    $cycleTail = if ($null -ne $cycleAbs) { Get-FileTail -Path $cycleAbs -TailLines $TailLines } else { @() }
-    $cycleHits = Find-RedFlagsInLines -Lines $cycleTail -Patterns $patterns
-
+function New-LogStatusDefault {
+    param([string[]]$Patterns, [string]$MainPath, [string]$CycleGlob)
     return [ordered]@{
-        red_flag_patterns = $patterns
+        error = $null
+        red_flag_patterns = @($Patterns)
         main_log = [ordered]@{
-            path = $mainAbs
-            exists = (Test-Path -LiteralPath $mainAbs)
-            tail = $mainTail
-            red_flags_count = $mainHits.Count
-            red_flags_sample = @($mainHits | Select-Object -First 10)
+            path = $MainPath
+            exists = $false
+            tail = @()
+            red_flags_count = 0
+            red_flags_sample = @()
+            info_error = $null
         }
         cycle_log = [ordered]@{
-            glob = $cycleGlobAbs
-            selected_path = $cycleAbs
-            exists = if ($null -ne $cycleAbs) { (Test-Path -LiteralPath $cycleAbs) } else { $false }
-            tail = $cycleTail
-            red_flags_count = $cycleHits.Count
-            red_flags_sample = @($cycleHits | Select-Object -First 10)
+            glob = $CycleGlob
+            selected_path = $null
+            exists = $false
+            tail = @()
+            red_flags_count = 0
+            red_flags_sample = @()
+            info_error = $null
         }
     }
 }
 
+function Get-LogStatusSafe {
+    param(
+        [AllowNull()][AllowEmptyString()][string]$MainLogPath,
+        [AllowNull()][AllowEmptyString()][string]$CycleLogGlob,
+        [int]$TailLines,
+        [AllowNull()][AllowEmptyString()][string]$RedFlagPatternsString
+    )
+
+    $TailLines = Clamp-Int -Value $TailLines -Default 120 -Min 0 -Max 5000
+
+    $patterns = Split-ListString -Value $RedFlagPatternsString
+    if ($patterns.Count -eq 0) { $patterns = @("ERROR","FATAL","CRITICAL","Exception","Traceback","Unhandled","Terminating") }
+
+    $mainAbs = Resolve-RepoPath -PathValue $MainLogPath
+    $cycleGlobAbs = Resolve-RepoPath -PathValue $CycleLogGlob
+
+    $status = New-LogStatusDefault -Patterns $patterns -MainPath $mainAbs -CycleGlob $cycleGlobAbs
+
+    # main log
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($mainAbs) -and (Test-Path -LiteralPath $mainAbs)) {
+            $status.main_log.exists = $true
+            $mainTail = Get-FileTailSafe -Path $mainAbs -TailLines $TailLines
+            $hits = Find-RedFlagsInLines -Lines $mainTail -Patterns $patterns
+            $status.main_log.tail = @($mainTail)
+            $status.main_log.red_flags_count = $hits.Count
+            $status.main_log.red_flags_sample = @($hits | Select-Object -First 10)
+        } else {
+            $status.main_log.info_error = "main_log_missing"
+        }
+    } catch {
+        $status.main_log.info_error = $_.Exception.Message
+    }
+
+    # cycle log (latest)
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($cycleGlobAbs)) {
+            $cycleItems = @(Get-ChildItem -Path $cycleGlobAbs -File -ErrorAction SilentlyContinue)  # IMPORTANT: wrap for .Count
+            if ($cycleItems.Count -gt 0) {
+                $latest = @($cycleItems | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1)[0]
+                if ($null -ne $latest) {
+                    $cycleAbs = $latest.FullName
+                    $status.cycle_log.selected_path = $cycleAbs
+                    if (Test-Path -LiteralPath $cycleAbs) {
+                        $status.cycle_log.exists = $true
+                        $cycleTail = Get-FileTailSafe -Path $cycleAbs -TailLines $TailLines
+                        $hits2 = Find-RedFlagsInLines -Lines $cycleTail -Patterns $patterns
+                        $status.cycle_log.tail = @($cycleTail)
+                        $status.cycle_log.red_flags_count = $hits2.Count
+                        $status.cycle_log.red_flags_sample = @($hits2 | Select-Object -First 10)
+                    } else {
+                        $status.cycle_log.info_error = "cycle_log_selected_missing"
+                    }
+                }
+            } else {
+                $status.cycle_log.info_error = "no_cycle_logs_found"
+            }
+        } else {
+            $status.cycle_log.info_error = "cycle_log_glob_not_configured"
+        }
+    } catch {
+        $status.cycle_log.info_error = $_.Exception.Message
+    }
+
+    return $status
+}
+
+# -------------------------
+# Remediation logging
+# -------------------------
 function Record-RemediationAction {
     param(
         [Parameter(Mandatory=$true)][string]$Action,
-        [hashtable]$Details,
+        [hashtable]$Details = @{},
         [string]$Outcome = "OK",
-        [string]$ErrorMessage = $null
+        [AllowNull()][AllowEmptyString()][string]$ErrorMessage = $null
     )
 
     $entry = [ordered]@{
@@ -608,12 +736,13 @@ function Record-RemediationAction {
 
     try {
         $jsonLine = ($entry | ConvertTo-Json -Depth 8 -Compress)
-        $dir = Split-Path -Parent $Script:RemediationJsonlPath
-        Ensure-Directory -Path $dir
+        Ensure-Directory -Path (Split-Path -Parent $Script:RemediationJsonlPath)
         Add-Content -LiteralPath $Script:RemediationJsonlPath -Value $jsonLine -Encoding UTF8
     } catch { }
 
-    Write-Log -Level "INFO" -Message "remediation action='$Action' outcome='$Outcome'"
+    $msg = "remediation action='$Action' outcome='$Outcome'"
+    if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) { $msg += " error='$ErrorMessage'" }
+    Write-Log -Level "INFO" -Message $msg
 }
 
 function Invoke-SnapshotRefreshIfConfigured {
@@ -626,11 +755,12 @@ function Invoke-SnapshotRefreshIfConfigured {
     }
 
     $refreshAbs = Resolve-RepoPath -PathValue $refreshPathVal
-    if (-not (Test-Path -LiteralPath $refreshAbs)) {
+    if ([string]::IsNullOrWhiteSpace($refreshAbs) -or (-not (Test-Path -LiteralPath $refreshAbs))) {
         Record-RemediationAction -Action "SNAPSHOT_REFRESH" -Outcome "SKIP" -Details @{ reason = "snapshot_refresh_script_missing"; path = $refreshAbs }
         return $false
     }
 
+    # Allow-list: script name contains "snapshot" or "open_orders" and is under repo root
     $fname = ([System.IO.Path]::GetFileName($refreshAbs)).ToLowerInvariant()
     $allowedName = ($fname.Contains("snapshot") -or $fname.Contains("open_orders"))
     if (-not $allowedName) {
@@ -645,9 +775,7 @@ function Invoke-SnapshotRefreshIfConfigured {
         return $false
     }
 
-    $timeoutSec = 45
-    try { if ($null -ne $Cfg.snapshot_refresh_timeout_sec) { $timeoutSec = [int]$Cfg.snapshot_refresh_timeout_sec } }
-    catch { $timeoutSec = 45 }
+    $timeoutSec = Clamp-Int -Value $Cfg.snapshot_refresh_timeout_sec -Default 45 -Min 5 -Max 600
 
     $psExe = "powershell.exe"
     $args = "-NoProfile -ExecutionPolicy Bypass -File `"$refreshAbs`""
@@ -703,16 +831,46 @@ function Invoke-SnapshotRefreshIfConfigured {
     }
 }
 
+function Stop-ScheduledTaskSafe {
+    param([AllowNull()][AllowEmptyString()][string]$TaskName)
+    if ([string]::IsNullOrWhiteSpace($TaskName)) {
+        Record-RemediationAction -Action "STOP_TASK" -Outcome "SKIP" -Details @{ reason = "task_name_not_configured" }
+        return $false
+    }
+    try {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        Record-RemediationAction -Action "STOP_TASK" -Outcome "OK" -Details @{ task = $TaskName }
+        return $true
+    } catch {
+        Record-RemediationAction -Action "STOP_TASK" -Outcome "FAIL" -ErrorMessage $_.Exception.Message -Details @{ task = $TaskName }
+        return $false
+    }
+}
+
+function Start-ScheduledTaskSafe {
+    param([AllowNull()][AllowEmptyString()][string]$TaskName)
+    if ([string]::IsNullOrWhiteSpace($TaskName)) {
+        Record-RemediationAction -Action "START_TASK" -Outcome "SKIP" -Details @{ reason = "task_name_not_configured" }
+        return $false
+    }
+    try {
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        Record-RemediationAction -Action "START_TASK" -Outcome "OK" -Details @{ task = $TaskName }
+        return $true
+    } catch {
+        Record-RemediationAction -Action "START_TASK" -Outcome "FAIL" -ErrorMessage $_.Exception.Message -Details @{ task = $TaskName }
+        return $false
+    }
+}
+
 function Stop-OpsProcessesOverLimit {
     param(
-        [Parameter(Mandatory=$true)][hashtable]$Cfg,
-        [Parameter(Mandatory=$true)][object[]]$Processes
+        [hashtable]$Cfg,
+        [object[]]$Processes
     )
 
-    $maxWrapper = 1
-    $maxInner = 1
-    try { $maxWrapper = [int]$Cfg.max_wrapper_processes } catch { $maxWrapper = 1 }
-    try { $maxInner = [int]$Cfg.max_inner_processes } catch { $maxInner = 1 }
+    $maxWrapper = Clamp-Int -Value $Cfg.max_wrapper_processes -Default 1 -Min 0 -Max 10
+    $maxInner   = Clamp-Int -Value $Cfg.max_inner_processes   -Default 1 -Min 0 -Max 10
 
     $wr = @($Processes | Where-Object { $_.type -eq "WRAPPER" })
     $in = @($Processes | Where-Object { $_.type -eq "INNER" })
@@ -721,21 +879,20 @@ function Stop-OpsProcessesOverLimit {
 
     if ($wr.Count -gt $maxWrapper) {
         $keep = @($wr | Sort-Object -Property created_utc -Descending | Select-Object -First $maxWrapper)
-        foreach ($p in $wr) { if (-not ($keep.pid -contains $p.pid)) { $toKill.Add($p) } }
+        foreach ($p in $wr) { if (-not ($keep.pid -contains $p.pid)) { $toKill.Add($p) | Out-Null } }
     }
-
     if ($in.Count -gt $maxInner) {
         $keep = @($in | Sort-Object -Property created_utc -Descending | Select-Object -First $maxInner)
-        foreach ($p in $in) { if (-not ($keep.pid -contains $p.pid)) { $toKill.Add($p) } }
+        foreach ($p in $in) { if (-not ($keep.pid -contains $p.pid)) { $toKill.Add($p) | Out-Null } }
     }
 
     $killed = 0
     foreach ($p in $toKill) {
+        # Hard safety: kill only scoped_to_repo processes
         if ($p.scoped_to_repo -ne $true) {
             Record-RemediationAction -Action "KILL_PROCESS" -Outcome "SKIP" -Details @{ pid=$p.pid; type=$p.type; reason="not_scoped_to_repo"; command_line=$p.command_line }
             continue
         }
-
         try {
             Stop-Process -Id $p.pid -Force -ErrorAction Stop
             $killed++
@@ -749,12 +906,13 @@ function Stop-OpsProcessesOverLimit {
 }
 
 function Remove-StaleLocks {
-    param([Parameter(Mandatory=$true)][hashtable]$LockStatus)
+    param([hashtable]$LockStatus)
 
     $dataDir = Join-Path $Script:RepoRoot "args\data"
     $removed = 0
 
-    foreach ($lk in $LockStatus.locks) {
+    foreach ($lk in @($LockStatus.locks)) {
+        if ($null -eq $lk) { continue }
         if ($lk.exists -ne $true) { continue }
         if ($lk.stale -ne $true) { continue }
 
@@ -776,60 +934,35 @@ function Remove-StaleLocks {
     return $removed
 }
 
-function Stop-ScheduledTaskSafe {
-    param([Parameter(Mandatory=$true)][string]$TaskName)
-    try {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        Record-RemediationAction -Action "STOP_TASK" -Outcome "OK" -Details @{ task=$TaskName }
-        return $true
-    } catch {
-        Record-RemediationAction -Action "STOP_TASK" -Outcome "FAIL" -ErrorMessage $_.Exception.Message -Details @{ task=$TaskName }
-        return $false
-    }
-}
-
-function Start-ScheduledTaskSafe {
-    param([Parameter(Mandatory=$true)][string]$TaskName)
-    try {
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        Record-RemediationAction -Action "START_TASK" -Outcome "OK" -Details @{ task=$TaskName }
-        return $true
-    } catch {
-        Record-RemediationAction -Action "START_TASK" -Outcome "FAIL" -ErrorMessage $_.Exception.Message -Details @{ task=$TaskName }
-        return $false
-    }
-}
-
+# -------------------------
+# Snapshot of whole system
+# -------------------------
 function Get-HealthSnapshot {
     param([Parameter(Mandatory=$true)][hashtable]$Cfg)
 
     $stopFlagAbs = Resolve-RepoPath -PathValue ($Cfg.stop_flag_path -as [string])
-    $stopPresent = Test-Path -LiteralPath $stopFlagAbs
+    $stopPresent = $false
+    try { if (-not [string]::IsNullOrWhiteSpace($stopFlagAbs)) { $stopPresent = Test-Path -LiteralPath $stopFlagAbs } } catch { $stopPresent = $false }
     $opsState = if ($stopPresent) { "PAUSED" } else { "RUNNING" }
 
-    $wrapperInterval = 5
-    try { $wrapperInterval = [int]$Cfg.wrapper_interval_min } catch { $wrapperInterval = 5 }
+    $wrapperInterval = Clamp-Int -Value $Cfg.wrapper_interval_min -Default 5 -Min 1 -Max 1440
 
-    $wrapperTask = Get-TaskStatus -TaskName ($Cfg.wrapper_task_name -as [string]) -ExpectedIntervalMin $wrapperInterval
-    $watchdogTask = Get-TaskStatus -TaskName ($Cfg.watchdog_task_name -as [string]) -ExpectedIntervalMin 1
+    $wrapperTask = Get-TaskStatusSafe -TaskName ($Cfg.wrapper_task_name -as [string]) -ExpectedIntervalMin $wrapperInterval
+    $watchdogTask = Get-TaskStatusSafe -TaskName ($Cfg.watchdog_task_name -as [string]) -ExpectedIntervalMin 1
 
-    $warnAge = 7.0
-    $failAge = 20.0
-    $minBytes = 16
-    try { $warnAge = [double]$Cfg.snapshot_warn_age_min } catch { }
-    try { $failAge = [double]$Cfg.snapshot_fail_age_min } catch { }
-    try { $minBytes = [int]$Cfg.snapshot_min_bytes } catch { }
+    $warnAge = Clamp-Double -Value $Cfg.snapshot_warn_age_min -Default 7.0 -Min 0.0
+    $failAge = Clamp-Double -Value $Cfg.snapshot_fail_age_min -Default 20.0 -Min 0.0
+    $minBytes = Clamp-Int -Value $Cfg.snapshot_min_bytes -Default 16 -Min 0
 
-    $snapshot = Get-SnapshotStatus -GlobString ($Cfg.snapshot_path_globs -as [string]) -WarnAgeMin $warnAge -FailAgeMin $failAge -MinBytes $minBytes
-    $processes = Get-OpsProcessStatus -WrapperScriptName ($Cfg.wrapper_script_name -as [string]) -InnerScriptName ($Cfg.inner_script_name -as [string])
+    $snapshot = Get-SnapshotStatusSafe -GlobString ($Cfg.snapshot_path_globs -as [string]) -WarnAgeMin $warnAge -FailAgeMin $failAge -MinBytes $minBytes
 
-    $lockStaleMin = 30.0
-    try { $lockStaleMin = [double]$Cfg.lock_stale_min } catch { }
-    $locks = Get-LockStatus -LockPathsString ($Cfg.lock_paths -as [string]) -StaleAgeMin $lockStaleMin
+    $processes = Get-OpsProcessStatusSafe -WrapperScriptName ($Cfg.wrapper_script_name -as [string]) -InnerScriptName ($Cfg.inner_script_name -as [string])
 
-    $tailLines = 120
-    try { $tailLines = [int]$Cfg.log_tail_lines } catch { }
-    $logs = Get-LogStatus -MainLogPath ($Cfg.main_log_path -as [string]) -CycleLogGlob ($Cfg.cycle_log_glob -as [string]) -TailLines $tailLines -RedFlagPatternsString ($Cfg.log_red_flag_patterns -as [string])
+    $lockStaleMin = Clamp-Double -Value $Cfg.lock_stale_min -Default 30.0 -Min 0.0
+    $locks = Get-LockStatusSafe -LockPathsString ($Cfg.lock_paths -as [string]) -StaleAgeMin $lockStaleMin
+
+    $tailLines = Clamp-Int -Value $Cfg.log_tail_lines -Default 120 -Min 0 -Max 5000
+    $logs = Get-LogStatusSafe -MainLogPath ($Cfg.main_log_path -as [string]) -CycleLogGlob ($Cfg.cycle_log_glob -as [string]) -TailLines $tailLines -RedFlagPatternsString ($Cfg.log_red_flag_patterns -as [string])
 
     return [ordered]@{
         ops_state = $opsState
@@ -849,26 +982,25 @@ function Evaluate-Findings {
     )
 
     $findings = New-Object System.Collections.Generic.List[object]
-
     function Add-FindingLocal {
         param([string]$Severity, [string]$Code, [string]$Message, [hashtable]$Details)
         $findings.Add([ordered]@{ severity=$Severity; code=$Code; message=$Message; details=$Details }) | Out-Null
     }
 
-    $isPaused = ($Snap.ops_state -eq "PAUSED")
+    $isPaused = (($Snap.ops_state -as [string]) -eq "PAUSED")
 
+    # Wrapper task
     $wrapper = $Snap.tasks.wrapper
-    $wrapperInterval = 5
-    try { $wrapperInterval = [int]$Cfg.wrapper_interval_min } catch { }
+    $wrapperInterval = Clamp-Int -Value $Cfg.wrapper_interval_min -Default 5 -Min 1 -Max 1440
 
     if ($wrapper.exists -ne $true) {
-        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "TASK_WRAPPER_MISSING" -Message "Wrapper scheduled task is missing." -Details @{ task=$wrapper.name }
+        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "TASK_WRAPPER_MISSING" -Message "Wrapper scheduled task is missing." -Details @{ task=$wrapper.name; error=$wrapper.info_error }
     } else {
         if (($wrapper.enabled -eq $false) -and (-not $isPaused)) {
             Add-FindingLocal -Severity "WARN" -Code "TASK_WRAPPER_DISABLED" -Message "Wrapper scheduled task is disabled while stop.flag is absent." -Details @{ task=$wrapper.name; state=$wrapper.state }
         }
         if (($wrapper.last_task_result -ne $null) -and ([int]$wrapper.last_task_result -ne 0)) {
-            Add-FindingLocal -Severity "WARN" -Code "TASK_WRAPPER_LAST_RESULT_NONZERO" -Message "Wrapper scheduled task last result is non-zero." -Details @{ task=$wrapper.name; last_task_result=$wrapper.last_task_result; last_task_result_hex=$wrapper.last_task_result_hex }
+            Add-FindingLocal -Severity "WARN" -Code "TASK_WRAPPER_LAST_RESULT_NONZERO" -Message "Wrapper task last result is non-zero." -Details @{ task=$wrapper.name; last_task_result=$wrapper.last_task_result; last_task_result_hex=$wrapper.last_task_result_hex }
         }
         if (($wrapper.age_since_last_run_min -ne $null) -and (-not $isPaused)) {
             $age = [double]$wrapper.age_since_last_run_min
@@ -880,23 +1012,24 @@ function Evaluate-Findings {
         }
     }
 
+    # Snapshot
     $snap = $Snap.snapshot
-    if ($snap.status -eq "MISSING") {
-        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "SNAPSHOT_MISSING" -Message "Snapshot file not found." -Details @{ checked=$snap.paths_checked }
-    } elseif ($snap.status -eq "FAIL") {
-        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "SNAPSHOT_STALE" -Message "Snapshot is stale or invalid." -Details @{ path=$snap.selected_path; age_min=$snap.age_min; bytes=$snap.bytes; fail_age_min=$snap.fail_age_min; min_bytes=$snap.min_bytes }
-    } elseif ($snap.status -eq "WARN") {
+    $snapStatus = ($snap.status -as [string])
+    if ($snapStatus -eq "MISSING") {
+        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "SNAPSHOT_MISSING" -Message "Snapshot file not found." -Details @{ checked=$snap.paths_checked; error=$snap.info_error }
+    } elseif ($snapStatus -eq "FAIL") {
+        Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "SNAPSHOT_STALE" -Message "Snapshot is stale or invalid." -Details @{ path=$snap.selected_path; age_min=$snap.age_min; bytes=$snap.bytes; fail_age_min=$snap.fail_age_min; min_bytes=$snap.min_bytes; error=$snap.info_error }
+    } elseif ($snapStatus -eq "WARN") {
         Add-FindingLocal -Severity "WARN" -Code "SNAPSHOT_WARN" -Message "Snapshot is older than warn threshold." -Details @{ path=$snap.selected_path; age_min=$snap.age_min; warn_age_min=$snap.warn_age_min }
     }
 
+    # Processes overlap
     $procs = $Snap.processes
     if ($null -ne $procs.error) {
-        Add-FindingLocal -Severity "WARN" -Code "PROC_ENUM_ERROR" -Message "Failed to enumerate processes." -Details @{ error=$procs.error }
+        Add-FindingLocal -Severity "WARN" -Code "PROC_ENUM_ERROR" -Message "Failed to enumerate OPS processes." -Details @{ error=$procs.error }
     } else {
-        $maxWrapper = 1; $maxInner = 1
-        try { $maxWrapper = [int]$Cfg.max_wrapper_processes } catch { }
-        try { $maxInner   = [int]$Cfg.max_inner_processes } catch { }
-
+        $maxWrapper = Clamp-Int -Value $Cfg.max_wrapper_processes -Default 1 -Min 0 -Max 10
+        $maxInner   = Clamp-Int -Value $Cfg.max_inner_processes   -Default 1 -Min 0 -Max 10
         if (($procs.wrapper_count -gt $maxWrapper) -or ($procs.inner_count -gt $maxInner)) {
             Add-FindingLocal -Severity (if ($isPaused) { "WARN" } else { "FAIL" }) -Code "OPS_OVERLAP" -Message "Detected overlapping OPS processes beyond allowed limits." -Details @{
                 wrapper_count=$procs.wrapper_count; max_wrapper=$maxWrapper;
@@ -906,30 +1039,39 @@ function Evaluate-Findings {
         }
     }
 
+    # Locks
     $locks = $Snap.locks
-    if ($locks.stale_count -gt 0) {
+    if ([int]$locks.stale_count -gt 0) {
         Add-FindingLocal -Severity "WARN" -Code "STALE_LOCKS" -Message "Detected stale lock files." -Details @{ stale_count=$locks.stale_count; threshold_min=$locks.stale_age_threshold_min }
     }
 
+    # Logs red flags
     $logs = $Snap.logs
-    $mainHits = [int]$logs.main_log.red_flags_count
-    $cycleHits = [int]$logs.cycle_log.red_flags_count
-    if (($mainHits -gt 0) -or ($cycleHits -gt 0)) {
-        Add-FindingLocal -Severity "WARN" -Code "LOG_REDFLAGS" -Message "Red-flag patterns found in log tails." -Details @{
-            main_log_path=$logs.main_log.path; main_red_flags=$mainHits;
-            cycle_log_path=$logs.cycle_log.selected_path; cycle_red_flags=$cycleHits
+    try {
+        $mainHits = [int]$logs.main_log.red_flags_count
+        $cycleHits = [int]$logs.cycle_log.red_flags_count
+        if (($mainHits -gt 0) -or ($cycleHits -gt 0)) {
+            Add-FindingLocal -Severity "WARN" -Code "LOG_REDFLAGS" -Message "Red-flag patterns found in log tails." -Details @{
+                main_log_path=$logs.main_log.path; main_red_flags=$mainHits;
+                cycle_log_path=$logs.cycle_log.selected_path; cycle_red_flags=$cycleHits
+            }
         }
+    } catch {
+        Add-FindingLocal -Severity "WARN" -Code "LOG_PARSE_ERROR" -Message "Error while evaluating log status." -Details @{ error=$_.Exception.Message }
     }
 
-    return $findings
+    return @($findings)
 }
 
 function HealthLevel-FromFindings {
-    param([Parameter(Mandatory=$true)][object[]]$Findings)
-    $hasFail = @($Findings | Where-Object { $_.severity -eq "FAIL" }).Count -gt 0
+    param([object[]]$Findings)
+
+    $hasFail = @(@($Findings) | Where-Object { $_.severity -eq "FAIL" }).Count -gt 0
     if ($hasFail) { return "FAIL" }
-    $hasWarn = @($Findings | Where-Object { $_.severity -eq "WARN" }).Count -gt 0
+
+    $hasWarn = @(@($Findings) | Where-Object { $_.severity -eq "WARN" }).Count -gt 0
     if ($hasWarn) { return "WARN" }
+
     return "OK"
 }
 
@@ -998,14 +1140,14 @@ try {
     $baseline = Get-HealthSnapshot -Cfg $cfg
     $remediationSkippedStopFlag = $false
 
+    # Controlled remediation
     if ($Remediate.IsPresent) {
         if ($baseline.stop_flag.present -eq $true) {
             $remediationSkippedStopFlag = $true
             Write-Log -Level "WARN" -Message "Remediation requested but stop.flag is present -> remediation skipped."
         } else {
-            $maxWrapper = 1; $maxInner = 1
-            try { $maxWrapper = [int]$cfg.max_wrapper_processes } catch { }
-            try { $maxInner   = [int]$cfg.max_inner_processes } catch { }
+            $maxWrapper = Clamp-Int -Value $cfg.max_wrapper_processes -Default 1 -Min 0 -Max 10
+            $maxInner   = Clamp-Int -Value $cfg.max_inner_processes   -Default 1 -Min 0 -Max 10
 
             $proc = $baseline.processes
             $overlap = $false
@@ -1015,9 +1157,9 @@ try {
 
             if ($overlap) {
                 $wrapperTaskName = ($cfg.wrapper_task_name -as [string])
-                if (-not [string]::IsNullOrWhiteSpace($wrapperTaskName)) { $null = Stop-ScheduledTaskSafe -TaskName $wrapperTaskName }
+                $null = Stop-ScheduledTaskSafe -TaskName $wrapperTaskName
 
-                $killed = Stop-OpsProcessesOverLimit -Cfg $cfg -Processes $proc.processes
+                $killed = Stop-OpsProcessesOverLimit -Cfg $cfg -Processes @($proc.processes)
                 Record-RemediationAction -Action "OVERLAP_REMEDIATION" -Outcome "OK" -Details @{
                     wrapper_task = $wrapperTaskName
                     killed_processes = $killed
@@ -1026,18 +1168,27 @@ try {
                 }
 
                 $removedLocks = Remove-StaleLocks -LockStatus $baseline.locks
-                if ($removedLocks -gt 0) { Record-RemediationAction -Action "LOCK_CLEANUP" -Outcome "OK" -Details @{ removed = $removedLocks } }
+                if ($removedLocks -gt 0) {
+                    Record-RemediationAction -Action "LOCK_CLEANUP" -Outcome "OK" -Details @{ removed = $removedLocks }
+                }
 
-                $stopFlagAbs = $baseline.stop_flag.path
-                if (-not (Test-Path -LiteralPath $stopFlagAbs)) {
-                    if (-not [string]::IsNullOrWhiteSpace($wrapperTaskName)) { $null = Start-ScheduledTaskSafe -TaskName $wrapperTaskName }
+                # Restart wrapper task only if stop.flag still absent
+                if (-not (Test-Path -LiteralPath $baseline.stop_flag.path)) {
+                    $null = Start-ScheduledTaskSafe -TaskName $wrapperTaskName
                 } else {
                     Record-RemediationAction -Action "START_TASK" -Outcome "SKIP" -Details @{ task = $wrapperTaskName; reason = "stop_flag_present" }
                 }
             }
 
-            if ($baseline.snapshot.status -eq "FAIL") { $null = Invoke-SnapshotRefreshIfConfigured -Cfg $cfg }
-            if ($baseline.locks.stale_count -gt 0) { $null = Remove-StaleLocks -LockStatus $baseline.locks }
+            # Snapshot stale -> refresh (optional)
+            if (($baseline.snapshot.status -as [string]) -eq "FAIL") {
+                $null = Invoke-SnapshotRefreshIfConfigured -Cfg $cfg
+            }
+
+            # Stale locks -> remove
+            if ([int]$baseline.locks.stale_count -gt 0) {
+                $null = Remove-StaleLocks -LockStatus $baseline.locks
+            }
         }
     }
 
@@ -1067,7 +1218,7 @@ try {
         logs = $final.logs
 
         findings = $findings
-        remediation_actions = $Script:RemediationActions
+        remediation_actions = @($Script:RemediationActions)
     }
 
     $jsonOut = ($result | ConvertTo-Json -Depth 8)
@@ -1096,7 +1247,7 @@ catch {
         health_level = "FAIL"
         ops_state = "UNKNOWN"
         error = $err
-        remediation_actions = $Script:RemediationActions
+        remediation_actions = @($Script:RemediationActions)
     }
 
     $jsonOut = ($fallback | ConvertTo-Json -Depth 8)
