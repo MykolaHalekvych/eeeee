@@ -16,6 +16,7 @@ from args.audit import event_store as _event_store
 from args.ma.ma_runtime import eval_ma
 from args.ma.policy_loader import load_policy
 from args.ui.ops_controls_tab import render_ops_controls  # Stage 6: OPS control plane UI
+from args.ui.ops_watchdog_tab import render_ops_watchdog_tab  # Stage 7: Ops Watchdog UI
 from args.ui.run_explorer_tab import render_run_explorer_tab
 
 
@@ -378,15 +379,7 @@ def run_checkpoint(tag: str) -> Tuple[int, str]:
     script = REPO_ROOT / "scripts" / "checkpoint.ps1"
     if not script.exists():
         return 98, f"Missing script: {script}"
-    cmd = [
-        "powershell",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-Tag",
-        tag,
-    ]
+    cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Tag", tag]
     return run_cmd(cmd, cwd=REPO_ROOT)
 
 
@@ -486,6 +479,7 @@ def _normalize_eval_result(res: Any) -> Tuple[str, List[Dict[str, Any]], Dict[st
 
 def _append_event_safe(event: Dict[str, Any]) -> Tuple[int, str]:
     fn = getattr(_event_store, "append_event", None)
+    fallback_err = ""
     if callable(fn):
         try:
             sig = inspect.signature(fn)
@@ -600,15 +594,6 @@ def _pick_top_reason(event: Dict[str, Any], mu: float | None, ml: float | None, 
     return "No violations"
 
 
-def _decision_to_css(decision: str) -> str:
-    d = (decision or "UNKNOWN").upper().replace("-", "_")
-    if d == "ALLOW":
-        return "dec-allow"
-    if d == "REDUCE":
-        return "dec-reduce"
-    return "dec-no"
-
-
 # -----------------------------
 # ARGS Dashboard
 # -----------------------------
@@ -671,7 +656,7 @@ def render_args_dashboard(operator_mode: bool) -> None:
         f'<div class="metric-value">{_html_escape(last_ts)}</div></div>'
         '<div class="metric-pill"><div class="metric-label">Last decision</div>'
         f'<div class="metric-value">{_html_escape(last_dec)}</div></div>'
-        '</div>'
+        "</div>"
     )
     st.markdown(mini_html, unsafe_allow_html=True)
 
@@ -750,15 +735,24 @@ def render_args_dashboard(operator_mode: bool) -> None:
 
     c1, c2, c3 = st.columns(3, gap="medium")
     with c1:
-        st.markdown(f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">ACTIVE RISK BLOCKS</div>{blocks_rows}</div>',
+            unsafe_allow_html=True,
+        )
     with c2:
-        st.markdown(f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">TOP VIOLATIONS</div>{v_rows}{enforced_html}</div>',
+            unsafe_allow_html=True,
+        )
     with c3:
-        st.markdown(f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card"><div class="card-title">RISK SNAPSHOT</div>{snapshot_html}</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-    # Stage 6 safety: event-writing actions hidden in Operator mode
+    # Safety: event-writing hidden in Operator mode
     cc1, cc2, cc3 = st.columns([1, 1, 1])
     with cc2:
         if operator_mode:
@@ -824,20 +818,9 @@ def render_events_view() -> None:
             key="ev_decision_filter",
         )
     with f2:
-        q = st.text_input(
-            "Search (reason/policy/instrument)",
-            value="",
-            key="ev_search",
-        ).strip().lower()
+        q = st.text_input("Search (reason/policy/instrument)", value="", key="ev_search").strip().lower()
     with f3:
-        limit = st.number_input(
-            "Rows",
-            min_value=10,
-            max_value=500,
-            value=80,
-            step=10,
-            key="ev_rows",
-        )
+        limit = st.number_input("Rows", min_value=10, max_value=500, value=80, step=10, key="ev_rows")
 
     filtered: List[Dict[str, Any]] = []
     for e in events:
@@ -866,7 +849,6 @@ def render_events_view() -> None:
         return
 
     rows = filtered[: int(limit)]
-
     st.markdown("### Event details")
 
     def _label(e: Dict[str, Any]) -> str:
@@ -880,7 +862,7 @@ def render_events_view() -> None:
 
 
 # -----------------------------
-# Main (Stage 6 layout)
+# Main (UI layout)
 # -----------------------------
 def main() -> None:
     st.set_page_config(page_title="ARGS", layout="wide")
@@ -895,12 +877,12 @@ def main() -> None:
         key="mode_operator",
     )
 
-    # Shared across tabs (OPS Controls uses this key too)
+    # shared state (other tabs can read it)
     st.session_state["operator_mode"] = bool(operator_mode)
 
-    # Stage 6: OPS Controls first, then Run Explorer
-    tab_ops, tab_runexp, tab_args, tab_cp, tab_logs, tab_events, tab_about = st.tabs(
-        ["OPS Controls", "Run Explorer", "ARGS Dashboard", "Control Panel", "Logs", "Events", "About"]
+    # Tabs (8) -> 8 variables (MUST match)
+    tab_ops, tab_runexp, tab_args, tab_cp, tab_watchdog, tab_logs, tab_events, tab_about = st.tabs(
+        ["OPS Controls", "Run Explorer", "ARGS Dashboard", "Control Panel", "Ops Watchdog", "Logs", "Events", "About"]
     )
 
     with tab_ops:
@@ -935,7 +917,6 @@ def main() -> None:
                 st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
                 st.session_state["sanity_results"] = run_sanity_suite()
 
-            # Stage 6 safety: hide dev-only actions in operator mode
             if operator_mode:
                 st.info("Operator mode: Negative test and Checkpoint are hidden.")
             else:
@@ -998,6 +979,9 @@ def main() -> None:
                 if ("neg_result" in st.session_state) or ("chk_result" in st.session_state):
                     st.caption("Dev outputs are hidden in Operator mode.")
 
+    with tab_watchdog:
+        render_ops_watchdog_tab()
+
     with tab_logs:
         st.subheader("Logs & Evidence")
 
@@ -1019,13 +1003,13 @@ def main() -> None:
     with tab_about:
         st.subheader("About / Commands")
         st.markdown(
-            """
-Stage 6 (OPS 24×7) UI:
-- OPS Controls tab manipulates only file-based control plane (stop.flag) and shows health (snapshot, task scheduler, processes, logs).
-- No BUY/SELL, no manual overrides.
+            r"""
+Stage UI:
+- OPS Controls: file-based control plane only, no BUY/SELL.
+- Ops Watchdog: reads ops_health.json, safe ops toggles only (stop.flag).
 
 Run UI:
-- `py -3.11 -m streamlit run .\\args\\ui\\app_streamlit.py`
+- `py -3.11 -m streamlit run .\args\ui\app_streamlit.py`
             """
         )
 
