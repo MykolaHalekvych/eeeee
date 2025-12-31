@@ -122,3 +122,10 @@ args/data/ibkr_open_orders_*.jsonl
 
 repo_tree_core.txt
 
+
+# Stage5.1 runtime snapshots
+args/data/ibkr_account_*.json
+args/data/ibkr_positions_*.jsonl
+args/data/ibkr_executions_*.jsonl
+args/data/reconcile_report_*.json
+
