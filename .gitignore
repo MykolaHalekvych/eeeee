@@ -111,3 +111,14 @@ args/logs/ops_watchdog.log
 # local execution arming (do not commit)
 args/data/execution_mode.json
 
+
+# runtime artifacts
+args/data/run_report_*.json
+args/data/orders_exec_*.jsonl
+args/data/sent_orders_*.jsonl
+args/data/would_send_*.jsonl
+args/data/ibkr_open_orders_*.jsonl
+
+
+repo_tree_core.txt
+
