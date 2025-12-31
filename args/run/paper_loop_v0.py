@@ -1,3 +1,4 @@
+
 # args/run/paper_loop_v0.py
 from __future__ import annotations
 
@@ -48,6 +49,10 @@ class PaperLoopConfig:
     force_one_order: bool = False
     force_one_plan: bool = False
 
+    # Engineering smoke: allow first actionable plan even when MA is NO_TRADE (probe only)
+    # NOTE: actual override is implemented in order_sendplan_v0 via --probe-allow-first-actionable
+    probe_allow_first_actionable: bool = False
+
 
 # ---------------------------
 # small utilities
@@ -80,7 +85,6 @@ def _write_jsonl_line(f, obj: Dict[str, Any]) -> None:
 
 def _copy_run_config_template(repo_root: Path) -> Dict[str, Any]:
     cfg_path = repo_root / "args" / "data" / "run_config_v0.json"
-    # BOM-safe
     return json.loads(cfg_path.read_text(encoding="utf-8-sig", errors="replace"))
 
 
@@ -172,9 +176,9 @@ def _extract_rule_ids(violations: Any, limit: int = 12) -> List[str]:
 
 
 def _extract_position_size(ev: Dict[str, Any]) -> float:
-    re = ev.get("risk_envelope")
-    if isinstance(re, dict):
-        v = re.get("position_size")
+    re0 = ev.get("risk_envelope")
+    if isinstance(re0, dict):
+        v = re0.get("position_size")
         if isinstance(v, (int, float)):
             return float(v)
 
@@ -225,20 +229,22 @@ def _build_order_intent(
     env: str,
     operator_global_mode: Optional[str],
 ) -> Dict[str, Any]:
-    re = tick_ev.get("risk_envelope") if isinstance(tick_ev.get("risk_envelope"), dict) else {}
+    re0 = tick_ev.get("risk_envelope") if isinstance(tick_ev.get("risk_envelope"), dict) else {}
     mi = tick_ev.get("ma_input") if isinstance(tick_ev.get("ma_input"), dict) else {}
 
-    mode = str(re.get("mode") or "").strip().upper() or "UNKNOWN"
-    enforced_no_trade = bool(re.get("enforced_no_trade", False))
+    mode = str(re0.get("mode") or "").strip().upper() or "UNKNOWN"
+    enforced_no_trade = bool(re0.get("enforced_no_trade", False))
 
     exec_global_mode = (
-        str(re.get("exec_global_mode") or "").strip().upper()
+        str(re0.get("exec_global_mode") or "").strip().upper()
         or str(_dg(mi, "exec.global_mode", "") or "").strip().upper()
         or None
     )
 
     ma_decision = str(tick_ev.get("ma_decision") or "").strip().upper() or "UNKNOWN"
     violations = tick_ev.get("violations", [])
+    if not isinstance(violations, list):
+        violations = []
     rule_ids = _extract_rule_ids(violations)
 
     pos_size = _extract_position_size(tick_ev)
@@ -276,7 +282,7 @@ def _build_order_intent(
         "operator_global_mode": operator_global_mode,
         "exec_global_mode": exec_global_mode,
         "mode": mode,
-        "mode_source": re.get("mode_source"),
+        "mode_source": re0.get("mode_source"),
         "enforced_no_trade": enforced_no_trade,
         "ma_decision": ma_decision,
         "has_position": has_position,
@@ -322,6 +328,17 @@ def _run_module_json(repo_root: Path, module: str, args: List[str]) -> Dict[str,
         "stderr_tail": err[-4000:],
         "parsed": parsed,
     }
+
+
+def _is_nonfatal_sendplan_failure(mod_run: Dict[str, Any]) -> bool:
+    """
+    AUTONOMY STANDARD:
+    - SENDPLAN_ALL_NONE is NOT an error. It means NO_ACTION cycle and should not kill the loop.
+    """
+    parsed = mod_run.get("parsed")
+    if not isinstance(parsed, dict):
+        return False
+    return str(parsed.get("error") or "").strip().upper() == "SENDPLAN_ALL_NONE"
 
 
 def _count_jsonl_field(path: Path, field: str) -> Dict[str, Any]:
@@ -454,7 +471,9 @@ def _inject_order_submit_events(
                         "index": plan.get("index"),
                         "ts": plan.get("ts") or ev.get("ts"),
                         "execute": bool(plan.get("execute", execute_default)),
-                        "payload_execute": bool(plan.get("payload_execute", execute_default)) if "payload_execute" in plan else bool(plan.get("execute", execute_default)),
+                        "payload_execute": bool(plan.get("payload_execute", execute_default))
+                        if "payload_execute" in plan
+                        else bool(plan.get("execute", execute_default)),
                         "plan_kind": plan.get("plan_kind"),
                         "payload_kind": plan.get("payload_kind"),
                         "payload_id": plan.get("payload_id"),
@@ -661,9 +680,9 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 last_tick_ts = ev.get("ts")
                 last_ma_decision = ma_decision
 
-                re = ev.get("risk_envelope")
-                if isinstance(re, dict):
-                    last_risk_envelope = dict(re)
+                re0 = ev.get("risk_envelope")
+                if isinstance(re0, dict):
+                    last_risk_envelope = dict(re0)
 
                 ps = ev.get("position_state")
                 if isinstance(ps, dict):
@@ -688,6 +707,9 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
     sendplan_module_run: Dict[str, Any] = {}
     exec_module_run: Dict[str, Any] = {}
     exec_merge: Dict[str, Any] = {}
+
+    # NEW: autonomy flag (SENDPLAN_ALL_NONE nonfatal)
+    sendplan_nonfatal_all_none = False
 
     if cfg.gen_payload:
         payload_args = [
@@ -718,14 +740,25 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
             "--execute", ("1" if cfg.execute else "0"),
             "--force-one-plan", ("1" if cfg.force_one_plan else "0"),
         ]
+
+        # Engineering smoke: only when force_one_plan is enabled
+        if cfg.probe_allow_first_actionable and cfg.force_one_plan:
+            sendplan_args += ["--probe-allow-first-actionable", "1"]
+
         sendplan_module_run = _run_module_json(repo_root, "args.wa.order_sendplan_v0", sendplan_args)
+
         if not sendplan_module_run.get("ok", False):
-            raise RuntimeError(
-                "order_sendplan_v0 failed\n"
-                + f"cmd={sendplan_module_run.get('cmd')}\n"
-                + f"stdout_tail={sendplan_module_run.get('stdout_tail')}\n"
-                + f"stderr_tail={sendplan_module_run.get('stderr_tail')}\n"
-            )
+            if _is_nonfatal_sendplan_failure(sendplan_module_run):
+                # AUTONOMY STANDARD: allow no-action cycle
+                sendplan_nonfatal_all_none = True
+                sendplan_module_run["ok"] = True
+            else:
+                raise RuntimeError(
+                    "order_sendplan_v0 failed\n"
+                    + f"cmd={sendplan_module_run.get('cmd')}\n"
+                    + f"stdout_tail={sendplan_module_run.get('stdout_tail')}\n"
+                    + f"stderr_tail={sendplan_module_run.get('stderr_tail')}\n"
+                )
 
         sp = sendplan_module_run.get("parsed") if isinstance(sendplan_module_run.get("parsed"), dict) else {}
         if isinstance(sp.get("out_path"), str) and sp.get("out_path"):
@@ -838,6 +871,7 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
 
             "payload_module": payload_module_run.get("parsed") or {"ok": payload_module_run.get("ok", False)},
             "sendplan_module": sendplan_module_run.get("parsed") or {"ok": sendplan_module_run.get("ok", False)},
+            "sendplan_nonfatal_all_none": bool(sendplan_nonfatal_all_none),
 
             "payload_kind_counts": payload_kind_summary,
             "sendplan_kind_counts": sendplan_kind_summary,
@@ -851,6 +885,7 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 "exec_ledger_path": str(cfg.exec_ledger_path),
                 "force_one_order": bool(cfg.force_one_order),
                 "force_one_plan": bool(cfg.force_one_plan),
+                "probe_allow_first_actionable": bool(cfg.probe_allow_first_actionable),
             },
             "executor_module": exec_module_run.get("parsed") or ({"ok": exec_module_run.get("ok", False)} if exec_module_run else {}),
             "exec_events_merge": exec_merge,
@@ -887,6 +922,7 @@ def _parse_cli() -> PaperLoopConfig:
 
     ap.add_argument("--force-one-order", default="0", help="ENGINEERING ONLY: 0/1")
     ap.add_argument("--force-one-plan", default="0", help="ENGINEERING ONLY: 0/1")
+    ap.add_argument("--probe-allow-first-actionable", default="0", help="ENGINEERING ONLY: 0/1 (requires force-one-plan)")
 
     ns = ap.parse_args()
 
@@ -903,6 +939,7 @@ def _parse_cli() -> PaperLoopConfig:
         exec_max_orders=int(ns.exec_max_orders),
         force_one_order=_b01(ns.force_one_order),
         force_one_plan=_b01(ns.force_one_plan),
+        probe_allow_first_actionable=_b01(ns.probe_allow_first_actionable),
     )
 
 
@@ -936,9 +973,11 @@ def main() -> int:
         w.get("intents_written"),
         "order_submit_events:",
         w.get("order_submit_events"),
+        "sendplan_nonfatal_all_none:",
+        w.get("sendplan_nonfatal_all_none"),
     )
-    re = report.get("risk_envelope") if isinstance(report.get("risk_envelope"), dict) else {}
-    print("mode:", re.get("mode"), "enforced_no_trade:", re.get("enforced_no_trade"))
+    re0 = report.get("risk_envelope") if isinstance(report.get("risk_envelope"), dict) else {}
+    print("mode:", re0.get("mode"), "enforced_no_trade:", re0.get("enforced_no_trade"))
     ps = report.get("position_state") if isinstance(report.get("position_state"), dict) else {}
     print("position_size:", ps.get("size"))
 

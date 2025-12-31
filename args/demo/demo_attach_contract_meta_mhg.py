@@ -7,9 +7,9 @@ from args.ibkr.ibkr_contract_resolver_v1 import utc_now_str
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-CONTRACT_PATH = REPO_ROOT / "args" / "data" / "ibkr_hg_contract_v1.json"
-CSV_PATH = REPO_ROOT / "args" / "data" / "hg_5m_bars_ibkr.csv"
-OUT_META_PATH = REPO_ROOT / "args" / "data" / "hg_5m_bars_ibkr.meta.json"
+CONTRACT_PATH = REPO_ROOT / "args" / "data" / "ibkr_mhg_contract_v1.json"
+CSV_PATH = REPO_ROOT / "args" / "data" / "mhg_5m_bars_ibkr.csv"
+OUT_META_PATH = REPO_ROOT / "args" / "data" / "mhg_5m_bars_ibkr.meta.json"
 
 
 def main() -> int:
@@ -54,4 +54,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

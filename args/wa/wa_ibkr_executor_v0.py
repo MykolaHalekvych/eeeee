@@ -9,9 +9,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
-from args.control.execution_mode_v0 import get_execution_mode, is_stop_flag_present, is_action_allowed
-from args.control.execution_mode_v0 import get_execution_mode, is_stop_flag_present, is_action_allowed
-
 
 from args.control.execution_mode_v0 import (
     decorate_ibkr_error_details,
@@ -165,6 +162,14 @@ def _extract_intent_kind(plan: Dict[str, Any]) -> str:
     return ""
 
 
+def _pick_fields(d: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k in keys:
+        if k in d and d.get(k) is not None:
+            out[k] = d.get(k)
+    return out
+
+
 # ---------------------------
 # plan extractors
 # ---------------------------
@@ -173,10 +178,15 @@ def _extract_intent_kind(plan: Dict[str, Any]) -> str:
 def _default_contract_path(repo_root: Path, instrument: str) -> Optional[Path]:
     inst = _norm(instrument)
     data_dir = repo_root / "args" / "data"
-    if inst == "HG":
-        p = data_dir / "ibkr_hg_contract_v1.json"
-        return p if p.exists() else None
-    return None
+
+    mapping = {
+        "HG": data_dir / "ibkr_hg_contract_v1.json",
+        "MHG": data_dir / "ibkr_mhg_contract_v1.json",
+        "QC": data_dir / "ibkr_qc_contract_v1.json",
+    }
+    p = mapping.get(inst)
+    return p if (p and p.exists()) else None
+
 
 
 def _extract_contract_dict(plan: Dict[str, Any], repo_root: Path) -> Optional[Dict[str, Any]]:
@@ -243,6 +253,15 @@ def _dict_to_ib_order(order_dict: Dict[str, Any]):
     o = Order()
     for k, v in order_dict.items():
         _safe_setattr(o, k, v)
+
+    # Critical: IBKR rejects unsupported defaults on some accounts/instruments
+    _safe_setattr(o, "eTradeOnly", False)
+    _safe_setattr(o, "firmQuoteOnly", False)
+
+    # Safety: avoid accidental GTD/expiry if some defaults exist
+    if hasattr(o, "goodTillDate") and not getattr(o, "goodTillDate", ""):
+        _safe_setattr(o, "goodTillDate", "")
+
     return o
 
 
@@ -605,7 +624,12 @@ def main() -> int:
 
     cli_execute = _b01(args.execute)
 
-    conn = IbkrConn(host=str(args.host), port=int(args.port), client_id=int(args.client_id), timeout_s=float(args.timeout_s))
+    conn = IbkrConn(
+        host=str(args.host),
+        port=int(args.port),
+        client_id=int(args.client_id),
+        timeout_s=float(args.timeout_s),
+    )
     exec_id = uuid.uuid4().hex[:12]
 
     # Arming (file-based)
@@ -626,8 +650,8 @@ def main() -> int:
     # Determine run_id from first plan (best-effort)
     first_run_id: Optional[str] = run_id_arg or None
     if first_run_id is None:
-        for plan in _iter_jsonl_dicts(sendplan_path):
-            rid = plan.get("run_id")
+        for plan0 in _iter_jsonl_dicts(sendplan_path):
+            rid = plan0.get("run_id")
             if isinstance(rid, str) and rid.strip():
                 first_run_id = rid.strip()
                 break
@@ -797,18 +821,42 @@ def main() -> int:
                 continue
             plans_actionable += 1
 
-            # Plan-level execute gate (this is separate from arming)
+            # Always compute ledger key for traceability (even when skipping)
+            ledger_key, plan_fp = _compute_ledger_key(plan, prefix="ibkr_place_order")
+
+            # Plan-level execute gate (separate from arming)
             plan_execute = _b01(plan.get("execute", False))
             if (not cli_execute) or (not plan_execute):
                 orders_skipped += 1
+                evt = _build_event_base(plan, exec_id=exec_id)
+                evt.update(
+                    {
+                        "kind": "EXEC_SKIPPED",
+                        "reason": "CLI_EXECUTE_OFF" if (not cli_execute) else "PLAN_EXECUTE_FALSE",
+                        "ledger_key": ledger_key,
+                        "details": {
+                            "cli_execute": bool(cli_execute),
+                            "plan_execute": bool(plan_execute),
+                            "execution_mode": exec_mode,
+                        },
+                    }
+                )
+                _emit_event(fout, evt)
                 continue
 
             if args.max_orders and int(args.max_orders) > 0 and orders_attempted >= int(args.max_orders):
                 orders_skipped += 1
+                evt = _build_event_base(plan, exec_id=exec_id)
+                evt.update(
+                    {
+                        "kind": "EXEC_SKIPPED",
+                        "reason": "MAX_ORDERS_LIMIT",
+                        "ledger_key": ledger_key,
+                        "details": {"max_orders": int(args.max_orders), "orders_attempted": int(orders_attempted)},
+                    }
+                )
+                _emit_event(fout, evt)
                 continue
-
-            # Compute ledger_key early for stable ids/traceability
-            ledger_key, plan_fp = _compute_ledger_key(plan, prefix="ibkr_place_order")
 
             # ---------------------------
             # EXECUTION GUARD (arming + MA/gates)
@@ -840,7 +888,7 @@ def main() -> int:
                         "ledger_key": ledger_key,
                         "details": {
                             "mode": exec_mode,
-                            "stop_flag": stop_present,
+                            "stop_flag": bool(stop_present),
                             "ma_decision": ma_decision,
                             "gate_reason": gate_reason,
                             "intent_kind": intent_kind,
@@ -867,6 +915,10 @@ def main() -> int:
                 )
                 _emit_event(fout, evt)
                 rejects += 1
+                _finalize_ledger_safe(ledger, ledger_key=ledger_key, run_id=run_id_for_ledger, status="REJECT", result={"reject": {"reason": "missing_contract"}})
+                evt_done = _build_event_base(plan, exec_id=exec_id)
+                evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "reason": "missing_contract"}})
+                _emit_event(fout, evt_done)
                 continue
 
             if not isinstance(order_dict, dict) or not order_dict:
@@ -881,6 +933,10 @@ def main() -> int:
                 )
                 _emit_event(fout, evt)
                 rejects += 1
+                _finalize_ledger_safe(ledger, ledger_key=ledger_key, run_id=run_id_for_ledger, status="REJECT", result={"reject": {"reason": "missing_order"}})
+                evt_done = _build_event_base(plan, exec_id=exec_id)
+                evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "reason": "missing_order"}})
+                _emit_event(fout, evt_done)
                 continue
 
             # Stage 5E.2: reconcile gate BEFORE ledger.reserve
@@ -903,6 +959,7 @@ def main() -> int:
                     )
                     _emit_event(fout, evt)
                     orders_skipped_reconcile += 1
+                    # note: no ledger finalize since no reserve and no submit
                     continue
 
                 if snapshot_idx is not None:
@@ -949,6 +1006,9 @@ def main() -> int:
                     evt.update({"kind": "ORDER_REJECT", "reason": "ledger_error", "ledger_key": ledger_key, "details": {"error": repr(e)}})
                     _emit_event(fout, evt)
                     rejects += 1
+                    evt_done = _build_event_base(plan, exec_id=exec_id)
+                    evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "reason": "ledger_error"}})
+                    _emit_event(fout, evt_done)
                     continue
 
                 if not reserved:
@@ -957,6 +1017,36 @@ def main() -> int:
                     _emit_event(fout, evt)
                     orders_skipped_duplicate += 1
                     continue
+
+            # Emit ORDER_SUBMIT right before the actual submit attempt (Stage 5 trace)
+            evt_submit = _build_event_base(plan, exec_id=exec_id)
+            evt_submit.update(
+                {
+                    "kind": "ORDER_SUBMIT",
+                    "ledger_key": ledger_key,
+                    "details": {
+                        "execution_mode": exec_mode,
+                        "stop_flag": bool(stop_present),
+                        "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                        "contract": _pick_fields(
+                            contract_dict,
+                            [
+                                "conId",
+                                "symbol",
+                                "localSymbol",
+                                "secType",
+                                "exchange",
+                                "primaryExch",
+                                "currency",
+                                "multiplier",
+                                "lastTradeDateOrContractMonth",
+                            ],
+                        ),
+                        "order": _pick_fields(order_dict, ["action", "totalQuantity", "orderType", "lmtPrice", "auxPrice", "tif", "goodTillDate"]),
+                    },
+                }
+            )
+            _emit_event(fout, evt_submit)
 
             orders_attempted += 1
 
@@ -992,6 +1082,10 @@ def main() -> int:
                     ibkr_meta={"via": "ibkr_sender_real_v1"},
                     detail=detail,
                 )
+
+                evt_done = _build_event_base(plan, exec_id=exec_id)
+                evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "ibkr": {"via": "ibkr_sender_real_v1"}, "details": {"ok": bool(ok)}})
+                _emit_event(fout, evt_done)
                 continue
 
             # 2) Fallback: direct ibapi
@@ -1036,6 +1130,10 @@ def main() -> int:
                     detail=detail,
                 )
 
+                evt_done = _build_event_base(plan, exec_id=exec_id)
+                evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "ibkr": {"via": "ibapi_direct", "order_id": int(order_id)}, "details": {"ok": bool(ok)}})
+                _emit_event(fout, evt_done)
+
             except Exception as e:
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt.update({"kind": "ORDER_REJECT", "reason": "executor_exception", "ledger_key": ledger_key, "details": {"error": repr(e)}})
@@ -1048,6 +1146,10 @@ def main() -> int:
                     status="ERROR",
                     result={"error": {"type": type(e).__name__, "msg": str(e)}},
                 )
+
+                evt_done = _build_event_base(plan, exec_id=exec_id)
+                evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "exception": type(e).__name__}})
+                _emit_event(fout, evt_done)
 
     if ib_app is not None:
         try:

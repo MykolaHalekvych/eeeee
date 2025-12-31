@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -139,7 +139,7 @@ def main() -> int:
 
     # Stage 4.3: Contract artifact (order_intents_<run_id>.jsonl)
     order_intents_path = DATA_DIR / f"order_intents_{run_id}.jsonl"
-    oi = build_order_intents(report, out_intents, order_intents_path, source="wa_v1")
+    oi = build_order_intents(run_report=report, raw_intents_path=out_intents, out_path=order_intents_path, source="wa_v1")
 
     summary = {
         "latest_report": str(rp),
