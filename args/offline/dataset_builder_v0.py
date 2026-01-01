@@ -1,5 +1,5 @@
 
-@'
+$code = @'
 from __future__ import annotations
 
 import argparse
@@ -10,9 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-# -----------------------------
-# Paths
-# -----------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
 LOGS_DIR = REPO_ROOT / "args" / "logs"
@@ -111,9 +108,9 @@ def _default_include_fields() -> List[str]:
 
 def _extract_mode_from_report(report: Dict[str, Any]) -> Optional[str]:
     mode = None
-    re = report.get("risk_envelope")
-    if isinstance(re, dict):
-        mode = re.get("mode")
+    re_ = report.get("risk_envelope")
+    if isinstance(re_, dict):
+        mode = re_.get("mode")
     if mode is None:
         ma = report.get("ma_report")
         if isinstance(ma, dict):
@@ -141,12 +138,18 @@ def _extract_row(
         row["ma_decision"] = orders_paper_row.get("ma_decision")
         row["reason"] = orders_paper_row.get("reason")
 
+        wa_action = orders_paper_row.get("wa_action")
+        if isinstance(wa_action, dict):
+            notes = wa_action.get("notes")
+            if isinstance(notes, dict):
+                row["intent_kind"] = notes.get("intent")
+
     if isinstance(events_row, dict):
         if row.get("index") is None:
             row["index"] = events_row.get("index")
         if row.get("ts") is None:
             row["ts"] = events_row.get("ts")
-        if "gate_reason" in events_row:
+        if "gate_reason" in events_row and row.get("gate_reason") is None:
             row["gate_reason"] = events_row.get("gate_reason")
         if row.get("mode") is None and "mode" in events_row:
             row["mode"] = events_row.get("mode")
@@ -156,10 +159,10 @@ def _extract_row(
 
 def _coerce_payload_features(payload_row: Dict[str, Any], out_row: Dict[str, Any]) -> None:
     out_row["payload_kind"] = payload_row.get("payload_kind")
-    if "gate_reason" in payload_row and out_row.get("gate_reason") is None:
+
+    if out_row.get("gate_reason") is None and "gate_reason" in payload_row:
         out_row["gate_reason"] = payload_row.get("gate_reason")
 
-    # intent kind if present
     if out_row.get("intent_kind") is None:
         out_row["intent_kind"] = payload_row.get("intent_kind") or payload_row.get("intent_kind_raw")
 
@@ -313,10 +316,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     manifest = build_dataset(run_ids=run_ids, out_dir=out_dir, include_fields=include_fields)
 
     print("DATASET_BUILDER_V0")
-    print(json.dumps({"ok": True, "out_dir": str(out_dir), "manifest_path": str(out_dir / "dataset_manifest.json"), "rows": manifest.get("rows"), "run_ids": run_ids}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "out_dir": str(out_dir),
+                "manifest_path": str(out_dir / "dataset_manifest.json"),
+                "rows": manifest.get("rows"),
+                "run_ids": run_ids,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'@ | Set-Content -Encoding UTF8 .\args\offline\dataset_builder_v0.py
+'@
+
+New-Item -ItemType Directory -Force -Path .\args\offline | Out-Null
+Set-Content -Encoding UTF8 -Path .\args\offline\dataset_builder_v0.py -Value $code
