@@ -83,6 +83,12 @@ def main() -> int:
     ap.add_argument("--min-sample-frac-warn", type=float, default=0.8)
     ap.add_argument("--min-sample-frac-fail", type=float, default=0.6)
 
+    ap.add_argument(
+        "--bootstrap-low-sample-warn",
+        action="store_true",
+        help="If only low sample coverage would FAIL and there are 0 FAIL samples -> downgrade to WARN",
+    )
+
     ap.add_argument("--out", default="", help="Write report JSON (default args/data/soak_report.json)")
     ap.add_argument("--archive", action="store_true", help="Also write timestamped copy under args/logs/soak_reports/")
     args = ap.parse_args()
@@ -98,8 +104,8 @@ def main() -> int:
 
     rows = _read_jsonl(history)
 
-    # Extract (ts, level, reason, failures[])
-    items: List[Tuple[datetime, str, str, List[str]]] = []
+    # Extract (ts, level, failures[])
+    items: List[Tuple[datetime, str, List[str]]] = []
     for r in rows:
         soak = r.get("soak") if isinstance(r.get("soak"), dict) else None
         if not soak:
@@ -107,16 +113,16 @@ def main() -> int:
         ts = _parse_iso_z(soak.get("ts_utc") or r.get("ts_utc") or "")
         if not ts or ts < t_min or ts > now + timedelta(minutes=5):
             continue
+
         level = str(soak.get("level") or "").upper()
-        reason = str(soak.get("reason") or "")
-        failures = []
+
+        failures: List[str] = []
         details = soak.get("details")
         if isinstance(details, dict):
-            failures = details.get("failures") or []
-        if not isinstance(failures, list):
-            failures = []
-        failures = [str(x) for x in failures]
-        items.append((ts, level, reason, failures))
+            f0 = details.get("failures") or []
+            if isinstance(f0, list):
+                failures = [str(x) for x in f0]
+        items.append((ts, level, failures))
 
     items.sort(key=lambda x: x[0])
 
@@ -124,9 +130,9 @@ def main() -> int:
     expected = int(window.total_seconds() // max(1, args.expected_interval_s))
     expected = max(1, expected)
 
-    pass_count = sum(1 for _, lvl, _, _ in items if lvl == "PASS")
-    warn_count = sum(1 for _, lvl, _, _ in items if lvl == "WARN")
-    fail_count = sum(1 for _, lvl, _, _ in items if lvl == "FAIL")
+    pass_count = sum(1 for _, lvl, _ in items if lvl == "PASS")
+    warn_count = sum(1 for _, lvl, _ in items if lvl == "WARN")
+    fail_count = sum(1 for _, lvl, _ in items if lvl == "FAIL")
 
     # gaps
     max_gap_s = 0.0
@@ -136,13 +142,12 @@ def main() -> int:
             if gap > max_gap_s:
                 max_gap_s = gap
 
-    fail_flags = [(lvl == "FAIL") for _, lvl, _, _ in items]
-    consec_fail_max = _consecutive_max(fail_flags)
+    consec_fail_max = _consecutive_max([(lvl == "FAIL") for _, lvl, _ in items])
 
-    # failure reasons
+    # failure reasons aggregation
     fail_reason_counter = Counter()
     hard_stop_flag = False
-    for _, lvl, _, fails in items:
+    for _, lvl, fails in items:
         if lvl == "FAIL":
             for f in fails:
                 fail_reason_counter[f] += 1
@@ -154,14 +159,18 @@ def main() -> int:
 
     reasons_warn: List[str] = []
     reasons_fail: List[str] = []
+    bootstrap_applied = False
+    warnings_bootstrap: List[str] = []
 
     if sample_count == 0:
         reasons_fail.append("NO_SAMPLES")
     if hard_stop_flag:
         reasons_fail.append("STOP_FLAG_PRESENT_IN_WINDOW")
 
-    # sample coverage
+    # sample coverage (strict by default)
+    low_sample_fail = False
     if sample_frac < args.min_sample_frac_fail:
+        low_sample_fail = True
         reasons_fail.append("LOW_SAMPLE_COVERAGE_FAIL")
     elif sample_frac < args.min_sample_frac_warn:
         reasons_warn.append("LOW_SAMPLE_COVERAGE_WARN")
@@ -184,6 +193,23 @@ def main() -> int:
     elif consec_fail_max > args.consec_fail_warn:
         reasons_warn.append("CONSEC_FAIL_TOO_HIGH_WARN")
 
+    # -------------------------
+    # Bootstrap logic:
+    # If the ONLY reason to FAIL is low sample coverage,
+    # and there are no FAIL samples (and no stop flag / no NO_SAMPLES),
+    # downgrade to WARN.
+    # -------------------------
+    if args.bootstrap_low_sample_warn:
+        if low_sample_fail and fail_count == 0:
+            # if other fail reasons exist besides LOW_SAMPLE_COVERAGE_FAIL, do not downgrade
+            only_low_sample = (set(reasons_fail) == {"LOW_SAMPLE_COVERAGE_FAIL"})
+            if only_low_sample:
+                reasons_fail = []
+                reasons_warn.append("LOW_SAMPLE_COVERAGE_BOOTSTRAP_WARN")
+                bootstrap_applied = True
+                warnings_bootstrap.append("BOOTSTRAP_APPLIED_LOW_SAMPLE_ONLY")
+
+    # decide
     level = "PASS"
     exit_code = 0
     reason = "OK"
@@ -196,7 +222,7 @@ def main() -> int:
         exit_code = 1
         reason = reasons_warn[0]
 
-    report = {
+    report: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "ts_utc": _iso(now),
         "window": {"hours": args.window_hours, "from_utc": _iso(t_min), "to_utc": _iso(now)},
@@ -204,6 +230,11 @@ def main() -> int:
         "level": level,
         "exit_code": exit_code,
         "reason": reason,
+        "bootstrap": {
+            "enabled": bool(args.bootstrap_low_sample_warn),
+            "applied": bootstrap_applied,
+            "warnings": warnings_bootstrap,
+        },
         "metrics": {
             "history_path": str(history),
             "sample_count": sample_count,
@@ -232,11 +263,13 @@ def main() -> int:
         "reasons_fail": reasons_fail,
     }
 
+    # write out
     try:
         out_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     except Exception:
         report.setdefault("reasons_warn", []).append("WRITE_OUT_FAILED")
 
+    # optional archive
     if args.archive:
         arch_dir = repo / "args" / "logs" / "soak_reports"
         arch_dir.mkdir(parents=True, exist_ok=True)
@@ -247,6 +280,7 @@ def main() -> int:
         except Exception:
             pass
 
+    # JSON-only stdout
     sys.stdout.write(json.dumps(report, ensure_ascii=False))
     return exit_code
 
