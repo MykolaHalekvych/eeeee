@@ -20,9 +20,20 @@ def _utc_now_z() -> str:
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
-    obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+    """
+    Tolerant reader:
+    - Allows BOM (utf-8-sig)
+    - If file contains extra trailing data (accidental concatenation),
+      parses only the first JSON object.
+    """
+    s = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+    if not s:
+        raise ValueError(f"{path} is empty")
+
+    dec = json.JSONDecoder()
+    obj, end = dec.raw_decode(s)
     if not isinstance(obj, dict):
-        raise ValueError(f"{path} is not a JSON object")
+        raise ValueError(f"{path} first JSON value is not an object")
     return obj
 
 
