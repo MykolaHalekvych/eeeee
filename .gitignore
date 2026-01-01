@@ -155,3 +155,11 @@ args/logs/scheduler_soakreport_24h.log
 args/logs/soak_reports/
 args/data/soak_report.json
 
+# Soak runtime artifacts
+args/logs/soak_history.jsonl
+args/logs/scheduler_soakgate.log
+args/logs/scheduler_soakreport_24h.log
+args/logs/scheduler_soakreport_7d.log
+args/logs/soak_reports/
+args/data/soak_report_24h.json
+args/data/soak_report_7d.json
