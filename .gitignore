@@ -150,4 +150,8 @@ scripts/stage9_process_files.ps1
 # Stage7C hard-soak runtime
 args/data/soak_status.json
 args/logs/scheduler_soakgate.log
+args/logs/soak_history.jsonl
+args/logs/scheduler_soakreport_24h.log
+args/logs/soak_reports/
+args/data/soak_report.json
 
