@@ -129,3 +129,12 @@ args/data/ibkr_positions_*.jsonl
 args/data/ibkr_executions_*.jsonl
 args/data/reconcile_report_*.json
 
+# Stage7 runtime artifacts
+args/data/latest_run_id.txt
+args/data/latest_paths.json
+args/data/soak_report.json
+args/data/ops_health.json
+args/data/auto_loop.lock.json
+args/logs/ops_events.jsonl
+args/logs/ops_*.log
+args/logs/archive/
