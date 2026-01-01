@@ -122,3 +122,25 @@ args/data/scheduler_heartbeat.txt
 args/logs/scheduler_autoloop.log
 args/logs/scheduler_soakcheck.log
 args/data/as_model_version.json
+args/data/as_model_version.json
+args/offline/evidence/
+args/offline/model_registry_events.jsonl
+args/offline/model_registry.json
+# --- Offline runtime/generated (Stage8+)
+args/offline/datasets/
+args/offline/models/
+args/offline/evidence/
+args/offline/model_registry.json
+args/offline/model_registry_events.jsonl
+
+# --- Process pack runtime artifacts (Stage9)
+args/process/forensics/
+args/process/releases/
+
+# --- Local patches & scratch
+stage85_stage9_newfiles*.patch
+
+# --- Optional: generated scheduler logs/heartbeat (if not already ignored)
+args/logs/scheduler_*.log
+args/data/scheduler_heartbeat.txt
+
