@@ -143,4 +143,8 @@ stage85_stage9_newfiles*.patch
 # --- Optional: generated scheduler logs/heartbeat (if not already ignored)
 args/logs/scheduler_*.log
 args/data/scheduler_heartbeat.txt
+# Local helper scripts (optional)
+scripts/scheduler_autoloop_5m.cmd
+scripts/stage85_stage9_newfiles.ps1
+scripts/stage9_process_files.ps1
 
