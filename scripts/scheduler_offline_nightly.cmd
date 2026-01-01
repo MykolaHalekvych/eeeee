@@ -31,16 +31,14 @@ if "%MODEL_DIR%"=="" (
 
 echo [INFO] model_dir=%MODEL_DIR% >> %LOG%
 
-REM 3b) Model manifest path
-set MODEL_MANIFEST=%MODEL_DIR%\model_manifest.json
-if not exist "%MODEL_MANIFEST%" (
-  echo [FAIL] model_manifest missing: %MODEL_MANIFEST% >> %LOG%
+REM 3b) Ensure manifest exists in model_dir
+if not exist "%MODEL_DIR%\model_manifest.json" (
+  echo [FAIL] model_manifest missing: %MODEL_DIR%\model_manifest.json >> %LOG%
   exit /b 2
 )
-echo [INFO] model_manifest=%MODEL_MANIFEST% >> %LOG%
 
-REM 4) Eval gate (PASS=0, FAIL=2) -- use --model (not --model_dir)
-py -3.11 -m args.offline.eval_gate_v0 --model "%MODEL_MANIFEST%" >> %LOG% 2>&1
+REM 4) Eval gate (PASS=0, FAIL=2) -- pass model_dir to --model
+py -3.11 -m args.offline.eval_gate_v0 --model "%MODEL_DIR%" >> %LOG% 2>&1
 set EVAL_RC=%ERRORLEVEL%
 echo [INFO] eval_rc=%EVAL_RC% >> %LOG%
 
