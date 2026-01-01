@@ -138,3 +138,7 @@ args/data/auto_loop.lock.json
 args/logs/ops_events.jsonl
 args/logs/ops_*.log
 args/logs/archive/
+# Scheduler runtime logs
+args/data/scheduler_heartbeat.txt
+args/logs/scheduler_autoloop.log
+args/logs/scheduler_soakcheck.log
