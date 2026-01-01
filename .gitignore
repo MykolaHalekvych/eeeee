@@ -10,14 +10,10 @@ __pycache__/
 venv/
 .env
 
-# -----------------------------
 # Streamlit
-# -----------------------------
 .streamlit/
 
-# -----------------------------
 # Project runtime / evidence
-# -----------------------------
 # Events & logs (runtime only)
 args/data/events.jsonl
 args/logs/
@@ -47,9 +43,7 @@ args/data/invariants_*_copy.yaml
 # ARGS runtime position state (do not commit)
 args/data/position_state_v0.json
 
-# -----------------------------
 # WA artifacts (intents / payload / sendplan)
-# -----------------------------
 args/data/order_intents_*.jsonl
 args/data/orders_intent_*.jsonl
 args/data/orders_payload_*.jsonl
@@ -60,9 +54,7 @@ args/data/sent_orders_*.jsonl
 args/data/would_send_*.jsonl
 args/data/ibkr_order_id_cursor_v1.json
 
-# -----------------------------
 # Stage 5/6 execution lifecycle / reconciliation
-# -----------------------------
 # Executor event streams
 args/data/orders_exec_*.jsonl
 args/data/orders_exec_events_*.jsonl
@@ -95,17 +87,9 @@ args/data/ops_config.yaml
 args/data/ops_health.json
 scripts/ops_watchdog_stage7.ps1.bak
 
-# Stage7 watchdog local config + runtime outputs
-args/data/ops_config.yaml
-args/data/ops_health.json
-scripts/ops_watchdog_stage7.ps1.bak
-args/data/ops_config.yaml
-args/data/ops_health.json
-scripts/ops_watchdog_stage7.ps1.bak
 
 # Stage7 ops watchdog artifacts
 args/data/ops_remediation.jsonl
-args/data/ops_health.json
 args/logs/ops_watchdog.log
 
 # local execution arming (do not commit)
@@ -114,10 +98,6 @@ args/data/execution_mode.json
 
 # runtime artifacts
 args/data/run_report_*.json
-args/data/orders_exec_*.jsonl
-args/data/sent_orders_*.jsonl
-args/data/would_send_*.jsonl
-args/data/ibkr_open_orders_*.jsonl
 
 
 repo_tree_core.txt
@@ -133,15 +113,10 @@ args/data/reconcile_report_*.json
 args/data/latest_run_id.txt
 args/data/latest_paths.json
 args/data/soak_report.json
-args/data/ops_health.json
 args/data/auto_loop.lock.json
 args/logs/ops_events.jsonl
 args/logs/ops_*.log
 args/logs/archive/
-# Scheduler runtime logs
-args/data/scheduler_heartbeat.txt
-args/logs/scheduler_autoloop.log
-args/logs/scheduler_soakcheck.log
 # Scheduler runtime logs
 args/data/scheduler_heartbeat.txt
 args/logs/scheduler_autoloop.log
