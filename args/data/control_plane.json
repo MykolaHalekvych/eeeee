@@ -1,0 +1,20 @@
+{
+  "schema": "control_plane_v0",
+  "execution_mode": "DRYRUN",
+  "global_mode": "ALLOW_NEW_ENTRIES",
+  "instrument_allowlist": [ "MHG" ],
+  "ownership": {
+    "order_ref_prefix": "ARGS|",
+    "strategy_id": "autonomy_v1"
+  },
+  "startup": {
+    "halt_if_unknown_positions": true,
+    "halt_if_unknown_orders": true
+  },
+  "ibkr": {
+    "host": "localhost",
+    "port": 7497,
+    "client_id": 51,
+    "timeout_s": 25
+  }
+}
