@@ -87,7 +87,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -RestartInterval (New-TimeSpan -Minutes 1)
 
 # Run as current user (interactive token) + highest privileges
-$principal = New-ScheduledTaskPrincipal -UserId $env:UserName -LogonType InteractiveToken -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId $env:UserName -LogonType Interactive -RunLevel Highest
 
 $taskAuto = New-ScheduledTask -Action $actionAuto -Trigger $triggerAuto -Settings $settings -Principal $principal
 $taskSoak = New-ScheduledTask -Action $actionSoak -Trigger $triggerSoak -Settings $settings -Principal $principal
