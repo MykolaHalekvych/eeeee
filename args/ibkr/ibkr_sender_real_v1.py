@@ -1926,7 +1926,7 @@ def real_sender(
             last_oid_used = int(oid)
 
             # Stage6: auto-reset override after first successful submit (real)
-            if (not override_autoreset_done) and override_cfg.enabled and override_cfg.autoreset and (send_key in stage5_override_send_keys):
+            if (not override_autoreset_done) and override_cfg.enabled and override_cfg.autoreset:
                 did = _try_autoreset_stage5_override(
                     control_state_path,
                     reason=f"autoreset_after_successful_submit run_id={run_id} send_key={send_key}",
