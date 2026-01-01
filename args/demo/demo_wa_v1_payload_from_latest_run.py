@@ -202,15 +202,23 @@ def _seed_test_wa_action(
 
     # Provide both "action" and "side" to satisfy different translators (defensive).
     return {
-        "action": action,
-        "side": action,
-        "orderType": order_type,
-        "totalQuantity": qty,
-        "lmtPrice": lmt,
-        "tif": tif,
-        # Helpful for later stages; if downstream ignores, fine.
-        "idempotency_key": f"STAGE5_TEST_LMT_{run_id}_{index:06d}",
-    }
+    # WA-level command (what intent_to_payload typically keys off)
+    "action": "PLACE_ORDER",
+
+    # Order spec (what sender later needs)
+    "order": {
+        "action": action,            # BUY/SELL
+        "orderType": order_type,     # LMT
+        "totalQuantity": qty,        # 1
+        "lmtPrice": lmt,             # <= stage5 cap
+        "tif": tif,                  # DAY
+        "transmit": False,           # sendplan expects False
+    },
+
+    # Idempotency key must match Stage5 allowlist prefix
+    "idempotency_key": f"STAGE5_TEST_LMT_{run_id}_{index:06d}",
+}
+
 
 
 # -----------------------------
@@ -257,6 +265,7 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
             halted=True,
             halt_reason=halt_reason,
         )
+        payload["wa_action_debug"] = gated_intent.get("wa_action")
         append_jsonl(intents_path, intent_obj.to_dict())
         return run_id, intents_path
 
