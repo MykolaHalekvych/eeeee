@@ -14,7 +14,7 @@
   "ibkr": {
     "host": "localhost",
     "port": 7497,
-    "client_id": 51,
+    "client_id": 77,
     "timeout_s": 25
   }
 }
