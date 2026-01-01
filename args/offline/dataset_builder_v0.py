@@ -20,7 +20,7 @@ DATASETS_DIR = REPO_ROOT / "args" / "offline" / "datasets"
 
 def _utc_now_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
+_read_json
 
 def _read_json(path: Path) -> Dict[str, Any]:
     obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
