@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,34 +44,50 @@ class PositionRow:
 class PosApp(EWrapper, EClient):
     def __init__(self) -> None:
         EClient.__init__(self, self)
-        self._rows: List[PositionRow] = []
-        self._done = False
-        self._err: Optional[str] = None
+        self.rows: List[PositionRow] = []
+        self.done_ev = threading.Event()
+        self.errs: List[Dict[str, Any]] = []
 
-    # positions
     def position(self, account: str, contract, pos: float, avgCost: float) -> None:
         try:
-            self._rows.append(
+            self.rows.append(
                 PositionRow(
-                    account=account,
-                    symbol=str(getattr(contract, "symbol", "")),
-                    secType=str(getattr(contract, "secType", "")),
-                    currency=str(getattr(contract, "currency", "")),
+                    account=str(account),
+                    symbol=str(getattr(contract, "symbol", "") or ""),
+                    secType=str(getattr(contract, "secType", "") or ""),
+                    currency=str(getattr(contract, "currency", "") or ""),
                     position=float(pos),
                     avgCost=float(avgCost),
                 )
             )
         except Exception:
+            # best-effort
             pass
 
     def positionEnd(self) -> None:
-        self._done = True
+        self.done_ev.set()
 
-    # errors
     def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
-        # don't fail on harmless connection notes; store first real error
-        if self._err is None and int(errorCode) not in (2104, 2106, 2158):
-            self._err = f"{errorCode}:{errorString}"
+        # record all errors, but some are informational
+        try:
+            self.errs.append(
+                {
+                    "reqId": reqId,
+                    "code": int(errorCode),
+                    "msg": str(errorString),
+                }
+            )
+        except Exception:
+            pass
+
+    def has_fatal_error(self) -> Optional[str]:
+        # treat connection / permission / critical errors as fatal
+        for e in self.errs:
+            c = int(e.get("code", -1))
+            # 502/503/504 are common connection problems; keep generic
+            if c in (502, 503, 504, 1100, 1101, 1102):
+                return f"{c}:{e.get('msg')}"
+        return None
 
 
 def main() -> int:
@@ -87,32 +104,76 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     app = PosApp()
-    app.connect(args.host, args.port, clientId=args.client_id)
 
-    t0 = time.time()
-    app.reqPositions()
+    try:
+        app.connect(args.host, args.port, clientId=int(args.client_id))
+    except Exception as e:
+        obj = {
+            "schema": "ibkr_positions_snapshot_v0",
+            "ts_utc": _iso_utc_now(),
+            "ok": False,
+            "error": f"CONNECT_EXCEPTION:{type(e).__name__}:{e}",
+            "rows": [],
+            "errs": [],
+        }
+        out_path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(obj, ensure_ascii=False))
+        return 2
 
-    while not app._done and (time.time() - t0) < float(args.timeout_s):
-        app.run()
-        # ibapi run() blocks in a loop; this line typically won't be reached often
+    # Start event loop in background
+    th = threading.Thread(target=app.run, daemon=True)
+    th.start()
 
-    # best-effort disconnect
+    # Request positions
+    try:
+        app.reqPositions()
+    except Exception as e:
+        obj = {
+            "schema": "ibkr_positions_snapshot_v0",
+            "ts_utc": _iso_utc_now(),
+            "ok": False,
+            "error": f"REQ_EXCEPTION:{type(e).__name__}:{e}",
+            "rows": [],
+            "errs": app.errs,
+        }
+        out_path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(obj, ensure_ascii=False))
+        try:
+            app.disconnect()
+        except Exception:
+            pass
+        return 2
+
+    ok_done = app.done_ev.wait(timeout=float(args.timeout_s))
+
+    # Cancel positions stream (best-effort)
+    try:
+        app.cancelPositions()
+    except Exception:
+        pass
+
+    # Disconnect
     try:
         app.disconnect()
     except Exception:
         pass
 
+    fatal = app.has_fatal_error()
+    if not ok_done:
+        fatal = fatal or "TIMEOUT_NO_POSITION_END"
+
     obj = {
         "schema": "ibkr_positions_snapshot_v0",
         "ts_utc": _iso_utc_now(),
-        "ok": (app._err is None),
-        "error": app._err,
-        "rows": [r.to_dict() for r in app._rows],
+        "ok": (fatal is None),
+        "error": fatal,
+        "rows": [r.to_dict() for r in app.rows],
+        "errs": app.errs,
     }
 
     out_path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(obj, ensure_ascii=False))
-    return 0 if app._err is None else 2
+    return 0 if fatal is None else 2
 
 
 if __name__ == "__main__":
