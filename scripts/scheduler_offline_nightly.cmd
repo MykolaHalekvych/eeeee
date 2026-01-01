@@ -50,7 +50,7 @@ if "%EVAL_RC%"=="0" (
     exit /b 2
   )
 ) else (
-  echo [INFO] eval not PASS; promote skipped >> %LOG%
+  echo [WARN] eval FAIL (quality gate); promote skipped >> %LOG%
 )
 
 REM 6) Verify audit & evidence pointers (must pass)
@@ -66,5 +66,11 @@ if errorlevel 1 (
   exit /b 2
 )
 
-echo [OK] nightly pipeline done >> %LOG%
-exit /b 0
+REM Final exit policy:
+if "%EVAL_RC%"=="0" (
+  echo [OK] nightly pipeline done (eval PASS) >> %LOG%
+  exit /b 0
+) else (
+  echo [WARN] nightly pipeline done (eval FAIL) >> %LOG%
+  exit /b 1
+)
