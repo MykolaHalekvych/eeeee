@@ -1,13 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# -----------------------------
+# Paths
+# -----------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
 LOGS_DIR = REPO_ROOT / "args" / "logs"
@@ -21,14 +25,15 @@ def _utc_now_z() -> str:
 def _read_json(path: Path) -> Dict[str, Any]:
     obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     if not isinstance(obj, dict):
-        raise ValueError(f"{path} is not a JSON object")
+        raise ValueError(f"{path} is not a json object")
     return obj
+
 
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "
+", encoding="utf-8")
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
@@ -72,8 +77,8 @@ def _run_id_from_report_name(p: Path) -> Optional[str]:
     name = p.name
     if not (name.startswith("run_report_") and name.endswith("_paper.json")):
         return None
-    rid = name[len("run_report_") : -len("_paper.json")].strip()
-    return rid or None
+    mid = name[len("run_report_") : -len("_paper.json")]
+    return mid.strip() or None
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,7 @@ class BuildSpec:
 
 
 def _default_include_fields() -> List[str]:
+    # Minimal v0 feature/label fields extracted from artifacts.
     return [
         "run_id",
         "index",
@@ -104,20 +110,6 @@ def _default_include_fields() -> List[str]:
     ]
 
 
-def _extract_mode_from_report(report: Dict[str, Any]) -> Optional[str]:
-    mode = None
-    re_ = report.get("risk_envelope")
-    if isinstance(re_, dict):
-        mode = re_.get("mode")
-    if mode is None:
-        ma = report.get("ma_report")
-        if isinstance(ma, dict):
-            re2 = ma.get("risk_envelope")
-            if isinstance(re2, dict):
-                mode = re2.get("mode")
-    return mode
-
-
 def _extract_row(
     *,
     run_id: str,
@@ -125,45 +117,58 @@ def _extract_row(
     events_row: Optional[Dict[str, Any]],
     orders_paper_row: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """
+    v0 rows are per index tick. We use orders_paper as the stable backbone if present.
+    """
     row: Dict[str, Any] = {"run_id": run_id}
+
+    # From report (static)
     row["instrument"] = report.get("instrument")
     row["timeframe"] = report.get("timeframe")
-    row["mode"] = _extract_mode_from_report(report)
+    # try to read run_mode from report.risk_envelope.mode or ma_report.risk_envelope.mode
+    mode = None
+    re = report.get("risk_envelope")
+    if isinstance(re, dict):
+        mode = re.get("mode")
+    if mode is None:
+        ma = report.get("ma_report")
+        if isinstance(ma, dict):
+            re2 = ma.get("risk_envelope")
+            if isinstance(re2, dict):
+                mode = re2.get("mode")
+    row["mode"] = mode
 
+    # From orders_paper (per tick)
     if isinstance(orders_paper_row, dict):
         row["index"] = orders_paper_row.get("index")
         row["ts"] = orders_paper_row.get("ts")
         row["ma_decision"] = orders_paper_row.get("ma_decision")
         row["reason"] = orders_paper_row.get("reason")
-
         wa_action = orders_paper_row.get("wa_action")
         if isinstance(wa_action, dict):
-            notes = wa_action.get("notes")
-            if isinstance(notes, dict):
-                row["intent_kind"] = notes.get("intent")
+            row["intent_kind"] = wa_action.get("notes", {}).get("intent") if isinstance(wa_action.get("notes"), dict) else None
 
+    # From events stream (optional)
     if isinstance(events_row, dict):
+        # common fields if present
         if row.get("index") is None:
             row["index"] = events_row.get("index")
         if row.get("ts") is None:
             row["ts"] = events_row.get("ts")
-        if "gate_reason" in events_row and row.get("gate_reason") is None:
+        # Gate signals often live here
+        if "gate_reason" in events_row:
             row["gate_reason"] = events_row.get("gate_reason")
-        if row.get("mode") is None and "mode" in events_row:
+        if "mode" in events_row and row.get("mode") is None:
             row["mode"] = events_row.get("mode")
 
     return row
 
 
 def _coerce_payload_features(payload_row: Dict[str, Any], out_row: Dict[str, Any]) -> None:
+    """
+    Attach minimal payload fields if present.
+    """
     out_row["payload_kind"] = payload_row.get("payload_kind")
-
-    if out_row.get("gate_reason") is None and "gate_reason" in payload_row:
-        out_row["gate_reason"] = payload_row.get("gate_reason")
-
-    if out_row.get("intent_kind") is None:
-        out_row["intent_kind"] = payload_row.get("intent_kind") or payload_row.get("intent_kind_raw")
-
     order = payload_row.get("order")
     if isinstance(order, dict):
         out_row["orderType"] = order.get("orderType")
@@ -185,6 +190,7 @@ def build_dataset(
 ) -> Dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # inputs
     inputs: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
 
@@ -194,10 +200,12 @@ def build_dataset(
             continue
         report = _read_json(report_path)
 
+        # Artifacts (expected)
         events_path = DATA_DIR / f"events_run_{rid}.jsonl"
         orders_paper_path = DATA_DIR / f"orders_paper_{rid}.jsonl"
         payload_path = DATA_DIR / f"orders_payload_{rid}.jsonl"
 
+        # Prepare lookup maps by index for events/paper/payload
         events_by_idx: Dict[Any, Dict[str, Any]] = {}
         for e in _iter_jsonl(events_path):
             idx = e.get("index")
@@ -216,13 +224,8 @@ def build_dataset(
             if idx is not None:
                 payload_by_idx[idx] = pl
 
-        def _idx_key(x: Any) -> int:
-            try:
-                return int(x)
-            except Exception:
-                return 0
-
-        indices = sorted(set(paper_by_idx.keys()) | set(payload_by_idx.keys()) | set(events_by_idx.keys()), key=_idx_key)
+        # union of indices (prefer paper backbone)
+        indices: List[Any] = sorted(set(paper_by_idx.keys()) | set(payload_by_idx.keys()) | set(events_by_idx.keys()), key=lambda x: int(x) if str(x).isdigit() else 0)
 
         for idx in indices:
             base = _extract_row(
@@ -235,6 +238,7 @@ def build_dataset(
             if isinstance(pl, dict):
                 _coerce_payload_features(pl, base)
 
+            # keep only selected fields (stable contract)
             final = {k: base.get(k) for k in include_fields}
             rows.append(final)
 
@@ -252,11 +256,13 @@ def build_dataset(
             }
         )
 
+    # write dataset JSONL
     dataset_path = out_dir / "dataset.jsonl"
     with dataset_path.open("w", encoding="utf-8", newline="\n") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    # manifest hash
     spec = BuildSpec(
         run_ids=list(run_ids),
         created_at_utc=_utc_now_z(),
@@ -291,7 +297,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     n = max(1, int(args.latest))
     reports = _list_latest_run_reports(limit=n)
-    run_ids: List[str] = []
+    run_ids = []
     for p in reports:
         rid = _run_id_from_report_name(p)
         if rid:
@@ -305,6 +311,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.fields.strip():
         include_fields = [x.strip() for x in args.fields.split(",") if x.strip()]
 
+    # deterministic dataset id from run_ids + fields
     id_src = _stable_json({"run_ids": run_ids, "fields": include_fields})
     dataset_id = hashlib.sha256(id_src.encode("utf-8")).hexdigest()[:12]
 
@@ -314,25 +321,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     manifest = build_dataset(run_ids=run_ids, out_dir=out_dir, include_fields=include_fields)
 
     print("DATASET_BUILDER_V0")
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "out_dir": str(out_dir),
-                "manifest_path": str(out_dir / "dataset_manifest.json"),
-                "rows": manifest.get("rows"),
-                "run_ids": run_ids,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    print(json.dumps({"ok": True, "out_dir": str(out_dir), "manifest_path": str(out_dir / "dataset_manifest.json"), "rows": manifest.get("rows"), "run_ids": run_ids}, ensure_ascii=False, indent=2))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'@
-
-New-Item -ItemType Directory -Force -Path .\args\offline | Out-Null
-Set-Content -Encoding UTF8 -Path .\args\offline\dataset_builder_v0.py -Value $code
