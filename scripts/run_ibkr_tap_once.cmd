@@ -14,7 +14,7 @@ set "ERR=%LOGDIR%\ibkr_tap_once_stderr.log"
 echo ==== %DATE% %TIME% ====>>"%OUT%"
 echo ==== %DATE% %TIME% ====>>"%ERR%"
 
-"%PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT_DIR%ibkr_tap_once.ps1" 1>>"%OUT%" 2>>"%ERR%"
+"%PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT_DIR%ibkr_tap_once_sys.ps1" 1>>"%OUT%" 2>>"%ERR%"
 set "RC=%ERRORLEVEL%"
 
 echo EXITCODE=%RC%>>"%OUT%"
