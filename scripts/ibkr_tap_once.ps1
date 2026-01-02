@@ -102,7 +102,7 @@ try {
   )
 # Prefer explicit Python 3.11 under SYSTEM (py launcher under SYSTEM may not have 3.11)
 $py311 = "C:\Users\mukol\AppData\Local\Programs\Python\Python311\python.exe"
-if ($env:USERNAME -eq "SYSTEM" -and (Test-Path -LiteralPath $py311)) {
+if (Test-Path -LiteralPath $py311) {
   $py = $py311
 }
 
@@ -266,5 +266,6 @@ finally {
   Pop-Location
   try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch { }
 }
+
 
 
