@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
   [string]$Repo = "",
-  [string]$Host = "",
+  [string]$IbHost = "",
   [int]$Port = 0,
   [int]$ClientId = 77,
   [int]$Seconds = 55
@@ -28,18 +28,18 @@ try {
 
   # Host/Port from config if present
   $connPath = Join-Path $Repo "args\data\ibkr_connection_v0.json"
-  if ((-not $Host) -or ($Port -le 0)) {
+  if ((-not $IbHost) -or ($Port -le 0)) {
     if (Test-Path -LiteralPath $connPath) {
       try {
         $c = Get-Content -LiteralPath $connPath -Raw | ConvertFrom-Json
-        if (-not $Host) { $Host = [string]$c.host }
+        if (-not $IbHost) { $IbHost = [string]$c.host }
         if ($Port -le 0) { $Port = [int]$c.port }
         if ($c.client_id) { $ClientId = [int]$c.client_id }
       } catch {}
     }
   }
 
-  if (-not $Host) { $Host = "localhost" }
+  if (-not $IbHost) { $IbHost = "localhost" }
   if ($Port -le 0) { $Port = 7497 }
 
   $eventsPath = Join-Path $Repo "args\data\ibkr_events_live.jsonl"
@@ -58,7 +58,7 @@ try {
     # Build args (no -3.11 here, because we call python.exe directly)
     $args = @(
       "-m", "args_core.ibkr_event_tap_v0",
-      "--host", $Host,
+      "--host", $IbHost,
       "--port", "$Port",
       "--client-id", "$ClientId",
       "--seconds", "$Seconds"
@@ -89,7 +89,7 @@ try {
     run_as=$env:USERNAME
     repo=$Repo
     py_exe=$py
-    host=$Host
+    host=$IbHost
     port=$Port
     client_id=$ClientId
     seconds=$Seconds
@@ -124,3 +124,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
