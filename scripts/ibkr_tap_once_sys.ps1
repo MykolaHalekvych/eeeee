@@ -43,7 +43,7 @@ try {
   if ($Port -le 0) { $Port = 7497 }
 
   $eventsPath = Join-Path $Repo "args\data\ibkr_events_live.jsonl"
-  $healthPath = Join-Path $Repo "args\data\ibkr_event_tap_health.json"
+  $healthPath = Join-Path $Repo "args\data\ibkr_event_tap_health_v1.json"
 
   $beforeSize = 0
   $beforeMtime = ""
@@ -118,10 +118,11 @@ catch {
   }
   try {
     if (-not $Repo) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-    $healthPath = Join-Path $Repo "args\data\ibkr_event_tap_health.json"
+    $healthPath = Join-Path $Repo "args\data\ibkr_event_tap_health_v1.json"
     ($out | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $healthPath -Encoding UTF8
   } catch {}
   ($out | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
 
