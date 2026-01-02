@@ -100,6 +100,12 @@ try {
     "--client-id", "$ClientId",
     "--seconds", "$Seconds"
   )
+# Prefer explicit Python 3.11 under SYSTEM (py launcher under SYSTEM may not have 3.11)
+$py311 = "C:\Users\mukol\AppData\Local\Programs\Python\Python311\python.exe"
+if ($env:USERNAME -eq "SYSTEM" -and (Test-Path -LiteralPath $py311)) {
+  $py = $py311
+}
+
 # If we run python.exe directly, drop "-3.11" (it's only for the py launcher).
 if ([System.IO.Path]::GetFileName($py).ToLowerInvariant() -eq "python.exe") {
   if ($args -is [System.Array]) {
@@ -260,4 +266,5 @@ finally {
   Pop-Location
   try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch { }
 }
+
 
