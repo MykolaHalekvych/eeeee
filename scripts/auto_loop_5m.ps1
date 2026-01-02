@@ -85,6 +85,13 @@ $cfg = [ordered]@{
     LogDir = ""
     PythonExe = "py"
     PythonVersionArg = "-3.11"
+
+    # ---- OPS health gate ----
+    HealthGate = $true
+    IbHost = "localhost"
+    IbPort = 7497
+    IbClientId = 77
+
 }
 
 $argv = $args
@@ -120,6 +127,13 @@ for ($i=0; $i -lt $argv.Count; $i++) {
         "logdir" { if ($val -ne $null) { $cfg.LogDir = [string]$val } }
         "pythonexe" { if ($val -ne $null) { $cfg.PythonExe = [string]$val } }
         "pythonversionarg" { if ($val -ne $null) { $cfg.PythonVersionArg = [string]$val } }
+
+        # ---- OPS health gate argv ----
+        "healthgate" { $cfg.HealthGate = _parse_bool $val $true }
+        "ibhost" { if ($val -ne $null) { $cfg.IbHost = [string]$val } }
+        "ibport" { $cfg.IbPort = _parse_int $val $cfg.IbPort }
+        "ibclientid" { $cfg.IbClientId = _parse_int $val $cfg.IbClientId }
+
         default { }
     }
 }
@@ -381,6 +395,66 @@ function _run_step([int]$cycle, [string]$name, [string]$exe, [string[]]$argsList
     }
 }
 
+
+# -------------------------
+# OPS HEALTH gate runner (inline, no Start-Process hang)
+# -------------------------
+function _run_health_gate_inline([hashtable]$cfg, [string]$repoRoot, [string]$logdir, [int]$cycle) {
+    if (-not $cfg.HealthGate) {
+        return [pscustomobject]@{ exit_code = 0; ok = $true; skipped = $true; stdout = ""; log_stdout=$null; log_stderr=$null }
+    }
+
+    $healthScript = Join-Path $repoRoot "scripts\ops_health.ps1"
+    if (-not (Test-Path -LiteralPath $healthScript)) {
+        return [pscustomobject]@{ exit_code = 2; ok = $false; skipped = $false; stdout = "missing ops_health.ps1"; log_stdout=$null; log_stderr=$null }
+    }
+
+    _ensure_dir $logdir
+
+    $start = _utc_now
+    $ts = $start.ToString("yyyyMMdd_HHmmssfff'Z'")
+    $base = Join-Path $logdir ("{0}_c{1:000000}_ops_health" -f $ts, $cycle)
+    $stdoutPath = $base + ".stdout.log"
+    $stderrPath = $base + ".stderr.log"
+
+    $argsList = @(
+        "-NoProfile",
+        "-ExecutionPolicy","Bypass",
+        "-File",$healthScript,
+        "-IbHost",$cfg.IbHost,
+        "-IbPort",$cfg.IbPort,
+        "-IbClientId",$cfg.IbClientId
+    )
+
+    $exitCode = 2
+    $stdoutText = ""
+
+    try {
+        $outObj = & powershell @argsList 2>&1
+        $exitCode = $LASTEXITCODE
+        $stdoutText = ($outObj | Out-String)
+
+        try { Set-Content -LiteralPath $stdoutPath -Value $stdoutText -Encoding UTF8 } catch { }
+        try { Set-Content -LiteralPath $stderrPath -Value "" -Encoding UTF8 } catch { }
+    } catch {
+        $stdoutText = ""
+        try { Set-Content -LiteralPath $stderrPath -Value ("health gate failed: {0}" -f $_.Exception.Message) -Encoding UTF8 } catch { }
+        $exitCode = 2
+    }
+
+    _log "INFO" ("HEALTH_GATE exit={0} stdout_log={1}" -f $exitCode, $stdoutPath)
+
+    return [pscustomobject]@{
+        exit_code = $exitCode
+        ok = ($exitCode -eq 0)
+        skipped = $false
+        stdout = $stdoutText
+        log_stdout = $stdoutPath
+        log_stderr = $stderrPath
+    }
+}
+
+
 # -------------------------
 # Start
 # -------------------------
@@ -447,6 +521,44 @@ try {
 
         $cycleStart = _utc_now
         _log "INFO" ("CYCLE_START cycle={0}" -f $cycle)
+
+        # OPS HEALTH gate (ideal): stop before running steps if health fails
+        $hg = _run_health_gate_inline $cfg $repoRoot $cfg.LogDir $cycle
+        if (-not $hg.skipped -and $hg.exit_code -ne 0) {
+            $cycleEnd = _utc_now
+            $durS = [Math]::Round(($cycleEnd - $cycleStart).TotalSeconds, 3)
+            $evNow = _eval_lock $cfg.LockPath $cfg.LockTtlMin
+
+            _json ([ordered]@{
+                ts_utc = _utc_iso (_utc_now)
+                reason = "OPS_HEALTH_GATE_FAIL"
+                ok = $false
+                exit_code = $hg.exit_code
+
+                cycle = $cycle
+                cycle_started_utc = _utc_iso $cycleStart
+                cycle_ended_utc = _utc_iso $cycleEnd
+                duration_s = $durS
+
+                health_exit_code = $hg.exit_code
+                health_log_stdout = $hg.log_stdout
+                health_log_stderr = $hg.log_stderr
+                health_stdout = $hg.stdout
+
+                lock_path = $evNow.path
+                lock_pid = $evNow.lock_pid
+                lock_age_min = $evNow.lock_age_min
+                lock_status = $evNow.status
+                lock_reason = $evNow.reason
+
+                stop_flag = (_test_stop $cfg.StopFlagPath)
+            })
+
+            $forcedExitCode = [int]$hg.exit_code
+            $anyHardFail = $true
+            break
+        }
+
 
         $steps = @(
             @{ name="refresh_bundle";     module="args.demo.demo_ibkr_refresh_hg_5m_bundle_v1" },

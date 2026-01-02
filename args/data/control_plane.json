@@ -1,20 +1,33 @@
-{
-  "schema": "control_plane_v0",
-  "execution_mode": "DRYRUN",
-  "global_mode": "ALLOW_NEW_ENTRIES",
-  "instrument_allowlist": [ "MHG" ],
-  "ownership": {
-    "order_ref_prefix": "ARGS|",
-    "strategy_id": "autonomy_v1"
-  },
-  "startup": {
-    "halt_if_unknown_positions": true,
-    "halt_if_unknown_orders": true
-  },
-  "ibkr": {
-    "host": "localhost",
-    "port": 7497,
-    "client_id": 77,
-    "timeout_s": 25
-  }
+﻿{
+    "as_model_version":  "52171e77bc6f",
+    "enable_paper_execution":  false,
+    "execution_mode":  "DRYRUN",
+    "global_mode":  "ONLY_EXITS",
+    "ibkr":  {
+                 "client_id":  77,
+                 "host":  "localhost",
+                 "port":  7497,
+                 "timeout_s":  25
+             },
+    "instrument_allowlist":  [
+                                 "MHG"
+                             ],
+    "ownership":  {
+                      "order_ref_prefix":  "ARGS|",
+                      "strategy_id":  "autonomy_v1"
+                  },
+    "schema":  "control_plane_v0",
+    "startup":  {
+                    "halt_if_unknown_orders":  true,
+                    "halt_if_unknown_positions":  true
+                },
+    "offline_learning":  {
+                             "dataset_path":  ".\\datasets\\ds.csv",
+                             "dataset_sha256":  "5de48057a6cfccce61dca50991373f83d9bd78084e4138b7d93980eea80babcc",
+                             "last_eval_report_path":  "C:\\Users\\mukol\\ARGS-Core-v1\\args\\offline\\evidence\\eval_gate\\20260102T072523Z_509_eval_gate_report.json",
+                             "last_eval_report_sha256":  "157ad847437b6ab265ce32f6384a1e778727fbe3cdf033556e0ced7923af63fb",
+                             "last_promote_report_path":  "C:\\Users\\mukol\\ARGS-Core-v1\\args\\offline\\evidence\\promote\\20260102T072554Z_247_promote_report.json",
+                             "last_promote_report_sha256":  "4c4202ae8843e9ea5b57fe4acb8e5eb5e01108aa842482debda4b284f4194121",
+                             "eval_threshold_acc":  0.45
+                         }
 }

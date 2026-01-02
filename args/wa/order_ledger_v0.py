@@ -1,214 +1,414 @@
+
+# args/wa/order_ledger_v0.py
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import time
+import hashlib
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+SCHEMA = "order_ledger_v0"
+LEDGER_SCHEMA_VERSION = "order_ledger_v0_jsonl"
+
+# Monotonic state ranks (never downgrade)
+_STATE_RANK = {
+    "NEW": 0,
+    "RESERVED": 10,
+    "SUBMITTED": 20,
+    "SENT": 25,
+    "ACK": 30,
+    "FILLED": 40,
+    "CANCELLED": 40,
+    "REJECT": 40,
+    "REJECTED": 40,
+    "ERROR": 40,
+    "DONE": 50,
+}
+
+# Terminal states (dedupe should treat these as "final")
+_TERMINAL = {"ACK", "FILLED", "CANCELLED", "REJECT", "REJECTED", "ERROR", "DONE"}
+
+# Retry-eligible states (only if allow_retry=True)
+_RETRY_ELIGIBLE = {"REJECT", "REJECTED", "ERROR"}
+
+# Volatile keys to strip when hashing plans for stable fingerprint
+_VOLATILE_KEYS = {
+    "ts",
+    "ts_utc",
+    "timestamp",
+    "created_at",
+    "updated_at",
+    "exec_id",
+    "event_id",
+    "order_id",
+    "orderId",
+    "permId",
+    "ibkr_order_id",
+    "ibkr_order_status",
+}
 
 
-SCHEMA_VERSION = "order_ledger_v0"
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def _u(x: Any) -> str:
+    return str(x or "").strip().upper()
 
 
-def _canonical(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _stable_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _strip_volatile(x: Any) -> Any:
+    if isinstance(x, dict):
+        out: Dict[str, Any] = {}
+        for k, v in x.items():
+            if str(k) in _VOLATILE_KEYS:
+                continue
+            out[str(k)] = _strip_volatile(v)
+        return out
+    if isinstance(x, list):
+        return [_strip_volatile(v) for v in x]
+    return x
 
 
 def _sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-# Keys that must not affect idempotency fingerprint
-_VOLATILE_KEYS = {
-    "run_id",
-    "ts",
-    "timestamp",
-    "created_at",
-    "updated_at",
-    "event_id",
-    "event_uid",
-    "id",
-    "line_no",
-    "line_idx",
-}
+def _rank(state: str) -> int:
+    return _STATE_RANK.get(_u(state), 0)
 
 
-def _strip_volatile(obj: Any) -> Any:
-    if isinstance(obj, dict):
-        return {k: _strip_volatile(v) for k, v in obj.items() if k not in _VOLATILE_KEYS}
-    if isinstance(obj, list):
-        return [_strip_volatile(v) for v in obj]
-    return obj
-
-
-def iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
-    if not path.exists():
-        return
-    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
-        for line in f:
-            s = line.strip()
-            if not s:
-                continue
-            try:
-                obj = json.loads(s)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
-
-
-def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def compute_idempotency_key_from_plan(plan: Dict[str, Any], *, prefix: str = "ibkr_place_order") -> Tuple[str, str]:
+def compute_idempotency_key_from_plan(plan: Dict[str, Any], *, prefix: str = "") -> Tuple[str, str]:
     """
-    Returns:
-      ledger_key: stable unique key used by ledger
-      plan_fp: deterministic fingerprint of plan (for debug)
+    Returns (ledger_key, fingerprint).
+
     Priority:
-      1) plan['idempotency_key'] if present and non-empty
-      2) deterministic fingerprint from plan with volatile keys stripped
+      1) If plan has idempotency_key -> use it (namespaced by prefix + run_id)
+      2) Else compute deterministic fingerprint from plan content (volatile keys stripped)
     """
-    v = plan.get("idempotency_key")
-    if isinstance(v, str) and v.strip():
-        raw = v.strip()
-        fp = _sha256_hex(raw)
-        return f"{prefix}:{raw}", fp
+    pfx = str(prefix or "").strip()
+    if pfx:
+        pfx = pfx.strip(":") + ":"
 
-    stripped = _strip_volatile(plan)
-    fp = _sha256_hex(_canonical(stripped))
-    return f"{prefix}:{fp}", fp
+    run_id = str(plan.get("run_id") or "").strip()
+    rid = run_id if run_id else "unknown"
 
+    # Prefer explicit idempotency key if present
+    ik = plan.get("idempotency_key") or plan.get("ledger_key") or plan.get("idempotencyKey")
+    if isinstance(ik, str) and ik.strip():
+        key = f"{pfx}{rid}:{ik.strip()}"
+        return key, ""
 
-_FINAL_STATUSES = {"ACK", "REJECT", "ERROR"}
+    clean = _strip_volatile(plan)
+    fp_full = _sha256_hex(_stable_json(clean))
+    fp = fp_full[:16]
+    key = f"{pfx}{rid}:{fp}"
+    return key, fp_full
 
 
 @dataclass(frozen=True)
 class LedgerState:
     ledger_key: str
-    status: str
-    updated_at: str
-    record: Dict[str, Any]
-
-
-class _LockFile:
-    def __init__(self, lock_path: Path, timeout_s: float = 30.0, poll_s: float = 0.1) -> None:
-        self.lock_path = lock_path
-        self.timeout_s = timeout_s
-        self.poll_s = poll_s
-        self._fd: Optional[int] = None
-
-    def __enter__(self) -> "_LockFile":
-        start = time.time()
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        while True:
-            try:
-                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                self._fd = fd
-                os.write(fd, str(os.getpid()).encode("utf-8"))
-                return self
-            except FileExistsError:
-                if (time.time() - start) > self.timeout_s:
-                    raise TimeoutError(f"Ledger lock timeout: {self.lock_path}")
-                time.sleep(self.poll_s)
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        try:
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
-        finally:
-            try:
-                if self.lock_path.exists():
-                    self.lock_path.unlink()
-            except Exception:
-                pass
+    state: str
+    ts_utc: str
+    run_id: str
+    detail: Dict[str, Any]
 
 
 class OrderLedgerV0:
     """
-    JSONL ledger with a simple state machine:
+    JSONL-backed, monotonic ledger for idempotency + audit trail.
 
-      RESERVE  -> ACK/REJECT/ERROR (FINALIZE)
-
-    Idempotency rule:
-      - If ledger has RESERVED or FINAL status, we skip second submit.
-      - allow_retry=0 by default: even after REJECT/ERROR, we do NOT resubmit.
+    Public API used by wa_ibkr_executor_v0:
+      - reserve(ledger_key, run_id, plan_meta, allow_retry=False) -> bool
+      - finalize(ledger_key, run_id, status, result) -> None
     """
 
-    def __init__(self, ledger_path: str | Path) -> None:
-        self.ledger_path = Path(ledger_path)
-        self.lock_path = self.ledger_path.with_suffix(self.ledger_path.suffix + ".lock")
+    def __init__(self, path: Path):
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._index: Dict[str, LedgerState] = {}
+        self._load_best_effort()
 
-    def _latest_by_key(self) -> Dict[str, Dict[str, Any]]:
-        latest: Dict[str, Dict[str, Any]] = {}
-        for rec in iter_jsonl(self.ledger_path):
-            k = rec.get("ledger_key")
-            if isinstance(k, str) and k:
-                latest[k] = rec
-        return latest
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _load_best_effort(self) -> None:
+        """
+        Build in-memory last-state index from JSONL.
+        Fail-soft: ignore bad lines.
+        """
+        if not self._path.exists():
+            return
+        try:
+            with self._path.open("r", encoding="utf-8-sig", errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        obj = json.loads(s)
+                    except Exception:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    lk = str(obj.get("ledger_key") or "").strip()
+                    st = str(obj.get("state") or "").strip()
+                    ts = str(obj.get("ts_utc") or obj.get("ts") or "").strip()
+                    rid = str(obj.get("run_id") or "").strip()
+                    if not lk or not st:
+                        continue
+                    detail = obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
+                    prev = self._index.get(lk)
+                    # keep most advanced state by rank; if equal rank keep latest ts
+                    if prev is None:
+                        self._index[lk] = LedgerState(lk, st, ts, rid, dict(detail))
+                    else:
+                        if _rank(st) > _rank(prev.state):
+                            self._index[lk] = LedgerState(lk, st, ts, rid, dict(detail))
+                        elif _rank(st) == _rank(prev.state):
+                            # prefer newer ts if comparable; otherwise keep existing
+                            if ts and (not prev.ts_utc or ts >= prev.ts_utc):
+                                self._index[lk] = LedgerState(lk, st, ts, rid, dict(detail))
+        except Exception:
+            # fail-soft
+            return
+
+    def _append(self, rec: Dict[str, Any]) -> None:
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write(_stable_json(rec))
+            f.write("\n")
 
     def get_state(self, ledger_key: str) -> Optional[LedgerState]:
-        latest = None
-        for rec in iter_jsonl(self.ledger_path):
-            if rec.get("ledger_key") == ledger_key:
-                latest = rec
-        if not latest:
-            return None
-        status = str(latest.get("status", "")).upper()
-        updated_at = str(latest.get("updated_at", "")) or str(latest.get("created_at", ""))
-        return LedgerState(ledger_key=ledger_key, status=status, updated_at=updated_at, record=latest)
+        with self._lock:
+            return self._index.get(str(ledger_key or "").strip())
 
-    def reserve(self, ledger_key: str, *, run_id: str, plan_meta: Dict[str, Any], allow_retry: bool = False) -> bool:
-        with _LockFile(self.lock_path):
-            latest = self._latest_by_key().get(ledger_key)
-            if latest:
-                status = str(latest.get("status", "")).upper()
-                if status == "RESERVED":
-                    return False
-                if status in _FINAL_STATUSES and not allow_retry:
-                    return False
+    def reserve(
+        self,
+        ledger_key: str,
+        *,
+        run_id: str,
+        plan_meta: Optional[Dict[str, Any]] = None,
+        allow_retry: bool = False,
+    ) -> bool:
+        """
+        Reserve an idempotency key for this run.
+        Returns True if reservation is accepted, False if deduped/blocked.
+
+        Rules:
+          - If key unseen -> reserve
+          - If key terminal:
+              - if allow_retry and state in {REJECT, REJECTED, ERROR} -> reserve_retry
+              - else -> False
+          - If key in-progress -> False
+        """
+        lk = str(ledger_key or "").strip()
+        if not lk:
+            return False
+
+        rid = str(run_id or "").strip() or "unknown"
+        ts = _utc_now_iso()
+
+        with self._lock:
+            prev = self._index.get(lk)
+            prev_state = _u(prev.state) if prev else ""
+
+            if prev is None:
+                state = "RESERVED"
+                rec = {
+                    "schema": LEDGER_SCHEMA_VERSION,
+                    "ts_utc": ts,
+                    "kind": "LEDGER_RESERVE",
+                    "ledger_key": lk,
+                    "run_id": rid,
+                    "state": state,
+                    "detail": {"plan_meta": dict(plan_meta or {})},
+                }
+                self._append(rec)
+                self._index[lk] = LedgerState(lk, state, ts, rid, {"plan_meta": dict(plan_meta or {})})
+                return True
+
+            # Terminal already?
+            if prev_state in _TERMINAL:
+                if allow_retry and prev_state in _RETRY_ELIGIBLE:
+                    state = "RESERVED"
+                    rec = {
+                        "schema": LEDGER_SCHEMA_VERSION,
+                        "ts_utc": ts,
+                        "kind": "LEDGER_RESERVE_RETRY",
+                        "ledger_key": lk,
+                        "run_id": rid,
+                        "state": state,
+                        "detail": {
+                            "retry_of": prev_state,
+                            "prev_ts_utc": prev.ts_utc,
+                            "plan_meta": dict(plan_meta or {}),
+                        },
+                    }
+                    self._append(rec)
+                    self._index[lk] = LedgerState(
+                        lk,
+                        state,
+                        ts,
+                        rid,
+                        {
+                            "retry_of": prev_state,
+                            "prev_ts_utc": prev.ts_utc,
+                            "plan_meta": dict(plan_meta or {}),
+                        },
+                    )
+                    return True
+                return False
+
+            # In-progress -> dedupe
+            return False
+
+    def finalize(
+        self,
+        ledger_key: str,
+        *,
+        run_id: str,
+        status: str,
+        result: Dict[str, Any],
+    ) -> None:
+        """
+        Finalize a ledger key with a (possibly terminal) status.
+        Monotonic: never downgrade.
+        """
+        lk = str(ledger_key or "").strip()
+        if not lk:
+            return
+
+        rid = str(run_id or "").strip() or "unknown"
+        ts = _utc_now_iso()
+        st = _u(status)
+
+        # normalize common variants
+        if st == "REJECTED":
+            st = "REJECT"
+        if st == "OK":
+            st = "DONE"
+
+        detail = {"result": dict(result or {})}
+
+        with self._lock:
+            prev = self._index.get(lk)
+            prev_state = _u(prev.state) if prev else ""
+
+            # Monotonic rule
+            if prev is not None and _rank(prev_state) > _rank(st):
+                # still append a note record for audit, but do not update index
+                rec = {
+                    "schema": LEDGER_SCHEMA_VERSION,
+                    "ts_utc": ts,
+                    "kind": "LEDGER_FINALIZE_IGNORED",
+                    "ledger_key": lk,
+                    "run_id": rid,
+                    "state": st,
+                    "detail": {
+                        "prev_state": prev_state,
+                        "prev_ts_utc": prev.ts_utc,
+                        **detail,
+                    },
+                }
+                self._append(rec)
+                return
 
             rec = {
-                "schema_version": SCHEMA_VERSION,
-                "ledger_kind": "ORDER_LEDGER",
-                "op": "RESERVE",
-                "ledger_key": ledger_key,
-                "status": "RESERVED",
-                "created_at": _now_utc_iso(),
-                "updated_at": _now_utc_iso(),
-                "run_id": run_id,
-                "plan_meta": plan_meta,
+                "schema": LEDGER_SCHEMA_VERSION,
+                "ts_utc": ts,
+                "kind": "LEDGER_FINALIZE",
+                "ledger_key": lk,
+                "run_id": rid,
+                "state": st,
+                "detail": detail,
             }
-            append_jsonl(self.ledger_path, rec)
-            return True
+            self._append(rec)
+            self._index[lk] = LedgerState(lk, st, ts, rid, detail)
 
-    def finalize(self, ledger_key: str, *, run_id: str, status: str, result: Dict[str, Any]) -> None:
-        status_u = str(status).upper()
-        if status_u not in _FINAL_STATUSES:
-            raise ValueError(f"finalize() invalid status: {status}")
+    # Optional helper (not required by current callers)
+    def mark_progress(self, ledger_key: str, *, run_id: str, state: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Non-terminal progress marker (SENT/SUBMITTED/ACK etc).
+        Monotonic.
+        """
+        lk = str(ledger_key or "").strip()
+        if not lk:
+            return
+        rid = str(run_id or "").strip() or "unknown"
+        ts = _utc_now_iso()
+        st = _u(state)
 
-        with _LockFile(self.lock_path):
+        with self._lock:
+            prev = self._index.get(lk)
+            prev_state = _u(prev.state) if prev else ""
+
+            if prev is not None and _rank(prev_state) > _rank(st):
+                return
+
             rec = {
-                "schema_version": SCHEMA_VERSION,
-                "ledger_kind": "ORDER_LEDGER",
-                "op": "FINALIZE",
-                "ledger_key": ledger_key,
-                "status": status_u,
-                "created_at": _now_utc_iso(),
-                "updated_at": _now_utc_iso(),
-                "run_id": run_id,
-                "result": result,
+                "schema": LEDGER_SCHEMA_VERSION,
+                "ts_utc": ts,
+                "kind": "LEDGER_MARK",
+                "ledger_key": lk,
+                "run_id": rid,
+                "state": st,
+                "detail": dict(detail or {}),
             }
-            append_jsonl(self.ledger_path, rec)
+            self._append(rec)
+            self._index[lk] = LedgerState(lk, st, ts, rid, dict(detail or {}))
+
+
+# Optional CLI: quick inspect (JSON-only stdout)
+def main(argv: Optional[list[str]] = None) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(prog=SCHEMA)
+    p.add_argument("--path", required=True)
+    p.add_argument("--key", default="")
+    args = p.parse_args(argv)
+
+    path = Path(args.path)
+    led = OrderLedgerV0(path)
+
+    if args.key.strip():
+        st = led.get_state(args.key.strip())
+        out = {
+            "schema": SCHEMA,
+            "ts_utc": _utc_now_iso(),
+            "ok": True,
+            "exit_code": 0,
+            "path": str(path),
+            "key": args.key.strip(),
+            "state": {
+                "ledger_key": st.ledger_key,
+                "state": st.state,
+                "ts_utc": st.ts_utc,
+                "run_id": st.run_id,
+                "detail": st.detail,
+            } if st else None,
+        }
+    else:
+        out = {
+            "schema": SCHEMA,
+            "ts_utc": _utc_now_iso(),
+            "ok": True,
+            "exit_code": 0,
+            "path": str(path),
+            "keys": len(led._index),
+        }
+
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

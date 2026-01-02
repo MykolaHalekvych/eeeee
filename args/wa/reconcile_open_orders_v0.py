@@ -1,6 +1,7 @@
 # args/wa/reconcile_open_orders_v0.py
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from dataclasses import dataclass
@@ -8,8 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-
-SCHEMA_VERSION = "reconcile_open_orders_v0"
+SCHEMA = "reconcile_open_orders_v0"
 SNAPSHOT_SCHEMA_VERSION = "ibkr_open_orders_snapshot_v0"
 SNAPSHOT_GLOB = "ibkr_open_orders_*.jsonl"
 
@@ -29,6 +29,8 @@ def _digits(s: str) -> str:
 def _as_int(x: Any) -> Optional[int]:
     if isinstance(x, int):
         return x
+    if isinstance(x, float) and x.is_integer():
+        return int(x)
     if isinstance(x, str):
         d = _digits(x)
         if d:
@@ -60,8 +62,11 @@ def _parse_iso_z(s: str) -> Optional[datetime]:
 
 def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
     data_dir = repo_root / "args" / "data"
-    files = sorted(data_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+    try:
+        files = sorted(data_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+        return files[0] if files else None
+    except Exception:
+        return None
 
 
 def _norm_exchange(c: Dict[str, Any]) -> str:
@@ -146,6 +151,7 @@ def _filter_hits_contract_sensitive(contract_dict: Dict[str, Any], hits: List[Di
 
 @dataclass(frozen=True)
 class SnapshotIndex:
+    schema: str
     path: Path
     ts_start: Optional[datetime]
     ts_end: Optional[datetime]
@@ -178,11 +184,11 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
     has_end = False
     parse_errors = 0
 
-    # Fail-soft open: return empty index instead of crashing
     try:
         f = path.open("r", encoding="utf-8-sig", errors="replace")
     except Exception:
         return SnapshotIndex(
+            schema=SCHEMA,
             path=path,
             ts_start=None,
             ts_end=None,
@@ -211,7 +217,6 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if not isinstance(obj, dict):
                 continue
 
-            # allow both "kind" and "event" (robust to producer differences)
             kind = _u(obj.get("kind") or obj.get("event"))
 
             if kind == "IBKR_SNAPSHOT_START":
@@ -219,7 +224,6 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
                 sv = obj.get("schema_version")
                 if isinstance(sv, str) and sv.strip() and sv.strip() != SNAPSHOT_SCHEMA_VERSION:
                     schema_ok = False
-                # ts may be "ts" or "ts_utc"
                 ts = obj.get("ts") or obj.get("ts_utc")
                 if isinstance(ts, str):
                     ts_start = _parse_iso_z(ts) or ts_start
@@ -248,27 +252,24 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             }
             open_orders.append(oo)
 
-            # conId
             conid = _as_int(contract.get("conId"))
             if conid is not None:
                 by_conid.setdefault(conid, []).append(oo)
 
-            # localSymbol
             ls = contract.get("localSymbol")
             if isinstance(ls, str) and ls.strip():
                 by_local.setdefault(ls.strip().upper(), []).append(oo)
 
-            # strict signature (only if exchange concrete)
             s_strict = _sig_strict(contract)
             if s_strict:
                 by_sig_strict.setdefault(s_strict, []).append(oo)
 
-            # loose/core signature
             s_loose = _sig_core(contract)
             if s_loose:
                 by_sig_loose.setdefault(s_loose, []).append(oo)
 
     return SnapshotIndex(
+        schema=SCHEMA,
         path=path,
         ts_start=ts_start,
         ts_end=ts_end,
@@ -295,7 +296,6 @@ def snapshot_age_seconds(idx: SnapshotIndex) -> Optional[float]:
     if ref is not None:
         return float((now - ref).total_seconds())
 
-    # fallback: file mtime
     try:
         mtime = idx.path.stat().st_mtime
         age = now.timestamp() - float(mtime)
@@ -309,7 +309,7 @@ def snapshot_validity(idx: SnapshotIndex) -> Tuple[bool, str]:
     Fail-closed snapshot validity for reconcile gate.
 
     Reasons:
-      - snapshot_unreadable (schema_ok=False + no markers)
+      - snapshot_unreadable
       - snapshot_invalid_schema
       - snapshot_missing_markers
       - snapshot_empty
@@ -368,3 +368,79 @@ def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tupl
                 return True, "signature_loose", hits2[:10]
 
     return False, "", []
+
+
+# ---------------------------
+# Optional CLI (debug helper)
+# ---------------------------
+
+def _read_contract_json(path: Path) -> Dict[str, Any]:
+    obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+    if not isinstance(obj, dict):
+        raise ValueError("contract json is not an object")
+    return obj
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(prog=SCHEMA)
+    p.add_argument("--snapshot", default="", help="Path to ibkr_open_orders_*.jsonl (default: latest in args/data)")
+    p.add_argument("--contract-json", default="", help="Path to contract JSON (dict) to match against snapshot")
+    args = p.parse_args(argv)
+
+    repo_root = _repo_root()
+    if args.snapshot.strip():
+        sp = Path(args.snapshot.strip())
+        if not sp.is_absolute():
+            sp = repo_root / sp
+    else:
+        sp = choose_latest_snapshot(repo_root)
+
+    if sp is None or not sp.exists():
+        out = {"schema": SCHEMA, "ts_utc": _utc_now_iso(), "ok": False, "exit_code": 2, "error": "snapshot_not_found"}
+        print(json.dumps(out, ensure_ascii=False))
+        return 2
+
+    idx = load_open_orders_snapshot(sp)
+    age_s = snapshot_age_seconds(idx)
+    ok_snap, reason = snapshot_validity(idx)
+
+    matches: List[Dict[str, Any]] = []
+    match_by = ""
+    matched = False
+
+    if args.contract_json.strip():
+        cp = Path(args.contract_json.strip())
+        if not cp.is_absolute():
+            cp = repo_root / cp
+        contract = _read_contract_json(cp)
+        matched, match_by, matches = match_open_orders(idx, contract)
+
+    out = {
+        "schema": SCHEMA,
+        "ts_utc": _utc_now_iso(),
+        "ok": True,
+        "exit_code": 0,
+        "snapshot": {
+            "path": str(sp),
+            "schema_ok": idx.schema_ok,
+            "has_start": idx.has_start,
+            "has_end": idx.has_end,
+            "parse_errors": idx.parse_errors,
+            "open_orders": len(idx.open_orders),
+            "age_s": age_s,
+            "valid": ok_snap,
+            "invalid_reason": reason,
+        },
+        "match": {
+            "requested": bool(args.contract_json.strip()),
+            "matched": matched,
+            "match_by": match_by,
+            "matches": matches,
+        },
+    }
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

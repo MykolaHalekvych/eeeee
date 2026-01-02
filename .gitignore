@@ -163,3 +163,44 @@ args/logs/scheduler_soakreport_7d.log
 args/logs/soak_reports/
 args/data/soak_report_24h.json
 args/data/soak_report_7d.json
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- ARGS: runtime logs ---
+/args/logs/
+/args/data/ops_health.json
+
+# --- ARGS: live / generated data (не коммитим) ---
+/args/data/*live*.jsonl
+/args/data/*live*.json
+/args/data/stage5_evidence.cursor.json
+
+# --- ARGS: per-run artifacts ---
+/runs/
+/releases/
+/models/
+/checkpoints/
+/snapshots/
+
+# --- ARGS: evidence packs (генерится на машине/в рантайме) ---
+/args/stage5_evidence/
+/args/ops_evidence/
+/args/offline/evidence/
+
+# --- ARGS: runtime artifacts in args/data ---
+/args/data/*cursor*.json
+/args/data/*health*.json
+/args/data/*status*.json
+/args/data/*report*.json
+/args/data/reset_*.json
+/args/data/reset_*.jsonl
+/args/data/reset_exec_*.jsonl
+
+# --- local toggles/backups ---
+/scripts/*.bak_*
+/stop.flag*
+/stop.flag.*
+/%LOG%
+/datasets/

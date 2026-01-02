@@ -127,3 +127,39 @@ One-command deterministic run that produces per-run artifacts (no accumulation):
 ```powershell
 py -3.11 -m args.demo.demo_paper_loop_v0
 
+schtasks /Query /TN "\ARGS_IBKR_Tap_1m" /V /FO LIST | Select-String "Logon Mode:|Status:|Last Result:"
+schtasks /Query /TN "\ARGS_Stage5_Evidence_5m" /V /FO LIST | Select-String "Logon Mode:|Status:|Last Result:"
+
+## Runtime Contract v1 (Market-only Ops / Unattended)
+
+### Control Plane (single source of truth)
+- `args/data/control_plane.json` is the only runtime configuration.
+- Default is **safe-by-default**:
+  - `execution_mode=DRYRUN`
+  - `enable_paper_execution=false`
+  - `global_mode=ONLY_EXITS` (or `HALT` when required)
+
+### Always-on Sensing (READ-ONLY)
+- IBKR event tap writes: `args/data/ibkr_events_live.jsonl`
+- Scheduled task: `\ARGS_IBKR_Tap_1m`
+- Must be READ-ONLY (no order placement/cancel/replace).
+
+### Stage5 Execution Core (deterministic)
+- Engine reads JSONL via `IbkrFileAdapterV0` (READ-ONLY unless explicitly enabled).
+- Safety gates:
+  - actions only if `enable_paper_execution=true` AND `execution_mode=PAPER`
+  - `global_mode` limits actions (ONLY_EXITS/HALT).
+- Fill integrity:
+  - execId tagging for EXEC_DETAILS
+  - FILL dedup (order_id + ts_utc + reason + filled_qty)
+
+### Evidence (automatic)
+- Terminal evidence pack: `scripts/stage5_terminal_evidence_pack.ps1`
+- Scheduled task: `\ARGS_Stage5_Evidence_5m`
+- Evidence folders: `args/stage5_evidence/<UTC_TS>/`
+- Ops evidence: `args/ops_evidence/chaos/<UTC_TS>/`
+
+### Health
+- `args/data/ops_health.json` is the runtime health snapshot.
+- Required properties: `ok`, `mode`, `loops`, `events_seen`, `reconcile_ratio`, `last_error`.
+

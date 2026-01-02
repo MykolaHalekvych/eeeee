@@ -1,169 +1,197 @@
+# args/ibkr/ibkr_positions_snapshotter_v0.py
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+SCHEMA_VERSION = "ibkr_positions_snapshot_v0"
 
 
-def _iso_utc_now() -> str:
+def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
 class PositionRow:
     account: str
+    conId: int
     symbol: str
+    localSymbol: str
     secType: str
     currency: str
+    exchange: str
+    lastTradeDateOrContractMonth: str
     position: float
     avgCost: float
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "account": self.account,
-            "symbol": self.symbol,
-            "secType": self.secType,
-            "currency": self.currency,
-            "position": self.position,
-            "avgCost": self.avgCost,
-        }
 
-
-class PosApp(EWrapper, EClient):
+class _App(EWrapper, EClient):
     def __init__(self) -> None:
         EClient.__init__(self, self)
+        self._next_valid_id_evt = threading.Event()
+        self._positions_end_evt = threading.Event()
+        self._lock = threading.Lock()
+
+        self.next_valid_id: Optional[int] = None
         self.rows: List[PositionRow] = []
-        self.errs: List[Dict[str, Any]] = []
+        self.errors: List[str] = []
+        self._connected_ok: bool = False
 
-        self.connected_ev = threading.Event()
-        self.done_ev = threading.Event()
+    # ---- connection lifecycle ----
+    def nextValidId(self, orderId: int) -> None:
+        self.next_valid_id = int(orderId)
+        self._connected_ok = True
+        self._next_valid_id_evt.set()
 
-    # handshake: called when connection is established
-    def nextValidId(self, orderId: int) -> None:  # noqa: N802
-        self.connected_ev.set()
+    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+        msg = f"reqId={reqId} code={errorCode} msg={errorString}"
+        if advancedOrderRejectJson:
+            msg += f" adv={advancedOrderRejectJson}"
+        with self._lock:
+            self.errors.append(msg)
 
-    def position(self, account: str, contract, pos: float, avgCost: float) -> None:
-        try:
-            self.rows.append(
-                PositionRow(
-                    account=str(account),
-                    symbol=str(getattr(contract, "symbol", "") or ""),
-                    secType=str(getattr(contract, "secType", "") or ""),
-                    currency=str(getattr(contract, "currency", "") or ""),
-                    position=float(pos),
-                    avgCost=float(avgCost),
-                )
-            )
-        except Exception:
-            pass
+    # ---- positions ----
+    def position(self, account: str, contract: Contract, pos: float, avgCost: float) -> None:
+        row = PositionRow(
+            account=str(account or ""),
+            conId=int(getattr(contract, "conId", 0) or 0),
+            symbol=str(getattr(contract, "symbol", "") or ""),
+            localSymbol=str(getattr(contract, "localSymbol", "") or ""),
+            secType=str(getattr(contract, "secType", "") or ""),
+            currency=str(getattr(contract, "currency", "") or ""),
+            exchange=str(getattr(contract, "exchange", "") or ""),
+            lastTradeDateOrContractMonth=str(getattr(contract, "lastTradeDateOrContractMonth", "") or ""),
+            position=float(pos or 0.0),
+            avgCost=float(avgCost or 0.0),
+        )
+        with self._lock:
+            self.rows.append(row)
 
     def positionEnd(self) -> None:
-        self.done_ev.set()
+        self._positions_end_evt.set()
 
-    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
+
+def snapshot_positions(
+    host: str,
+    port: int,
+    client_id: int,
+    connect_timeout_s: float,
+    timeout_s: float,
+) -> Dict[str, Any]:
+    ts = _utc_now_iso()
+    app = _App()
+
+    # Connect
+    try:
+        app.connect(host, int(port), int(client_id))
+    except Exception as e:
+        return {
+            "schema": SCHEMA_VERSION,
+            "ts_utc": ts,
+            "ok": False,
+            "error": f"connect_failed: {type(e).__name__}: {e}",
+            "rows": [],
+            "host": host,
+            "port": port,
+            "client_id": client_id,
+        }
+
+    t = threading.Thread(target=app.run, daemon=True)
+    t.start()
+
+    # Handshake-safe: wait nextValidId
+    if not app._next_valid_id_evt.wait(timeout=connect_timeout_s):
         try:
-            self.errs.append({"reqId": reqId, "code": int(errorCode), "msg": str(errorString)})
-            # if connection drops, unblock waits
-            if int(errorCode) in (502, 503, 504):
-                self.connected_ev.set()
-                self.done_ev.set()
+            app.disconnect()
         except Exception:
             pass
-
-    def fatal_error(self) -> Optional[str]:
-        # treat these as fatal
-        for e in self.errs:
-            c = int(e.get("code", -1))
-            if c in (502, 503, 504, 1100, 1101, 1102):
-                return f"{c}:{e.get('msg')}"
-        return None
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(description="IBKR positions snapshotter (v0, handshake-safe)")
-    ap.add_argument("--host", default="localhost")
-    ap.add_argument("--port", type=int, default=7497)
-    ap.add_argument("--client-id", type=int, default=77)
-    ap.add_argument("--timeout-s", type=int, default=25)
-    ap.add_argument("--connect-timeout-s", type=int, default=8)
-    ap.add_argument("--out", default="", help="Output JSON path (default args/data/ibkr_positions_live.json)")
-    args = ap.parse_args()
-
-    repo = _repo_root()
-    out_path = Path(args.out) if args.out else (repo / "args" / "data" / "ibkr_positions_live.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    app = PosApp()
-    try:
-        app.connect(args.host, int(args.port), clientId=int(args.client_id))
-    except Exception as e:
-        obj = {
-            "schema": "ibkr_positions_snapshot_v0",
-            "ts_utc": _iso_utc_now(),
+        return {
+            "schema": SCHEMA_VERSION,
+            "ts_utc": ts,
             "ok": False,
-            "error": f"CONNECT_EXCEPTION:{type(e).__name__}:{e}",
+            "error": f"handshake_timeout: no nextValidId within {connect_timeout_s}s",
             "rows": [],
-            "errs": [],
+            "host": host,
+            "port": port,
+            "client_id": client_id,
         }
-        out_path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
-        print(json.dumps(obj, ensure_ascii=False))
-        return 2
 
-    th = threading.Thread(target=app.run, daemon=True)
-    th.start()
+    # Request positions
+    app.reqPositions()
 
-    # wait for handshake
-    ok_conn = app.connected_ev.wait(timeout=float(args.connect_timeout_s))
-    fatal = app.fatal_error()
-    if (not ok_conn) and (fatal is None):
-        fatal = "CONNECT_TIMEOUT_NO_NEXTVALIDID"
+    # Wait end
+    ok = app._positions_end_evt.wait(timeout=timeout_s)
 
-    if fatal is None:
-        try:
-            app.reqPositions()
-        except Exception as e:
-            fatal = f"REQ_EXCEPTION:{type(e).__name__}:{e}"
-
-    ok_done = app.done_ev.wait(timeout=float(args.timeout_s)) if fatal is None else False
-
-    # best-effort cleanup
-    try:
-        app.cancelPositions()
-    except Exception:
-        pass
+    # Disconnect
     try:
         app.disconnect()
     except Exception:
         pass
 
-    fatal = fatal or app.fatal_error()
-    if (fatal is None) and (not ok_done):
-        fatal = "TIMEOUT_NO_POSITION_END"
+    rows = [asdict(r) for r in app.rows]
+    err = None
+    if not ok:
+        err = f"timeout: no positionEnd within {timeout_s}s"
+    elif app.errors:
+        # Not fatal by default, but keep the most relevant
+        err = "; ".join(app.errors[:3])
 
-    obj = {
-        "schema": "ibkr_positions_snapshot_v0",
-        "ts_utc": _iso_utc_now(),
-        "ok": (fatal is None),
-        "error": fatal,
-        "rows": [r.to_dict() for r in app.rows],
-        "errs": app.errs,
-        "client_id": int(args.client_id),
+    return {
+        "schema": SCHEMA_VERSION,
+        "ts_utc": ts,
+        "ok": ok,
+        "error": err,
+        "rows": rows,
+        "host": host,
+        "port": port,
+        "client_id": client_id,
     }
-    out_path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps(obj, ensure_ascii=False))
-    return 0 if fatal is None else 2
+
+
+def _write_json(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--host", required=True)
+    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--client-id", type=int, required=True)
+    p.add_argument("--connect-timeout-s", type=float, default=8.0)
+    p.add_argument("--timeout-s", type=float, default=25.0)
+    p.add_argument("--out", default="")
+
+    args = p.parse_args(argv)
+
+    out = snapshot_positions(
+        host=args.host,
+        port=args.port,
+        client_id=args.client_id,
+        connect_timeout_s=args.connect_timeout_s,
+        timeout_s=args.timeout_s,
+    )
+
+    # stdout: exactly one JSON
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    sys.stdout.write("\n")
+
+    if args.out:
+        _write_json(Path(args.out), out)
+
+    return 0 if out.get("ok") else 2
 
 
 if __name__ == "__main__":

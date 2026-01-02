@@ -7,8 +7,11 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from args.ibkr.order_sanitize_v0 import sanitize_order_v0
 
 from args.control.execution_mode_v0 import (
     decorate_ibkr_error_details,
@@ -16,6 +19,7 @@ from args.control.execution_mode_v0 import (
     is_action_allowed,
     is_stop_flag_present,
 )
+
 from args.wa.order_ledger_v0 import OrderLedgerV0, compute_idempotency_key_from_plan
 from args.wa.reconcile_open_orders_v0 import (
     choose_latest_snapshot,
@@ -25,7 +29,7 @@ from args.wa.reconcile_open_orders_v0 import (
     snapshot_validity,
 )
 
-SCHEMA_VERSION = "wa_ibkr_executor_v0"
+SCHEMA = "wa_ibkr_executor_v0"
 SOURCE = "IBKR_EXECUTOR_V0"
 
 # Supported actionable plans (from orders_sendplan_*.jsonl)
@@ -34,6 +38,27 @@ ACTIONABLE_PLAN_KINDS = {
     "IBKR_PLACE_ORDER",
     "PLACE_ORDER_IBKR",
 }
+
+# IBKR error classification (kept local to keep behavior deterministic)
+# INFO codes are not failures (often connectivity/status messages).
+_IBKR_INFO_CODES = {2104, 2106, 2158, 1101, 1102}
+# WARNING codes should not be treated as rejections (e.g., 399 "will not be placed until ...").
+_IBKR_WARNING_CODES = {399, 2103, 2105, 2157, 2107, 2108}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _classify_ibkr_error(code: int) -> str:
+    """
+    Returns: INFO / WARNING / ERROR.
+    """
+    if int(code) in _IBKR_INFO_CODES:
+        return "INFO"
+    if int(code) in _IBKR_WARNING_CODES:
+        return "WARNING"
+    return "ERROR"
 
 
 # ---------------------------
@@ -171,6 +196,52 @@ def _pick_fields(d: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
 
 
 # ---------------------------
+# order dict sanitization (defense-in-depth)
+# ---------------------------
+
+# Order attributes known to be rejected on some accounts if present at all.
+_FORBIDDEN_ORDER_KEYS_REMOVE = {
+    "nbboPriceCap",
+    "NbboPriceCap",
+}
+
+# Order attributes we force to False (even if present in plan).
+_FORBIDDEN_ORDER_KEYS_FORCE_FALSE = {
+    "eTradeOnly",
+    "EtradeOnly",
+    "etradeOnly",
+    "firmQuoteOnly",
+    "FirmQuoteOnly",
+    "firmquoteOnly",
+}
+
+
+def sanitize_order_dict_v0(order_dict: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Sanitizes a plain dict that will later be converted into ibapi.order.Order.
+    - force eTradeOnly/firmQuoteOnly variants to False
+    - remove nbboPriceCap variants
+    Returns (sanitized_dict, applied_changes_summary)
+    """
+    out = dict(order_dict or {})
+    applied: Dict[str, Any] = {}
+
+    # Remove forbidden keys entirely
+    for k in list(out.keys()):
+        if k in _FORBIDDEN_ORDER_KEYS_REMOVE:
+            out.pop(k, None)
+            applied[f"{k}_removed"] = True
+
+    # Force False for problematic booleans
+    for k in _FORBIDDEN_ORDER_KEYS_FORCE_FALSE:
+        if k in out and out.get(k) is not False:
+            out[k] = False
+            applied[k] = False
+
+    return out, applied
+
+
+# ---------------------------
 # plan extractors
 # ---------------------------
 
@@ -186,7 +257,6 @@ def _default_contract_path(repo_root: Path, instrument: str) -> Optional[Path]:
     }
     p = mapping.get(inst)
     return p if (p and p.exists()) else None
-
 
 
 def _extract_contract_dict(plan: Dict[str, Any], repo_root: Path) -> Optional[Dict[str, Any]]:
@@ -247,14 +317,26 @@ def _dict_to_ib_contract(contract_dict: Dict[str, Any]):
     return c
 
 
+# Keys we will NOT set from dict directly (defense-in-depth); sanitize_order_v0 is the last barrier.
+_SKIP_ORDER_ATTRS_ON_BUILD = _FORBIDDEN_ORDER_KEYS_REMOVE.union(_FORBIDDEN_ORDER_KEYS_FORCE_FALSE)
+
+
 def _dict_to_ib_order(order_dict: Dict[str, Any]):
+    """
+    Build ibapi.order.Order from dict.
+    - Avoid setting known-forbidden attrs.
+    - Force eTradeOnly/firmQuoteOnly False if attribute exists.
+    NOTE: sanitize_order_v0(order_obj) must still be applied before placeOrder.
+    """
     from ibapi.order import Order  # type: ignore
 
     o = Order()
     for k, v in order_dict.items():
+        if k in _SKIP_ORDER_ATTRS_ON_BUILD:
+            continue
         _safe_setattr(o, k, v)
 
-    # Critical: IBKR rejects unsupported defaults on some accounts/instruments
+    # Critical: disable unsupported IBKR attrs on some accounts/instruments
     _safe_setattr(o, "eTradeOnly", False)
     _safe_setattr(o, "firmQuoteOnly", False)
 
@@ -266,7 +348,7 @@ def _dict_to_ib_order(order_dict: Dict[str, Any]):
 
 
 # ---------------------------
-# IBKR connection (minimal)
+# IBKR connection (minimal direct fallback)
 # ---------------------------
 
 
@@ -280,8 +362,15 @@ class IbkrConn:
 
 class _IBSimpleApp:
     """
-    Minimal sync-ish wrapper around IB API.
+    Minimal wrapper around IB API.
     Used only as fallback if args.ibkr.ibkr_sender_real_v1 does not expose a compatible callable.
+
+    Standard guarantees (P1.3B):
+      - sanitize_order_v0() applied before placeOrder
+      - eTradeOnly/firmQuoteOnly forced off
+      - nbboPriceCap removed from __dict__ if present
+      - error code 399 treated as WARNING (not a reject)
+      - info codes 2104/2106/2158 captured as sys messages (not reject)
     """
 
     def __init__(self, conn: IbkrConn):
@@ -334,9 +423,17 @@ class _IBSimpleApp:
         self._next_id_ev = threading.Event()
 
         self._lock = threading.Lock()
-        self._ack: Dict[int, Dict[str, Any]] = {}
-        self._reject: Dict[int, Dict[str, Any]] = {}
-        self._status: Dict[int, Dict[str, Any]] = {}
+
+        # per-order observations
+        self._open_order: Dict[int, Dict[str, Any]] = {}
+        self._order_status: Dict[int, Dict[str, Any]] = {}
+        self._order_errors: Dict[int, Dict[str, Any]] = {}  # fatal errors keyed by orderId
+        self._order_warnings: Dict[int, List[Dict[str, Any]]] = {}  # warnings keyed by orderId
+
+        # global messages (reqId=-1, connectivity info, etc)
+        self._sys_msgs: List[str] = []
+        self._global_errors: List[Dict[str, Any]] = []
+        self._global_warnings: List[Dict[str, Any]] = []
 
     def connect(self) -> None:
         self._app.connect(self._conn.host, int(self._conn.port), int(self._conn.client_id))
@@ -362,7 +459,7 @@ class _IBSimpleApp:
         except Exception:
             st = None
         with self._lock:
-            self._ack[int(order_id)] = {"event": "openOrder", "order_id": int(order_id), "order_state_status": st}
+            self._open_order[int(order_id)] = {"event": "openOrder", "order_id": int(order_id), "order_state_status": st}
 
     def _on_order_status(
         self,
@@ -376,7 +473,7 @@ class _IBSimpleApp:
         whyHeld: Any,
     ) -> None:
         with self._lock:
-            self._status[int(orderId)] = {
+            self._order_status[int(orderId)] = {
                 "event": "orderStatus",
                 "order_id": int(orderId),
                 "status": status,
@@ -388,6 +485,23 @@ class _IBSimpleApp:
             }
 
     def _on_error(self, req_id: Any, error_code: Any, error_str: Any, advanced: Any) -> None:
+        # Best-effort normalize
+        try:
+            code_i = int(error_code)
+        except Exception:
+            code_i = 0
+        msg_s = str(error_str)
+
+        sev = _classify_ibkr_error(code_i)
+
+        # IBKR "info" connectivity lines: keep as sys msgs (string list)
+        sys_line = f"reqId={req_id} code={code_i} msg={msg_s}"
+        if sev == "INFO":
+            with self._lock:
+                self._sys_msgs.append(sys_line)
+            return
+
+        # Determine order_id if possible
         try:
             oid = int(req_id)
         except Exception:
@@ -396,17 +510,28 @@ class _IBSimpleApp:
         payload: Dict[str, Any] = {
             "event": "error",
             "req_id": req_id,
-            "error_code": error_code,
-            "error_string": str(error_str),
+            "error_code": code_i,
+            "error_string": msg_s,
+            "severity": sev,
         }
         if isinstance(advanced, str) and advanced.strip():
             payload["advanced_order_reject_json"] = advanced
 
-        # Add operator hint (e.g., error 321 read-only)
+        # Add operator hints (e.g., error 321 read-only)
         payload = decorate_ibkr_error_details(payload)
 
         with self._lock:
-            self._reject[oid] = payload
+            if oid <= 0:
+                if sev == "WARNING":
+                    self._global_warnings.append(payload)
+                else:
+                    self._global_errors.append(payload)
+            else:
+                if sev == "WARNING":
+                    self._order_warnings.setdefault(int(oid), []).append(payload)
+                else:
+                    # ERROR: treat as fatal for this order
+                    self._order_errors[int(oid)] = payload
 
     def next_order_id(self) -> int:
         if not self._next_id_ev.is_set():
@@ -414,36 +539,112 @@ class _IBSimpleApp:
                 raise RuntimeError("IBKR: no nextValidId available")
         with self._lock:
             assert self._next_id is not None
-            oid = self._next_id
+            oid = int(self._next_id)
             self._next_id += 1
-        return int(oid)
+        return oid
 
     def place_order(self, *, order_id: int, contract_obj: Any, order_obj: Any) -> Tuple[bool, Dict[str, Any]]:
-        with self._lock:
-            self._ack.pop(int(order_id), None)
-            self._reject.pop(int(order_id), None)
-            self._status.pop(int(order_id), None)
+        """
+        Returns (ok, detail).
+        ok=False only when we observe a fatal IBKR error for this order_id (not INFO/WARNING),
+        or when we hit a hard timeout with no openOrder/orderStatus callbacks.
+        """
+        oid = int(order_id)
 
-        self._app.placeOrder(int(order_id), contract_obj, order_obj)
+        # Reset per-order observations
+        with self._lock:
+            self._open_order.pop(oid, None)
+            self._order_status.pop(oid, None)
+            self._order_errors.pop(oid, None)
+            self._order_warnings.pop(oid, None)
+
+        # P1.3B: sanitize order object before submit
+        try:
+            san = sanitize_order_v0(order_obj)
+        except Exception as e:
+            # If sanitization fails, we still submit (do not hide), but record the failure
+            san = {"sanitize_error": f"{type(e).__name__}: {e}"}
+
+        self._app.placeOrder(oid, contract_obj, order_obj)
 
         t0 = time.time()
-        while (time.time() - t0) < self._conn.timeout_s:
+        while (time.time() - t0) < float(self._conn.timeout_s):
             with self._lock:
-                if int(order_id) in self._reject:
-                    return False, dict(self._reject[int(order_id)])
-                if int(order_id) in self._ack:
-                    out = dict(self._ack[int(order_id)])
-                    st = self._status.get(int(order_id))
-                    if isinstance(st, dict):
-                        out["order_status"] = dict(st)
+                global_err_tail = self._global_errors[-6:]
+                global_warn_tail = self._global_warnings[-6:]
+
+                fatal = self._order_errors.get(oid)
+                if isinstance(fatal, dict):
+                    return False, {
+                        "event": "order_reject",
+                        "order_id": oid,
+                        "fatal": dict(fatal),
+                        "warnings": list(self._order_warnings.get(oid, [])),
+                        "sys_msgs_tail": self._sys_msgs[-12:],
+                        "global_errors_tail": list(global_err_tail),
+                        "global_warnings_tail": list(global_warn_tail),
+                        "sanitized": san,
+                    }
+
+                ack = self._open_order.get(oid)
+                if isinstance(ack, dict):
+                    st = self._order_status.get(oid)
+                    out = {
+                        **dict(ack),
+                        "order_status": dict(st) if isinstance(st, dict) else None,
+                        "warnings": list(self._order_warnings.get(oid, [])),
+                        "sys_msgs_tail": self._sys_msgs[-12:],
+                        "global_errors_tail": list(global_err_tail),
+                        "global_warnings_tail": list(global_warn_tail),
+                        "sanitized": san,
+                    }
                     return True, out
+
             time.sleep(0.05)
 
+        # Timeout: return best-effort if we saw orderStatus
         with self._lock:
-            st = self._status.get(int(order_id))
+            st = self._order_status.get(oid)
+            warns = list(self._order_warnings.get(oid, []))
+            sys_tail = self._sys_msgs[-12:]
+            fatal = self._order_errors.get(oid)
+            global_err_tail = list(self._global_errors[-6:])
+            global_warn_tail = list(self._global_warnings[-6:])
+
+        if isinstance(fatal, dict):
+            return False, {
+                "event": "timeout_with_fatal",
+                "order_id": oid,
+                "fatal": dict(fatal),
+                "warnings": warns,
+                "sys_msgs_tail": sys_tail,
+                "global_errors_tail": global_err_tail,
+                "global_warnings_tail": global_warn_tail,
+                "sanitized": san,
+            }
+
         if isinstance(st, dict):
-            return True, {"event": "timeout_but_status_seen", "order_status": dict(st)}
-        return False, {"event": "timeout", "error_string": "Timeout waiting for openOrder/error callback"}
+            return True, {
+                "event": "timeout_but_status_seen",
+                "order_id": oid,
+                "order_status": dict(st),
+                "warnings": warns,
+                "sys_msgs_tail": sys_tail,
+                "global_errors_tail": global_err_tail,
+                "global_warnings_tail": global_warn_tail,
+                "sanitized": san,
+            }
+
+        return False, {
+            "event": "timeout",
+            "order_id": oid,
+            "error_string": "Timeout waiting for openOrder/orderStatus/error callback",
+            "warnings": warns,
+            "sys_msgs_tail": sys_tail,
+            "global_errors_tail": global_err_tail,
+            "global_warnings_tail": global_warn_tail,
+            "sanitized": san,
+        }
 
 
 # ---------------------------
@@ -457,6 +658,10 @@ def _try_submit_via_sender_real(
     order_dict: Dict[str, Any],
     conn: IbkrConn,
 ) -> Optional[Tuple[bool, Dict[str, Any]]]:
+    """
+    Attempts to submit via args.ibkr.ibkr_sender_real_v1 if it exposes a compatible callable.
+    Returns None if no compatible callable found.
+    """
     try:
         import args.ibkr.ibkr_sender_real_v1 as sender  # type: ignore
     except Exception:
@@ -531,10 +736,15 @@ def _is_actionable_plan(plan: Dict[str, Any]) -> bool:
 
 
 def _build_event_base(plan: Dict[str, Any], *, exec_id: str) -> Dict[str, Any]:
+    """
+    Standard event envelope for JSONL output.
+    """
     evt: Dict[str, Any] = {
+        "schema": SCHEMA,
+        "ts_utc": _utc_now_iso(),  # event emission time
+        "ts": plan.get("ts"),  # plan time (keep for backward-compat)
         "run_id": plan.get("run_id"),
         "index": plan.get("index"),
-        "ts": plan.get("ts"),
         "instrument": plan.get("instrument"),
         "timeframe": plan.get("timeframe"),
         "env": plan.get("env"),
@@ -579,12 +789,16 @@ def _finalize_ledger_safe(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="wa_ibkr_executor_v0")
+    ap = argparse.ArgumentParser(prog=SCHEMA)
 
     ap.add_argument("--sendplan", default="", help="Path to orders_sendplan_<run_id>.jsonl (optional if --run-id is given)")
     ap.add_argument("--run-id", default="", help="If set, will use args/data/orders_sendplan_<run_id>.jsonl")
 
-    ap.add_argument("--execute", default="0", help="0/1. When 1, executor may attempt IBKR placeOrder for actionable plans (still guarded by execution_mode.json)")
+    ap.add_argument(
+        "--execute",
+        default="0",
+        help="0/1. When 1, executor may attempt IBKR placeOrder for actionable plans (still guarded by execution_mode.json + stop.flag)",
+    )
     ap.add_argument("--max-orders", type=int, default=0, help="Safety limit: 0 means no limit")
 
     ap.add_argument("--ledger-path", default="args/data/order_ledger_v0.jsonl")
@@ -603,8 +817,12 @@ def main() -> int:
     ap.add_argument("--client-id", type=int, default=11)
     ap.add_argument("--timeout-s", type=float, default=15.0)
 
+    ap.add_argument("--prefer-sender-real", default="1", help="0/1. Prefer args.ibkr.ibkr_sender_real_v1 if it provides a compatible submit function (default 1).")
+
     args = ap.parse_args()
     repo_root = _repo_root()
+
+    ts_start = _utc_now_iso()
 
     run_id_arg = str(args.run_id or "").strip()
     sendplan_arg = str(args.sendplan or "").strip()
@@ -623,6 +841,7 @@ def main() -> int:
         raise FileNotFoundError(f"sendplan not found: {sendplan_path}")
 
     cli_execute = _b01(args.execute)
+    prefer_sender_real = _b01(args.prefer_sender_real)
 
     conn = IbkrConn(
         host=str(args.host),
@@ -635,18 +854,6 @@ def main() -> int:
     # Arming (file-based)
     exec_mode = get_execution_mode(repo_root)
 
-    plans_seen = 0
-    plans_actionable = 0
-    orders_attempted = 0
-    orders_skipped = 0
-    orders_skipped_guard = 0
-    orders_skipped_duplicate = 0
-    orders_skipped_reconcile = 0
-    acks = 0
-    rejects = 0
-    parse_errors = 0
-    status_events = 0
-
     # Determine run_id from first plan (best-effort)
     first_run_id: Optional[str] = run_id_arg or None
     if first_run_id is None:
@@ -655,6 +862,7 @@ def main() -> int:
             if isinstance(rid, str) and rid.strip():
                 first_run_id = rid.strip()
                 break
+    run_id_for_ledger = str(first_run_id or "unknown")
 
     # Resolve output path
     if str(args.out or "").strip():
@@ -794,9 +1002,56 @@ def main() -> int:
         _emit_event(fout, sev, event_id_override=eid)
         return 1
 
-    run_id_for_ledger = str(first_run_id or "unknown")
+    # ---------------------------
+    # counters
+    # ---------------------------
+    plans_seen = 0
+    plans_actionable = 0
 
+    orders_attempted = 0
+    orders_skipped = 0
+    orders_skipped_guard = 0
+    orders_skipped_duplicate = 0
+    orders_skipped_reconcile = 0
+
+    acks = 0
+    rejects = 0
+    parse_errors = 0
+    status_events = 0
+
+    # ---------------------------
+    # execution
+    # ---------------------------
     with out_path.open("w", encoding="utf-8") as fout, sendplan_path.open("r", encoding="utf-8-sig", errors="replace") as fplan:
+        # BOOT event
+        boot_evt = {
+            "schema": SCHEMA,
+            "ts_utc": _utc_now_iso(),
+            "kind": "BOOT",
+            "exec_id": exec_id,
+            "source": SOURCE,
+            "run_id": run_id_for_ledger,
+            "details": {
+                "cli_execute": bool(cli_execute),
+                "exec_mode": exec_mode,
+                "stop_flag": bool(is_stop_flag_present(repo_root)),
+                "prefer_sender_real": bool(prefer_sender_real),
+                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
+                "ledger": {"enabled": bool(ledger is not None), "path": ledger_path_resolved, "allow_retry": bool(ledger_allow_retry)},
+                "reconcile": {
+                    "enabled": bool(reconcile_enabled),
+                    "requested": bool(reconcile_requested),
+                    "empty_ok": bool(reconcile_empty_ok),
+                    "snapshot_path": snapshot_used,
+                    "snapshot_age_s": snapshot_age_s,
+                    "snapshot_max_age_s": snapshot_max_age_s,
+                    "snapshot_parse_errors": snapshot_parse_errors,
+                    "block_reason": reconcile_block_all_reason,
+                },
+            },
+        }
+        _emit_event(fout, boot_evt, event_id_override=f"BOOT:{exec_id}")
+
         for raw_line in fplan:
             s = raw_line.strip()
             if not s:
@@ -810,12 +1065,6 @@ def main() -> int:
                 continue
 
             plans_seen += 1
-
-            if first_run_id is None:
-                rid0 = plan.get("run_id")
-                if isinstance(rid0, str) and rid0.strip():
-                    first_run_id = rid0.strip()
-                    run_id_for_ledger = str(first_run_id)
 
             if not _is_actionable_plan(plan):
                 continue
@@ -901,7 +1150,7 @@ def main() -> int:
             # ---------------------------
 
             contract_dict = _extract_contract_dict(plan, repo_root)
-            order_dict = _extract_order_dict(plan)
+            order_dict0 = _extract_order_dict(plan)
 
             if not isinstance(contract_dict, dict) or not contract_dict:
                 evt = _build_event_base(plan, exec_id=exec_id)
@@ -915,13 +1164,19 @@ def main() -> int:
                 )
                 _emit_event(fout, evt)
                 rejects += 1
-                _finalize_ledger_safe(ledger, ledger_key=ledger_key, run_id=run_id_for_ledger, status="REJECT", result={"reject": {"reason": "missing_contract"}})
+                _finalize_ledger_safe(
+                    ledger,
+                    ledger_key=ledger_key,
+                    run_id=run_id_for_ledger,
+                    status="REJECT",
+                    result={"reject": {"reason": "missing_contract"}},
+                )
                 evt_done = _build_event_base(plan, exec_id=exec_id)
                 evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "reason": "missing_contract"}})
                 _emit_event(fout, evt_done)
                 continue
 
-            if not isinstance(order_dict, dict) or not order_dict:
+            if not isinstance(order_dict0, dict) or not order_dict0:
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt.update(
                     {
@@ -933,7 +1188,13 @@ def main() -> int:
                 )
                 _emit_event(fout, evt)
                 rejects += 1
-                _finalize_ledger_safe(ledger, ledger_key=ledger_key, run_id=run_id_for_ledger, status="REJECT", result={"reject": {"reason": "missing_order"}})
+                _finalize_ledger_safe(
+                    ledger,
+                    ledger_key=ledger_key,
+                    run_id=run_id_for_ledger,
+                    status="REJECT",
+                    result={"reject": {"reason": "missing_order"}},
+                )
                 evt_done = _build_event_base(plan, exec_id=exec_id)
                 evt_done.update({"kind": "ORDER_DONE", "ledger_key": ledger_key, "details": {"ok": False, "reason": "missing_order"}})
                 _emit_event(fout, evt_done)
@@ -1018,6 +1279,9 @@ def main() -> int:
                     orders_skipped_duplicate += 1
                     continue
 
+            # Order dict sanitization (defense-in-depth) BEFORE submission
+            order_dict, order_dict_san_applied = sanitize_order_dict_v0(order_dict0)
+
             # Emit ORDER_SUBMIT right before the actual submit attempt (Stage 5 trace)
             evt_submit = _build_event_base(plan, exec_id=exec_id)
             evt_submit.update(
@@ -1027,6 +1291,7 @@ def main() -> int:
                     "details": {
                         "execution_mode": exec_mode,
                         "stop_flag": bool(stop_present),
+                        "prefer_sender_real": bool(prefer_sender_real),
                         "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
                         "contract": _pick_fields(
                             contract_dict,
@@ -1042,7 +1307,8 @@ def main() -> int:
                                 "lastTradeDateOrContractMonth",
                             ],
                         ),
-                        "order": _pick_fields(order_dict, ["action", "totalQuantity", "orderType", "lmtPrice", "auxPrice", "tif", "goodTillDate"]),
+                        "order": _pick_fields(order_dict0, ["action", "totalQuantity", "orderType", "lmtPrice", "auxPrice", "tif", "goodTillDate", "outsideRth"]),
+                        "order_sanitize_applied": order_dict_san_applied,
                     },
                 }
             )
@@ -1051,7 +1317,10 @@ def main() -> int:
             orders_attempted += 1
 
             # 1) Prefer sender_real_v1 if it exposes a compatible callable
-            sender_res = _try_submit_via_sender_real(contract_dict=contract_dict, order_dict=order_dict, conn=conn)
+            sender_res: Optional[Tuple[bool, Dict[str, Any]]] = None
+            if prefer_sender_real:
+                sender_res = _try_submit_via_sender_real(contract_dict=contract_dict, order_dict=order_dict, conn=conn)
+
             if sender_res is not None:
                 ok, detail = sender_res
                 if isinstance(detail, dict):
@@ -1060,6 +1329,11 @@ def main() -> int:
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibkr_sender_real_v1"}
                 evt["ledger_key"] = ledger_key
+
+                # enrich with our order dict sanitization summary
+                if isinstance(detail, dict) and order_dict_san_applied:
+                    detail = dict(detail)
+                    detail.setdefault("order_sanitize_applied", order_dict_san_applied)
 
                 if ok:
                     evt["kind"] = "ORDER_ACK"
@@ -1103,6 +1377,11 @@ def main() -> int:
                 ok, detail = ib_app.place_order(order_id=order_id, contract_obj=contract_obj, order_obj=order_obj)
                 if isinstance(detail, dict):
                     detail = decorate_ibkr_error_details(detail)
+
+                # Ensure our dict-level sanitize summary is present in detail
+                if isinstance(detail, dict) and order_dict_san_applied:
+                    detail = dict(detail)
+                    detail.setdefault("order_sanitize_applied", order_dict_san_applied)
 
                 evt = _build_event_base(plan, exec_id=exec_id)
                 evt["ibkr"] = {"via": "ibapi_direct", "order_id": int(order_id)}
@@ -1157,14 +1436,22 @@ def main() -> int:
         except Exception:
             pass
 
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "ok": True,
-        "cli_execute": cli_execute,
+    ok_final = (rejects == 0) and (parse_errors == 0)
+    exit_code = 0 if ok_final else 1
+
+    summary: Dict[str, Any] = {
+        "schema": SCHEMA,
+        "ts_utc": ts_start,
+        "ok": bool(ok_final),
+        "exit_code": int(exit_code),
+        "exec_id": exec_id,
         "execution_mode": exec_mode,
+        "cli_execute": bool(cli_execute),
+        "prefer_sender_real": bool(prefer_sender_real),
         "sendplan_path": str(sendplan_path),
         "out_path": str(out_path),
-        "ledger": {"enabled": bool(ledger is not None), "path": ledger_path_resolved, "allow_retry": ledger_allow_retry},
+        "written": {"events": str(out_path)},
+        "ledger": {"enabled": bool(ledger is not None), "path": ledger_path_resolved, "allow_retry": bool(ledger_allow_retry)},
         "reconcile": {
             "requested": bool(reconcile_requested),
             "enabled": bool(reconcile_enabled),
@@ -1176,20 +1463,29 @@ def main() -> int:
             "block_reason": reconcile_block_all_reason,
         },
         "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
-        "plans_seen": plans_seen,
-        "plans_actionable": plans_actionable,
-        "orders_attempted": orders_attempted,
-        "orders_skipped": orders_skipped,
-        "orders_skipped_guard": orders_skipped_guard,
-        "orders_skipped_duplicate": orders_skipped_duplicate,
-        "orders_skipped_reconcile": orders_skipped_reconcile,
-        "acks": acks,
-        "rejects": rejects,
-        "order_status_events": status_events,
-        "parse_errors": parse_errors,
+        "counts": {
+            "plans_seen": plans_seen,
+            "plans_actionable": plans_actionable,
+            "orders_attempted": orders_attempted,
+            "orders_skipped": orders_skipped,
+            "orders_skipped_guard": orders_skipped_guard,
+            "orders_skipped_duplicate": orders_skipped_duplicate,
+            "orders_skipped_reconcile": orders_skipped_reconcile,
+            "acks": acks,
+            "rejects": rejects,
+            "order_status_events": status_events,
+            "parse_errors": parse_errors,
+        },
+        "notes": [
+            "P1.3B: sanitize_order_v0 applied before placeOrder (direct ibapi path).",
+            "P1.3B: nbboPriceCap is removed if present in Order.__dict__ (sanitize_order_v0).",
+            "P1.3B: IBKR code 399 treated as WARNING (not reject).",
+            "INFO codes (2104/2106/2158) are collected as sys messages (not reject).",
+        ],
     }
+
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
