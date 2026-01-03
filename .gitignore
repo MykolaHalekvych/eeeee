@@ -172,3 +172,5 @@ args/data/soak_report_7d.json
 # Runtime artifacts (Stage7 AS v1)
 args/data/as_v1_latest.json
 
+# Runtime artifacts (Stage5 reconcile v2)
+args/data/reconcile_evidence_latest_v2.json
