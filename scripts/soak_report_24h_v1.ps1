@@ -9,7 +9,6 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 function _utc() { [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ") }
-
 function _parse_ts([string]$s) {
   if ([string]::IsNullOrWhiteSpace($s)) { return $null }
   return [DateTime]::Parse($s).ToUniversalTime()
@@ -69,7 +68,6 @@ try {
   if ($counts.FAIL -gt 0) { $worst="FAIL"; $exit=2 }
   elseif ($counts.WARN -gt 0) { $worst="WARN"; $exit=1 }
 
-  # max gap between gate samples
   $maxGapSec = 0
   $gateSorted = $gate | Sort-Object { _parse_ts $_.ts_utc }
   for ($i=1; $i -lt $gateSorted.Count; $i++) {
@@ -84,12 +82,11 @@ try {
   $lastGate = $null
   if ($gateSorted.Count -gt 0) { $lastGate = $gateSorted[-1] }
 
-  # ---- Evidence dirs in window ----
+  # Evidence dirs in window
   $evidenceDirs = @()
   if (Test-Path -LiteralPath $evidenceBase) {
     foreach ($d in Get-ChildItem -LiteralPath $evidenceBase -Directory) {
       try {
-        # name format: yyyyMMddTHHmmssZ
         $dt = [DateTime]::ParseExact($d.Name, "yyyyMMddTHHmmssZ", $null).ToUniversalTime()
         if ($dt -ge $cutoff) { $evidenceDirs += $d.Name }
       } catch {}
@@ -97,15 +94,11 @@ try {
   }
   $evidenceDirs = $evidenceDirs | Sort-Object -Descending
 
-  # ---- Terminal proof dirs in window + reject counts ----
+  # Terminal proof dirs in window + counts
   $proofDirs = @()
-  $rejectCount = 0
-  $fillCount = 0
-  $cancelCount = 0
-
+  $rejectCount = 0; $fillCount = 0; $cancelCount = 0
   if (Test-Path -LiteralPath $proofBase) {
     foreach ($d in Get-ChildItem -LiteralPath $proofBase -Directory) {
-      # dir name format: yyyyMMddTHHmmssZ_terminal
       if ($d.Name -notmatch '^(\d{8}T\d{6}Z)_terminal$') { continue }
       $dt = [DateTime]::ParseExact($Matches[1], "yyyyMMddTHHmmssZ", $null).ToUniversalTime()
       if ($dt -lt $cutoff) { continue }
@@ -117,9 +110,9 @@ try {
           $sum = Get-Content -LiteralPath $sumPath -Raw | ConvertFrom-Json
           foreach ($p in @($sum.proofs)) {
             switch ([string]$p.kind) {
-              "REJECTED"   { $rejectCount += 1 }
-              "FILLED"     { $fillCount += 1 }
-              "CANCELLED"  { $cancelCount += 1 }
+              "REJECTED"  { $rejectCount += 1 }
+              "FILLED"    { $fillCount += 1 }
+              "CANCELLED" { $cancelCount += 1 }
             }
           }
         } catch {}
@@ -128,7 +121,6 @@ try {
   }
   $proofDirs = $proofDirs | Sort-Object -Descending
 
-  # ---- tap health snapshot (current) ----
   $tap = $null
   if (Test-Path -LiteralPath $tapHealth) {
     try { $tap = Get-Content -LiteralPath $tapHealth -Raw | ConvertFrom-Json } catch { $tap = $null }
@@ -154,11 +146,7 @@ try {
 
     terminal_proof_dirs_count=$proofDirs.Count
     terminal_proof_dirs_latest=@($proofDirs | Select-Object -First 5)
-    terminal_proof_counts=[ordered]@{
-      rejected=$rejectCount
-      filled=$fillCount
-      cancelled=$cancelCount
-    }
+    terminal_proof_counts=[ordered]@{ rejected=$rejectCount; filled=$fillCount; cancelled=$cancelCount }
   }
 
   $jsonPath = Join-Path $outDir "soak_report_24h.json"
@@ -183,7 +171,6 @@ try {
   $md += "```"
   $md -join "`n" | Set-Content -LiteralPath $mdPath -Encoding UTF8
 
-  # latest pointer for UI
   $latestPath = Join-Path $Repo "args\data\soak_report_24h_latest.json"
   ($report | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $latestPath -Encoding UTF8
 
