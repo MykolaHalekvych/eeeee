@@ -221,4 +221,11 @@ __pycache__/
 /args/stage5_terminal_proofs/
 /args/data/stage5_terminal_proof.cursor.json
 /args/data/*_TEST.jsonl
+/args/data/soak_report_24h_latest.json
+/args/ops_evidence/soak_reports/
+
+
+# soak reports runtime outputs
+/args/data/soak_report_24h_latest.json
+/args/ops_evidence/soak_reports/
 
