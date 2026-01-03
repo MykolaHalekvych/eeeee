@@ -82,7 +82,8 @@ try {
     try { $prevSize = [int64]$cursor.last_events_size_bytes } catch { $prevSize = 0 }
     $prevMtime = [string]$cursor.last_events_mtime_utc
     $prevTail  = [string]$cursor.last_tail_sha256
-    $changed = ($prevSize -ne $size) -or ($prevMtime -ne $mtimeUtc) -or ($prevTail -ne $tailSha)
+    $changed = ($prevSize -ne $size) -or ($prevMtime -ne $mtimeUtc)
+
   }
 
   if (-not $changed) {
@@ -152,4 +153,5 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 5) | Write-Output
   exit 2
 }
+
 
