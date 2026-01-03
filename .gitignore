@@ -169,4 +169,6 @@ args/data/soak_report_7d.json
 # reconcile evidence runtime outputs
 /args/data/reconcile_evidence_latest.json
 /args/ops_evidence/reconcile/
+# Runtime artifacts (Stage7 AS v1)
+args/data/as_v1_latest.json
 
