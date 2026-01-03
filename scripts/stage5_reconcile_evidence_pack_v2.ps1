@@ -6,9 +6,9 @@ STAGE5_RECONCILE_EVIDENCE_PACK_V2 (ops-grade, Start-Process, WD + anti-flap)
 - Fallbacks: snapshot_* -> ibkr.* -> hard defaults (client_id=79, timeouts=60, wait_s=12)
 - Auto-detect supported CLI flags via "--help"
 - Retry handshake_timeout (positions)
-- Authoritative latest (LAST OK): args\data\reconcile_evidence_latest_v2.json
-- Last fail report: args\data\reconcile_evidence_last_fail_v2.json
-- Optional compat (LAST OK): args\data\reconcile_evidence_latest.json (-WriteCompatLatest)
+- Authoritative latest (LAST NON-FAIL): args\data\reconcile_evidence_latest_v2.json   (OK/WARN only)
+- Last FAIL report: args\data\reconcile_evidence_last_fail_v2.json
+- Optional compat (LAST OK only): args\data\reconcile_evidence_latest.json (-WriteCompatLatest)
 - Exit codes: 0=OK, 1=WARN, 2=FAIL
 #>
 
@@ -166,9 +166,9 @@ try {
   $script:REPO_WD = $Repo
 
   $cpPath       = Join-Path $Repo "args\data\control_plane.json"
-  $latestV2Path = Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json"          # LAST OK
+  $latestV2Path = Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json"          # LAST NON-FAIL
   $lastFailV2   = Join-Path $Repo "args\data\reconcile_evidence_last_fail_v2.json"      # LAST FAIL
-  $latestCompat = Join-Path $Repo "args\data\reconcile_evidence_latest.json"            # legacy LAST OK
+  $latestCompat = Join-Path $Repo "args\data\reconcile_evidence_latest.json"            # legacy LAST OK only
 
   $cp = _read_json $cpPath
   $ib = $null
@@ -363,16 +363,16 @@ try {
 
   _write_json (Join-Path $outDir "reconcile_summary.json") $report 60
 
-  # ---- anti-flap: keep latest_v2 as LAST OK ----
-  if ($report.status -eq "OK") {
-    _write_json $latestV2Path $report 60
-    if ($WriteCompatLatest) { _write_json $latestCompat $report 60 }
-  } else {
+  # ---- anti-flap (REQUIRED):
+  # - OK/WARN -> overwrite latest_v2 (LAST NON-FAIL)
+  # - FAIL    -> write last_fail_v2 ONLY, DO NOT overwrite/create latest_v2
+  if ($report.status -eq "FAIL") {
     _write_json $lastFailV2 $report 60
-    if (-not (Test-Path -LiteralPath $latestV2Path)) {
-      _write_json $latestV2Path $report 60
-      if ($WriteCompatLatest -and -not (Test-Path -LiteralPath $latestCompat)) { _write_json $latestCompat $report 60 }
-    }
+    # IMPORTANT: do NOT touch latestV2Path here.
+  } else {
+    _write_json $latestV2Path $report 60
+    # compat is LAST OK only
+    if ($WriteCompatLatest -and $report.status -eq "OK") { _write_json $latestCompat $report 60 }
   }
 
   $report | ConvertTo-Json -Depth 10 -Compress
@@ -388,10 +388,10 @@ try {
     error=$err
   }
   $repoOut = if ($Repo) { $Repo } else { (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+
+  # REQUIRED: on crash -> last_fail only. Do NOT create/overwrite latest_v2.
   _write_json (Join-Path $repoOut "args\data\reconcile_evidence_last_fail_v2.json") $fail 20
-  if (-not (Test-Path -LiteralPath (Join-Path $repoOut "args\data\reconcile_evidence_latest_v2.json"))) {
-    _write_json (Join-Path $repoOut "args\data\reconcile_evidence_latest_v2.json") $fail 20
-  }
+
   $fail | ConvertTo-Json -Depth 5 -Compress
   exit 2
 }
