@@ -174,3 +174,9 @@ args/data/as_v1_latest.json
 
 # Runtime artifacts (Stage5 reconcile v2)
 args/data/reconcile_evidence_latest_v2.json
+
+# ARGS safety switches
+args/logs/stop.flag
+args/ops_evidence/terminal/
+args/data/ibkr_positions_snapshot_v0.json
+
