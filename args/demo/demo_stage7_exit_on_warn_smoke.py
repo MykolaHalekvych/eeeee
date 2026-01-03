@@ -120,20 +120,36 @@ def main() -> int:
     signals_path = repo / "args" / "data" / "as_v1_signals_latest.json"
     out_path = repo / "args" / "data" / "as_v1_latest.json"
 
-    # Require reconcile file to exist; this is an ops demo, not a generator.
-    if not reconcile_path.exists():
-        print(json.dumps({"ok": False, "reason": "missing_reconcile_latest_v2", "path": str(reconcile_path)}))
-        return 2
-
-    # Backups
+    # Backups live in tmp dir
     bak_dir = repo / "args" / "data" / "_tmp_exit_on_warn_smoke"
     bak_dir.mkdir(parents=True, exist_ok=True)
     rec_bak = bak_dir / "reconcile_evidence_latest_v2.BAK.json"
     sig_bak = bak_dir / "as_v1_signals_latest.BAK.json"
 
+    created_reconcile = False
+    created_signals = False
+
+    # Create minimal reconcile stub if missing (self-contained demo)
+    if not reconcile_path.exists():
+        created_reconcile = True
+        reconcile_stub: Dict[str, Any] = {
+            "schema": "stage5_reconcile_evidence_pack_v2",
+            "ts_utc": "TEST",
+            "status": "OK",
+            "exit_code": 0,
+            "positions": {"ok": True, "out_path": None},
+            "open_orders": {"ok": True, "jsonl_path": None},
+        }
+        _write_json(reconcile_path, reconcile_stub)
+
+    # Ensure signals exists (we will restore/delete later)
+    if not signals_path.exists():
+        created_signals = True
+        _write_json(signals_path, {"schema": "as_v1_signals_latest", "signals": {}})
+
+    # Backups (now both files exist)
     _backup(reconcile_path, rec_bak)
-    if signals_path.exists():
-        _backup(signals_path, sig_bak)
+    _backup(signals_path, sig_bak)
 
     try:
         fake_pos = _make_fake_positions(repo, args.symbol, args.local_symbol, args.position)
@@ -173,8 +189,6 @@ def main() -> int:
         }
 
         # Assertions for PASS
-        # - reconcile WARN must allow exits
-        # - with synthetic pos!=0 and exit signal -> EXIT intent
         if result["reconcile_status"] != "WARN":
             result["ok"] = False
             result["fail_reason"] = "expected_reconcile_warn"
@@ -189,14 +203,26 @@ def main() -> int:
             result["fail_reason"] = "exit_gate_blocked_unexpectedly"
 
         print(json.dumps(result, ensure_ascii=False))
-
         return 0 if result["ok"] else 1
 
     finally:
-        # Restore original files
-        _restore(reconcile_path, rec_bak)
-        if sig_bak.exists():
-            _restore(signals_path, sig_bak)
+        # Restore reconcile: if demo created it, delete; else restore backup.
+        try:
+            if created_reconcile:
+                reconcile_path.unlink(missing_ok=True)
+            else:
+                _restore(reconcile_path, rec_bak)
+        except Exception:
+            pass
+
+        # Restore signals: if demo created it, delete; else restore backup.
+        try:
+            if created_signals:
+                signals_path.unlink(missing_ok=True)
+            else:
+                _restore(signals_path, sig_bak)
+        except Exception:
+            pass
 
         # Cleanup tmp dir best-effort
         try:
