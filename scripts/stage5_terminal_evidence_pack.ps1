@@ -55,7 +55,7 @@ try {
   # Throttle
   if ($cursor -and $cursor.last_evidence_ts_utc) {
     try {
-      $last = [DateTime]::Parse($cursor.last_evidence_ts_utc)
+      $last = [DateTime]::Parse($cursor.last_evidence_ts_utc).ToUniversalTime()
       $dt = ($nowUtc - $last).TotalSeconds
       if ($dt -lt $MinSecondsBetweenEvidence) {
         $out = [ordered]@{
@@ -153,5 +153,6 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 5) | Write-Output
   exit 2
 }
+
 
 
