@@ -7,7 +7,11 @@
                  "client_id":  77,
                  "host":  "localhost",
                  "port":  7497,
-                 "timeout_s":  25
+                 "timeout_s":  25,
+                 "snapshot_client_id":  79,
+                 "snapshot_connect_timeout_s":  60,
+                 "snapshot_timeout_s":  60,
+                 "open_orders_wait_s":  12
              },
     "instrument_allowlist":  [
                                  "MHG"
@@ -29,5 +33,8 @@
                              "last_promote_report_path":  "C:\\Users\\mukol\\ARGS-Core-v1\\args\\offline\\evidence\\promote\\20260102T072554Z_247_promote_report.json",
                              "last_promote_report_sha256":  "4c4202ae8843e9ea5b57fe4acb8e5eb5e01108aa842482debda4b284f4194121",
                              "eval_threshold_acc":  0.45
-                         }
+                         },
+    "risk_envelope":  {
+                          "mode":  "ONLY_EXITS"
+                      }
 }
