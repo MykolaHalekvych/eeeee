@@ -26,9 +26,12 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 function Patch-ControlPlane([string]$repo, [string]$mode, [bool]$enable, [string]$gmode) {
+  $enablePy = if ($enable) { "True" } else { "False" }  # Python bool literal
+
   Push-Location $repo
   try {
-    py -3.11 -c "import json; from pathlib import Path; p=Path('args/data/control_plane.json'); d=json.loads(p.read_bytes().decode('utf-8-sig')); d['execution_mode']='$mode'; d['enable_paper_execution']=$('true' if $enable else 'false'); d['global_mode']='$gmode'; p.write_text(json.dumps(d, indent=2, ensure_ascii=False)+'\n', encoding='utf-8'); print('patched:', p)"
+    # Silent: do not print anything to stdout to keep JSON-only output
+    $null = py -3.11 -c "import json; from pathlib import Path; p=Path('args/data/control_plane.json'); d=json.loads(p.read_bytes().decode('utf-8-sig')); d['execution_mode']='$mode'; d['enable_paper_execution']=$enablePy; d['global_mode']='$gmode'; p.write_text(json.dumps(d, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')"
   } finally {
     Pop-Location
   }
@@ -77,14 +80,13 @@ try {
   $start.cleaner = Run-BaselineCleaner $repo
   $start.after = Run-BaselineCheck $repo
 
-  # Decide result based on AFTER baseline_check exit code
   $rcAfter = [int]$start.after.rc
   if ($rcAfter -eq 0) { $start.ok = $true; $exit = 0 }
   elseif ($rcAfter -eq 1) { $exit = 1 }
   else { $exit = 2 }
 
 } catch {
-  $start.errors += @{ where="exception"; error=$_ | Out-String }
+  $start.errors += @{ where="exception"; error=($_ | Out-String) }
   $exit = 2
 } finally {
   if (-not $NoRevert) {
@@ -93,14 +95,14 @@ try {
       if (Test-Path $stopFlag) { Remove-Item $stopFlag -Force }
       $start.reverted = $true
     } catch {
-      $start.errors += @{ where="revert_failed"; error=$_ | Out-String }
+      $start.errors += @{ where="revert_failed"; error=($_ | Out-String) }
     }
   }
 }
 
-# JSON stdout (single object)
 $start.ts_end_utc = (Get-Date).ToUniversalTime().ToString("o")
 $start.exit_code = $exit
-$start | ConvertTo-Json -Depth 6
 
+# JSON-only stdout (single object)
+$start | ConvertTo-Json -Depth 7
 exit $exit
