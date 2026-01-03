@@ -91,6 +91,61 @@ def _gate_check(cp: Dict[str, Any], stop_flag: Path, require_halt: bool) -> Tupl
         return False, "GLOBAL_MODE_NOT_HALT"
     return True, "OK"
 
+def _attempt_cancel(host: str, port: int, client_id: int, order_ids: List[int], sleep_s: float) -> Dict[str, Any]:
+    attempt: Dict[str, Any] = {
+        "client_id": client_id,
+        "cancel_requested": [],
+        "ib_status_tail": [],
+        "ib_errors_tail": [],
+        "connect_ok": False,
+        "connect_error": None,
+    }
+
+    app = _App()
+    try:
+        app.connect(host, port, client_id)
+        t = threading.Thread(target=app.run, daemon=True)
+        t.start()
+
+        if not app.ready.wait(timeout=10):
+            attempt["connect_error"] = "no_nextValidId"
+            return attempt
+
+        attempt["connect_ok"] = True
+
+        # Best-effort: bind/open orders to this client (safe)
+        try:
+            app.reqAutoOpenOrders(True)
+        except Exception:
+            pass
+
+        for oid in order_ids:
+            try:
+                app.cancelOrder(int(oid), "")
+            except TypeError:
+                app.cancelOrder(int(oid))
+            attempt["cancel_requested"].append(int(oid))
+
+        try:
+            app.reqGlobalCancel()
+        except Exception:
+            pass
+
+        time.sleep(float(sleep_s))
+
+        attempt["ib_status_tail"] = app.status[-30:]
+        attempt["ib_errors_tail"] = app.errors[-30:]
+        return attempt
+
+    except Exception as e:
+        attempt["connect_error"] = repr(e)
+        return attempt
+    finally:
+        try:
+            app.disconnect()
+        except Exception:
+            pass
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=".", help="Repo root")
@@ -98,7 +153,8 @@ def main() -> int:
     ap.add_argument("--stop-flag", default="args/logs/stop.flag")
     ap.add_argument("--host", default="", help="Override IB host")
     ap.add_argument("--port", type=int, default=0, help="Override IB port")
-    ap.add_argument("--client-id", type=int, default=0, help="Override IB client id")
+    ap.add_argument("--client-id", type=int, default=0, help="Override primary client id")
+    ap.add_argument("--also-try-client-ids", default="79,77", help="Comma-separated fallback client ids to try")
     ap.add_argument("--timeout-s", type=int, default=35)
     ap.add_argument("--wait-s", type=int, default=6)
     ap.add_argument("--post-cancel-sleep-s", type=float, default=6.0)
@@ -124,9 +180,7 @@ def main() -> int:
         "stop_flag": str(stop_flag),
         "before": None,
         "after": None,
-        "cancel_requested": [],
-        "ib_status_tail": [],
-        "ib_errors_tail": [],
+        "attempts": [],
         "errors": [],
     }
 
@@ -149,17 +203,17 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False))
         return 2
 
-    host, port, client_id = _extract_ibkr_conn(cp, fallback_client_id=79)
+    host, port, primary_client_id = _extract_ibkr_conn(cp, fallback_client_id=79)
     if args.host: host = args.host
     if args.port: port = int(args.port)
-    if args.client_id: client_id = int(args.client_id)
+    if args.client_id: primary_client_id = int(args.client_id)
 
     # Snapshot BEFORE (read-only)
     mod = [
         "args.ibkr.ibkr_open_orders_snapshotter_v0",
         "--host", host,
         "--port", str(port),
-        "--client-id", str(client_id),
+        "--client-id", str(primary_client_id),
         "--timeout-s", str(args.timeout_s),
         "--wait-s", str(args.wait_s),
         "--out", str(out_orders),
@@ -174,15 +228,15 @@ def main() -> int:
         return 2
 
     before_orders = _parse_open_orders_jsonl(out_orders)
+    order_ids = [o.get("order_id") for o in before_orders if isinstance(o.get("order_id"), int)]
     report["before"] = {
         "count": len(before_orders),
         "statuses": sorted({(o.get("order_state") or {}).get("status") for o in before_orders if (o.get("order_state") or {}).get("status")}),
-        "order_ids": [o.get("order_id") for o in before_orders if o.get("order_id") is not None],
+        "order_ids": order_ids,
         "out_path": str(out_orders),
-        "conn": {"host": host, "port": port, "client_id": client_id},
+        "conn": {"host": host, "port": port, "client_id": primary_client_id},
     }
 
-    order_ids = [o.get("order_id") for o in before_orders if isinstance(o.get("order_id"), int)]
     if not order_ids:
         report["ok"] = True
         report["status"] = "ALREADY_CLEAN"
@@ -191,43 +245,24 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False))
         return 0
 
-    # Cancel attempts
-    app = _App()
-    try:
-        app.connect(host, port, client_id)
-        t = threading.Thread(target=app.run, daemon=True)
-        t.start()
+    # Candidate client_ids: primary + fallbacks (unique)
+    candidates: List[int] = []
+    def _add(cid: int) -> None:
+        if cid not in candidates:
+            candidates.append(cid)
 
-        if not app.ready.wait(timeout=10):
-            report["status"] = "INFRA_FAIL"
-            report["errors"].append({"where": "ib_connect", "error": "no_nextValidId"})
-            report_out.parent.mkdir(parents=True, exist_ok=True)
-            report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps(report, ensure_ascii=False))
-            return 2
-
-        for oid in order_ids:
-            try:
-                app.cancelOrder(int(oid), "")
-            except TypeError:
-                app.cancelOrder(int(oid))
-            report["cancel_requested"].append(int(oid))
-
-        # One global cancel as a best-effort
+    _add(primary_client_id)
+    for tok in (args.also_try_client_ids or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
         try:
-            app.reqGlobalCancel()
+            _add(int(tok))
         except Exception:
-            pass
+            continue
 
-        time.sleep(float(args.post_cancel_sleep_s))
-    finally:
-        try:
-            app.disconnect()
-        except Exception:
-            pass
-
-    report["ib_status_tail"] = app.status[-30:]
-    report["ib_errors_tail"] = app.errors[-30:]
+    for cid in candidates:
+        report["attempts"].append(_attempt_cancel(host, port, cid, order_ids, sleep_s=float(args.post_cancel_sleep_s)))
 
     # Snapshot AFTER (read-only)
     rc2, stdout2, stderr2 = _run_module(repo, mod, timeout_s=max(15, args.timeout_s + 20))
@@ -253,14 +288,12 @@ def main() -> int:
         report["status"] = "CLEARED"
         rc_out = 0
     else:
-        # Common weekend/399 case: stuck pending cancel until market open
         if statuses_after and all(s == "PendingCancel" for s in statuses_after):
             report["status"] = "NOT_CLEARED_WAIT_MARKET_OPEN"
-            rc_out = 1
         else:
             report["status"] = "NOT_CLEARED"
-            rc_out = 1
         report["ok"] = False
+        rc_out = 1
 
     report_out.parent.mkdir(parents=True, exist_ok=True)
     report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
