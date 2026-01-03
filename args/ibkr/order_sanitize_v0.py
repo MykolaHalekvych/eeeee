@@ -1,4 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
+
+try:
+    from ibapi.common import UNSET_DOUBLE  # type: ignore
+except Exception:
+    UNSET_DOUBLE = 1.7976931348623157e308
+
 from typing import Any, Dict
 
 def sanitize_order_v0(o: Any) -> Dict[str, Any]:
@@ -33,9 +39,10 @@ def sanitize_order_v0(o: Any) -> Dict[str, Any]:
     try:
         d = getattr(o, "__dict__", None)
         if isinstance(d, dict) and "nbboPriceCap" in d:
-            del d["nbboPriceCap"]
+            d["nbboPriceCap"] = UNSET_DOUBLE
             applied["nbboPriceCap_removed"] = True
     except Exception:
         pass
 
     return applied
+
