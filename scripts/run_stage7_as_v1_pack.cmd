@@ -1,5 +1,6 @@
 @echo off
 set REPO=C:\Users\mukol\ARGS-Core-v1
+cd /d "%REPO%"
 
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass ^
   -File "%REPO%\scripts\stage7_as_v1_pack.ps1" ^
