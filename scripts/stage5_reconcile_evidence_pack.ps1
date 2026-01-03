@@ -56,7 +56,7 @@ function _parse_jsonl([string]$p) {
 
 function _try_open_orders([string]$exe, [object[]]$prefix, [string]$ibHost, [int]$port, [int]$clientId, [int]$timeoutS, [int]$waitS, [string]$outJsonl, [string]$stdoutPath, [string]$stderrPath) {
 
-  $mods = @("args.ibkr.ibkr_open_orders_snapshotter_v0b","args.ibkr.ibkr_open_orders_snapshotter_v0")
+  $mods = @("args.ibkr.ibkr_open_orders_snapshotter_v0")
 
   foreach ($m in $mods) {
 
@@ -248,3 +248,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 8) | Write-Output
   exit 2
 }
+
