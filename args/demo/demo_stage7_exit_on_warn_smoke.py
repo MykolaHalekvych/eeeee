@@ -11,7 +11,9 @@ from args.stage7.as_v1 import main as as_v1_main
 
 
 def _read_json(p: Path) -> Dict[str, Any]:
-    return json.loads(p.read_text(encoding="utf-8"))
+    # BOM-safe: Notepad may write UTF-8 with BOM
+    return json.loads(p.read_text(encoding="utf-8-sig"))
+
 
 
 def _write_json(p: Path, obj: Any) -> None:
