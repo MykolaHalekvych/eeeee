@@ -1,13 +1,14 @@
 <# 
-STAGE5_RECONCILE_EVIDENCE_PACK_V2 (ops-grade, Start-Process)
+STAGE5_RECONCILE_EVIDENCE_PACK_V2 (ops-grade, Start-Process, WD + anti-flap)
 
 - Safe control_plane access under StrictMode
 - Snapshot defaults from control_plane ibkr.snapshot_* if present
 - Fallbacks: snapshot_* -> ibkr.* -> hard defaults (client_id=79, timeouts=60, wait_s=12)
 - Auto-detect supported CLI flags via "--help"
 - Retry handshake_timeout (positions)
-- Authoritative latest: args\data\reconcile_evidence_latest_v2.json
-- Optional compat latest: args\data\reconcile_evidence_latest.json (-WriteCompatLatest)
+- Authoritative latest (LAST OK): args\data\reconcile_evidence_latest_v2.json
+- Last fail report: args\data\reconcile_evidence_last_fail_v2.json
+- Optional compat (LAST OK): args\data\reconcile_evidence_latest.json (-WriteCompatLatest)
 - Exit codes: 0=OK, 1=WARN, 2=FAIL
 #>
 
@@ -32,6 +33,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+# will be set after Repo is resolved
+$script:REPO_WD = ""
 
 function _utc() { [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ") }
 function _utc_dir() { [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ") }
@@ -73,8 +77,19 @@ function _tail_text([string]$s, [int]$n=500) {
 function _run_proc([string]$exe, [string[]]$argsList, [string]$stdoutPath, [string]$stderrPath) {
   Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $exe -ArgumentList $argsList -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+  $startArgs = @{
+    FilePath = $exe
+    ArgumentList = $argsList
+    NoNewWindow = $true
+    Wait = $true
+    PassThru = $true
+    RedirectStandardOutput = $stdoutPath
+    RedirectStandardError = $stderrPath
+  }
+  if ($script:REPO_WD) { $startArgs.WorkingDirectory = $script:REPO_WD }
+
+  $p = Start-Process @startArgs
   return [int]$p.ExitCode
 }
 
@@ -148,9 +163,12 @@ try {
   if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
   else { $Repo = (Resolve-Path -LiteralPath $Repo).Path }
 
+  $script:REPO_WD = $Repo
+
   $cpPath       = Join-Path $Repo "args\data\control_plane.json"
-  $latestV2Path = Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json"
-  $latestCompat = Join-Path $Repo "args\data\reconcile_evidence_latest.json"
+  $latestV2Path = Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json"          # LAST OK
+  $lastFailV2   = Join-Path $Repo "args\data\reconcile_evidence_last_fail_v2.json"      # LAST FAIL
+  $latestCompat = Join-Path $Repo "args\data\reconcile_evidence_latest.json"            # legacy LAST OK
 
   $cp = _read_json $cpPath
   $ib = $null
@@ -344,8 +362,18 @@ try {
   }
 
   _write_json (Join-Path $outDir "reconcile_summary.json") $report 60
-  _write_json $latestV2Path $report 60
-  if ($WriteCompatLatest) { _write_json $latestCompat $report 60 }
+
+  # ---- anti-flap: keep latest_v2 as LAST OK ----
+  if ($report.status -eq "OK") {
+    _write_json $latestV2Path $report 60
+    if ($WriteCompatLatest) { _write_json $latestCompat $report 60 }
+  } else {
+    _write_json $lastFailV2 $report 60
+    if (-not (Test-Path -LiteralPath $latestV2Path)) {
+      _write_json $latestV2Path $report 60
+      if ($WriteCompatLatest -and -not (Test-Path -LiteralPath $latestCompat)) { _write_json $latestCompat $report 60 }
+    }
+  }
 
   $report | ConvertTo-Json -Depth 10 -Compress
   exit $exitCode
@@ -359,8 +387,11 @@ try {
     exit_code=2
     error=$err
   }
-  _write_json (Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json") $fail 20
-  if ($WriteCompatLatest) { _write_json (Join-Path $Repo "args\data\reconcile_evidence_latest.json") $fail 20 }
+  $repoOut = if ($Repo) { $Repo } else { (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+  _write_json (Join-Path $repoOut "args\data\reconcile_evidence_last_fail_v2.json") $fail 20
+  if (-not (Test-Path -LiteralPath (Join-Path $repoOut "args\data\reconcile_evidence_latest_v2.json"))) {
+    _write_json (Join-Path $repoOut "args\data\reconcile_evidence_latest_v2.json") $fail 20
+  }
   $fail | ConvertTo-Json -Depth 5 -Compress
   exit 2
 }
