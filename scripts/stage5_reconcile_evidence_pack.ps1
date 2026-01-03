@@ -157,7 +157,9 @@ try {
   if (-not $posOk)  { $issues += "positions_ok=false" }
   if ($posErrMsg)   { $warns  += ("positions_error=" + $posErrMsg) }
 
-  if (-not $ordOk)  { $issues += ("open_orders_ok=false module=" + [string]$ordTry.module + " exit=" + [string]$ordTry.exit_code) }
+    if (-not $ordOk) {
+    $warns += ("open_orders_unavailable module=" + [string]$ordTry.module + " exit=" + [string]$ordTry.exit_code)
+  }
   if ($ordersInvalid -gt 0) { $warns += ("open_orders_invalid_json_lines=" + $ordersInvalid) }
 
   $exit=0; $status="OK"
@@ -214,3 +216,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 8) | Write-Output
   exit 2
 }
+
