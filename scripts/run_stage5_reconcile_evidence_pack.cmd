@@ -1,22 +1,11 @@
 @echo off
-setlocal
-set "SCRIPT_DIR=%~dp0"
-for %%I in ("%SCRIPT_DIR%\..") do set "REPO=%%~fI"
-pushd "%REPO%" >nul
+set REPO=C:\Users\mukol\ARGS-Core-v1
 
-set "LOGDIR=%REPO%\args\logs"
-if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass ^
+  -File "%REPO%\scripts\stage5_reconcile_evidence_pack_v2.ps1" ^
+  -Repo "%REPO%" ^
+  -WriteCompatLatest ^
+  >> "%REPO%\args\logs\stage5_reconcile_v2_stdout.log" ^
+  2>> "%REPO%\args\logs\stage5_reconcile_v2_stderr.log"
 
-set "OUT=%LOGDIR%\stage5_reconcile_stdout.log"
-set "ERR=%LOGDIR%\stage5_reconcile_stderr.log"
-echo ==== %DATE% %TIME% ====>>"%OUT%"
-echo ==== %DATE% %TIME% ====>>"%ERR%"
-
-set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-"%PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT_DIR%stage5_reconcile_evidence_pack.ps1" -Repo "%REPO%" 1>>"%OUT%" 2>>"%ERR%"
-
-set "RC=%ERRORLEVEL%"
-echo EXITCODE=%RC%>>"%OUT%"
-
-popd >nul
-exit /b %RC%
+exit /b %ERRORLEVEL%
