@@ -18,6 +18,19 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 
 
+
+# Ensure ibapi serializer doesn't crash: some ibapi versions read order.nbboPriceCap unconditionally.
+try:
+    from ibapi.common import UNSET_DOUBLE  # type: ignore
+except Exception:
+    UNSET_DOUBLE = 1.7976931348623157e308
+
+try:
+    from ibapi.order import Order as _IbOrder  # type: ignore
+    if not hasattr(_IbOrder, "nbboPriceCap"):
+        setattr(_IbOrder, "nbboPriceCap", UNSET_DOUBLE)
+except Exception:
+    pass
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_EXEC_DISABLED = 2
@@ -672,6 +685,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

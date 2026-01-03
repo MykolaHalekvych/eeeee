@@ -5,6 +5,14 @@ try:
 except Exception:
     UNSET_DOUBLE = 1.7976931348623157e308
 
+# Ensure serializer compatibility: some ibapi versions expect Order.nbboPriceCap to exist.
+try:
+    from ibapi.order import Order as _IbOrder  # type: ignore
+    if not hasattr(_IbOrder, "nbboPriceCap"):
+        setattr(_IbOrder, "nbboPriceCap", UNSET_DOUBLE)
+except Exception:
+    pass
+
 from typing import Any, Dict
 
 def sanitize_order_v0(o: Any) -> Dict[str, Any]:
@@ -45,4 +53,5 @@ def sanitize_order_v0(o: Any) -> Dict[str, Any]:
         pass
 
     return applied
+
 
