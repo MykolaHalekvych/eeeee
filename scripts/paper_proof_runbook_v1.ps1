@@ -56,6 +56,13 @@ Write-Host ""
 
 $cp = Read-Json $cpPath
 
+# Resolve client id from control plane if present; fallback to parameter
+$ResolvedClientId = $ClientId
+try {
+  if ($cp.client_id) { $ResolvedClientId = [int]$cp.client_id }
+} catch {}
+
+
 $executionMode = ($cp.execution_mode | ForEach-Object { "$_" }).ToUpper()
 $globalMode = ($cp.global_mode | ForEach-Object { "$_" }).ToUpper()
 $enablePaper = [bool]$cp.enable_paper_execution
@@ -97,7 +104,7 @@ Write-Host ("py -3.11 -m args.stage5.terminal_scenarios.terminal_scenarios_v1 " 
             "--contract-json `"$ContractRel`" --symbol $Symbol")
 Write-Host ""
 Write-Host "   If positions snapshot missing, generate it (example):"
-Write-Host ("py -3.11 -m args.ibkr.ibkr_positions_snapshotter_v0 --host $IbHost --port $Port --client-id $ClientId --timeout-s 25")
+Write-Host ("py -3.11 -m args.ibkr.ibkr_positions_snapshotter_v0 --host $IbHost --port $Port --client-id $ResolvedClientId --timeout-s 25")
 Write-Host ""
 Write-Host "4) FILL ROUNDTRIP (position==0 only; requires global_mode=HALT + --confirm-roundtrip YES + --confirm-fill YES)"
 Write-Host ("py -3.11 -m args.stage5.terminal_scenarios.terminal_scenarios_v1 " +
