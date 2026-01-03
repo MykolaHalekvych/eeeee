@@ -1,7 +1,9 @@
 <# 
 STAGE7_AS_V1_PACK_V2 (ops-grade)
 
-- Preflight: require reconcile_evidence_latest_v2.json status=OK
+- Preflight: require reconcile_evidence_latest_v2.json status=OK or WARN
+  - OK/WARN  -> proceed to run AS v1
+  - FAIL/UNKNOWN/missing/unreadable -> WARN exit 1 (do not run AS)
 - Runs AS v1 (intents + FSM), no trading actions
 - Uses Start-Process with WorkingDirectory=$Repo to avoid "No module named 'args'" under SYSTEM
 - Writes:
@@ -49,6 +51,13 @@ function _tail([string]$p, [int]$n=120) {
   try { return ((Get-Content -LiteralPath $p -Tail $n) -join "`n") } catch { return "" }
 }
 
+function _norm_status([object]$x) {
+  if ($null -eq $x) { return "UNKNOWN" }
+  $s = ("" + $x).Trim().ToUpper()
+  if ([string]::IsNullOrWhiteSpace($s)) { return "UNKNOWN" }
+  return $s
+}
+
 try {
   if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
   else { $Repo = (Resolve-Path -LiteralPath $Repo).Path }
@@ -71,14 +80,16 @@ try {
     exit 1
   }
 
-  $st = [string]($rec.status)
-  if ($st.ToUpper() -ne "OK") {
+  $st = _norm_status $rec.status
+
+  # REQUIRED: allow OK or WARN only
+  if (($st -ne "OK") -and ($st -ne "WARN")) {
     $out = [ordered]@{
       schema="stage7_as_v1_pack_v2"
       ts_utc=_utc
       status="WARN"
       exit_code=1
-      reason="reconcile_v2_not_ok"
+      reason="reconcile_v2_not_ok_or_warn"
       reconcile_status=$st
       path=$reconcileV2
     }
@@ -122,6 +133,7 @@ try {
     exit_code=$exitCode
     repo=$Repo
     reconcile_v2_path=$reconcileV2
+    reconcile_v2_status=$st
     python_exe=$pyExe
     python_prefix=@($prefix)
     as_stdout_path=$logOut
