@@ -361,11 +361,10 @@ def pick_intent(
     blocked_by: List[str] = []
     reason: List[str] = []
 
-    if not gate_ok:
-        blocked_by.append(f"{gate_tag}_not_ok")
-
+    # Hard blocks
     if open_orders > 0:
         blocked_by.append("open_orders_present")
+        return "NONE", None, 0, 0.0, ["open_orders_present"], blocked_by
 
     if not sig:
         blocked_by.append("signals_missing")
@@ -387,14 +386,26 @@ def pick_intent(
             blocked_by.append("mode_blocks_exit")
             return "NONE", None, 0, confidence, ["mode_blocks_exit"], blocked_by
 
+        # exit-on-warn gate: if gate is not OK, we must not emit exit/TP/REDUCE intents
+        if not gate_ok:
+            blocked_by.append(f"{gate_tag}_not_ok")
+
         if tp:
             reason.append("tp_signal")
+            if not gate_ok:
+                return "NONE", None, 0, confidence, reason, blocked_by
             return "TP", ("SELL" if pos_qty > 0 else "BUY"), max(1, min(qty, abs(int(pos_qty)))), confidence, reason, blocked_by
+
         if reduce:
             reason.append("reduce_signal")
+            if not gate_ok:
+                return "NONE", None, 0, confidence, reason, blocked_by
             return "REDUCE", ("SELL" if pos_qty > 0 else "BUY"), max(1, min(qty, abs(int(pos_qty)))), confidence, reason, blocked_by
+
         if exit_:
             reason.append("exit_signal")
+            if not gate_ok:
+                return "NONE", None, 0, confidence, reason, blocked_by
             return "EXIT", ("SELL" if pos_qty > 0 else "BUY"), max(1, abs(int(pos_qty))), confidence, reason, blocked_by
 
         return "NONE", None, 0, confidence, ["in_position_no_exit_signal"], blocked_by
@@ -405,6 +416,12 @@ def pick_intent(
         if not allow_entry:
             blocked_by.append("mode_blocks_entry")
             return "NONE", None, 0, confidence, reason, blocked_by
+
+        # entry gate: ENTER only when gate_ok (soak OK and reconcile OK)
+        if not gate_ok:
+            blocked_by.append(f"{gate_tag}_not_ok")
+            return "NONE", None, 0, confidence, reason, blocked_by
+
         return "ENTER", side, qty, confidence, reason, blocked_by
 
     return "NONE", None, 0, confidence, ["no_entry_signal"], blocked_by
@@ -482,6 +499,8 @@ def main() -> int:
 
     if soak_status != "OK":
         warns.append(f"soak_gate_not_ok:{soak_status}")
+    if reconcile_status == "WARN":
+        warns.append("reconcile_warn")
     if reconcile_status not in ("OK", "WARN"):
         warns.append(f"reconcile_not_ok:{reconcile_status}")
     if execution_mode == "UNKNOWN":
@@ -560,8 +579,9 @@ def main() -> int:
             "open_orders": open_orders,
         }
 
-    status = "OK" if enter_gate_ok else "WARN"
-    exit_code = 0 if enter_gate_ok else 1
+    # IMPORTANT: process-level OK if exits are allowed (exit-on-warn). Entries may still be blocked.
+    status = "OK" if exit_gate_ok else "WARN"
+    exit_code = 0 if exit_gate_ok else 1
 
     out = {
         "schema": "as_v1_latest",
@@ -607,4 +627,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
