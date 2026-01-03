@@ -76,10 +76,13 @@ try {
     } catch {}
   }
 
-  $changed = $true
-  if ($cursor -and $cursor.last_tail_sha256 -eq $tailSha) {
-    # If tail sha identical, treat as no change
-    $changed = $false
+    $changed = $true
+  if ($cursor) {
+    $prevSize  = 0
+    try { $prevSize = [int64]$cursor.last_events_size_bytes } catch { $prevSize = 0 }
+    $prevMtime = [string]$cursor.last_events_mtime_utc
+    $prevTail  = [string]$cursor.last_tail_sha256
+    $changed = ($prevSize -ne $size) -or ($prevMtime -ne $mtimeUtc) -or ($prevTail -ne $tailSha)
   }
 
   if (-not $changed) {
@@ -149,3 +152,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 5) | Write-Output
   exit 2
 }
+
