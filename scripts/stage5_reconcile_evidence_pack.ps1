@@ -56,7 +56,7 @@ function _parse_jsonl([string]$p) {
   return [ordered]@{ objs=$objs; invalid=$invalid }
 }
 
-function _try_open_orders([string]$exe, [object[]]$prefix, [string]$host, [int]$port, [int]$clientId, [int]$cto, [int]$to, [int]$wait, [string]$outJsonl, [string]$stdoutPath, [string]$stderrPath) {
+function _try_open_orders([string]$exe, [object[]]$prefix, [string]$IbHost, [int]$port, [int]$clientId, [int]$cto, [int]$to, [int]$wait, [string]$outJsonl, [string]$stdoutPath, [string]$stderrPath) {
   $mods = @(
     "args.ibkr.ibkr_open_orders_snapshotter_v0b",
     "args.ibkr.ibkr_open_orders_snapshotter_v0"
@@ -68,7 +68,7 @@ function _try_open_orders([string]$exe, [object[]]$prefix, [string]$host, [int]$
 
     $argv = @($prefix + @(
       "-m", $m,
-      "--host", $host,
+      "--host", $IbHost,
       "--port", "$port",
       "--client-id", "$clientId",
       "--connect-timeout-s", "$cto",
@@ -252,3 +252,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 8) | Write-Output
   exit 2
 }
+
