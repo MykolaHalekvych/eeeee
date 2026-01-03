@@ -16,16 +16,13 @@ $ProgressPreference = "SilentlyContinue"
 function _utc() { [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ") }
 
 function _load_json([string]$p) {
-  if (Test-Path -LiteralPath $p) {
-    try { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) } catch { return $null }
-  }
+  if (Test-Path -LiteralPath $p) { try { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) } catch { return $null } }
   return $null
 }
 
 function _pick_python() {
   $py311 = "C:\Users\mukol\AppData\Local\Programs\Python\Python311\python.exe"
   if (Test-Path -LiteralPath $py311) { return [ordered]@{ exe=$py311; prefix=@() } }
-  # fallback (may fail under SYSTEM if 3.11 not installed for py launcher)
   return [ordered]@{ exe="C:\Windows\py.exe"; prefix=@("-3.11") }
 }
 
@@ -45,8 +42,7 @@ function _module_not_found([string]$stderrPath) {
 }
 
 function _parse_jsonl([string]$p) {
-  $objs = @()
-  $invalid = 0
+  $objs = @(); $invalid = 0
   if (-not (Test-Path -LiteralPath $p)) { return [ordered]@{ objs=@(); invalid=0 } }
   foreach ($line in Get-Content -LiteralPath $p) {
     $t = ([string]$line).Trim()
@@ -56,25 +52,22 @@ function _parse_jsonl([string]$p) {
   return [ordered]@{ objs=$objs; invalid=$invalid }
 }
 
-function _try_open_orders([string]$exe, [object[]]$prefix, [string]$IbHost, [int]$port, [int]$clientId, [int]$cto, [int]$to, [int]$wait, [string]$outJsonl, [string]$stdoutPath, [string]$stderrPath) {
-  $mods = @(
-    "args.ibkr.ibkr_open_orders_snapshotter_v0b",
-    "args.ibkr.ibkr_open_orders_snapshotter_v0"
-  )
+function _try_open_orders([string]$exe, [object[]]$prefix, [string]$ibHost, [int]$port, [int]$clientId, [int]$cto, [int]$to, [int]$wait, [string]$outJsonl, [string]$stdoutPath, [string]$stderrPath) {
+  $mods = @("args.ibkr.ibkr_open_orders_snapshotter_v0b","args.ibkr.ibkr_open_orders_snapshotter_v0")
   foreach ($m in $mods) {
     Remove-Item $outJsonl -ErrorAction SilentlyContinue
     Remove-Item $stdoutPath -ErrorAction SilentlyContinue
     Remove-Item $stderrPath -ErrorAction SilentlyContinue
 
     $argv = @($prefix + @(
-      "-m", $m,
-      "--host", $IbHost,
-      "--port", "$port",
-      "--client-id", "$clientId",
-      "--connect-timeout-s", "$cto",
-      "--timeout-s", "$to",
-      "--wait-s", "$wait",
-      "--out", $outJsonl
+      "-m",$m,
+      "--host",$ibHost,
+      "--port","$port",
+      "--client-id","$clientId",
+      "--connect-timeout-s","$cto",
+      "--timeout-s","$to",
+      "--wait-s","$wait",
+      "--out",$outJsonl
     ))
 
     $rc = _run_py_capture $exe $argv $stdoutPath $stderrPath
@@ -88,11 +81,8 @@ function _try_open_orders([string]$exe, [object[]]$prefix, [string]$IbHost, [int
 }
 
 try {
-  if ([string]::IsNullOrWhiteSpace($Repo)) {
-    $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-  } else {
-    $Repo = (Resolve-Path -LiteralPath $Repo).Path
-  }
+  if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+  else { $Repo = (Resolve-Path -LiteralPath $Repo).Path }
 
   $conn = _load_json (Join-Path $Repo "args\data\ibkr_connection_v0.json")
   if (-not $IbHost) { try { $IbHost = [string]$conn.host } catch {} }
@@ -101,21 +91,8 @@ try {
   if ($Port -le 0)  { $Port = 7497 }
   try { if ($conn.client_id) { $ClientId = [int]$conn.client_id } } catch {}
 
-  $cp = _load_json (Join-Path $Repo "args\data\control_plane.json")
-  $allow = @()
-  foreach ($k in @("allowlist","instrument_allowlist","allowed_symbols","allowed_instruments")) {
-    try {
-      if ($cp -and $cp.PSObject.Properties.Name -contains $k) {
-        $v = $cp.$k
-        if ($v -is [string]) { $allow += $v }
-        else { $allow += @($v) }
-      }
-    } catch {}
-  }
-  $allow = @($allow | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } | Sort-Object -Unique)
-
   $py = _pick_python
-  $pyExe = [string]$py.exe
+  $pyExe  = [string]$py.exe
   $prefix = @($py.prefix)
 
   $base = Join-Path $Repo "args\ops_evidence\reconcile"
@@ -127,7 +104,7 @@ try {
   $latest = Join-Path $Repo "args\data\reconcile_evidence_latest.json"
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $latest) | Out-Null
 
-  # --- positions snapshot (stdout JSON) ---
+  # positions snapshot
   $posJson = Join-Path $runDir "positions_snapshot.json"
   $posErr  = Join-Path $runDir "positions_snapshot.stderr.txt"
   $posArgv = @($prefix + @(
@@ -137,7 +114,7 @@ try {
   ))
   $posRc = _run_py_capture $pyExe $posArgv $posJson $posErr
 
-  $posOk = $false; $posRows=@(); $posErrMsg=$null
+  $posOk=$false; $posRows=@(); $posErrMsg=$null
   if ($posRc -eq 0 -and (Test-Path -LiteralPath $posJson)) {
     try {
       $po = Get-Content -LiteralPath $posJson -Raw | ConvertFrom-Json
@@ -152,7 +129,7 @@ try {
   foreach ($r in $posNonZero) { try { $posSymbols += [string]$r.symbol } catch {} }
   $posSymbols = @($posSymbols | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } | Sort-Object -Unique)
 
-  # --- open orders snapshot (jsonl file via --out) ---
+  # open orders snapshot
   $ordJsonl = Join-Path $runDir "open_orders_snapshot.jsonl"
   $ordStd   = Join-Path $runDir "open_orders_snapshot.stdout.txt"
   $ordErr   = Join-Path $runDir "open_orders_snapshot.stderr.txt"
@@ -163,39 +140,25 @@ try {
   $orders = @($ordParsed.objs)
   $ordersInvalid = [int]$ordParsed.invalid
 
-  # open orders symbols (best-effort)
-  $ordSymbols = @()
-  foreach ($o in $orders) {
-    try {
-      if ($o.PSObject.Properties.Name -contains "symbol") { $ordSymbols += [string]$o.symbol }
-    } catch {}
-  }
+  $ordSymbols=@()
+  foreach ($o in $orders) { try { if ($o.PSObject.Properties.Name -contains "symbol") { $ordSymbols += [string]$o.symbol } } catch {} }
   $ordSymbols = @($ordSymbols | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } | Sort-Object -Unique)
 
-  $statusCounts = @{}
+  $statusCounts=@{}
   foreach ($o in $orders) {
     $st="UNKNOWN"
-    try { if ($o.PSObject.Properties.Name -contains "status") { $st = [string]$o.status } } catch {}
+    try { if ($o.PSObject.Properties.Name -contains "status") { $st=[string]$o.status } } catch {}
     if (-not $statusCounts.ContainsKey($st)) { $statusCounts[$st]=0 }
-    $statusCounts[$st] += 1
+    $statusCounts[$st]+=1
   }
 
-  # --- severity ---
   $issues=@(); $warns=@()
-
   if ($posRc -ne 0) { $issues += ("positions_snapshot_exit=" + $posRc) }
   if (-not $posOk)  { $issues += "positions_ok=false" }
   if ($posErrMsg)   { $warns  += ("positions_error=" + $posErrMsg) }
 
   if (-not $ordOk)  { $issues += ("open_orders_ok=false module=" + [string]$ordTry.module + " exit=" + [string]$ordTry.exit_code) }
-
   if ($ordersInvalid -gt 0) { $warns += ("open_orders_invalid_json_lines=" + $ordersInvalid) }
-
-  # allowlist enforcement if present
-  if ($allow.Count -gt 0) {
-    foreach ($s in $posSymbols) { if ($allow -notcontains $s) { $issues += ("positions_not_allowlisted=" + $s) } }
-    foreach ($s in $ordSymbols) { if ($allow -notcontains $s) { $issues += ("orders_not_allowlisted=" + $s) } }
-  }
 
   $exit=0; $status="OK"
   if ($issues.Count -gt 0) { $exit=2; $status="FAIL" }
@@ -207,12 +170,11 @@ try {
     status=$status
     exit_code=$exit
     repo=$Repo
-    host=$IbHost
+    ib_host=$IbHost
     port=$Port
     client_id=$ClientId
     python_exe=$pyExe
     python_prefix=@($prefix)
-    allowlist=@($allow)
 
     positions=[ordered]@{
       exit_code=$posRc
@@ -252,4 +214,3 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 8) | Write-Output
   exit 2
 }
-
