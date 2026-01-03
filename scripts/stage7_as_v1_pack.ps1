@@ -1,9 +1,10 @@
+
 <# 
 STAGE7_AS_V1_PACK (safe)
 
-- Runs AS v1 (intents + FSM) and writes args/data/as_v1_latest.json
-- No trading actions, no IBKR calls
-- Exit codes: 0=OK, 1=WARN, 2=FAIL
+- Preflight: require reconcile_evidence_latest_v2.json status=OK
+- Runs AS v1 (intents + FSM), no trading, no IBKR calls
+- Exit codes: 0=OK, 1=WARN (preflight failed), 2=FAIL
 #>
 
 [CmdletBinding()]
@@ -23,9 +24,33 @@ function _pick_python() {
   return "C:\Windows\py.exe"
 }
 
+function _read_json_retry([string]$p, [int]$tries=6, [int]$sleepMs=80) {
+  for ($i=0; $i -lt $tries; $i++) {
+    if (Test-Path -LiteralPath $p) {
+      try { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) } catch { Start-Sleep -Milliseconds $sleepMs; continue }
+    }
+    Start-Sleep -Milliseconds $sleepMs
+  }
+  return $null
+}
+
 try {
   if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
   else { $Repo = (Resolve-Path -LiteralPath $Repo).Path }
+
+  $reconcileV2 = Join-Path $Repo "args\data\reconcile_evidence_latest_v2.json"
+  $rec = _read_json_retry $reconcileV2 6 80
+
+  if (-not $rec) {
+    Write-Output (@{schema="stage7_as_v1_pack_v1"; ts_utc=_utc; status="WARN"; exit_code=1; reason="reconcile_v2_missing_or_unreadable"; path=$reconcileV2} | ConvertTo-Json -Depth 6 -Compress)
+    exit 1
+  }
+
+  $st = [string]($rec.status)
+  if ($st.ToUpper() -ne "OK") {
+    Write-Output (@{schema="stage7_as_v1_pack_v1"; ts_utc=_utc; status="WARN"; exit_code=1; reason="reconcile_v2_not_ok"; reconcile_status=$st; path=$reconcileV2} | ConvertTo-Json -Depth 6 -Compress)
+    exit 1
+  }
 
   $pyExe = _pick_python
   $logOut = Join-Path $Repo "args\logs\stage7_as_v1_stdout.log"
@@ -37,8 +62,6 @@ try {
         -RedirectStandardOutput $logOut -RedirectStandardError $logErr
 
   $rc = [int]$p.ExitCode
-
-  # normalize to 0/1/2 for ops
   if ($rc -eq 0) { exit 0 }
   if ($rc -eq 1) { exit 1 }
   exit 2
