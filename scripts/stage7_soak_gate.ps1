@@ -57,7 +57,15 @@ try {
       if ($ageEv -gt $MaxEvidenceAgeSec) { $warns += ("evidence_stale_sec=" + [Math]::Round($ageEv,1)) }
     }
   }
-
+  # --- Terminal proof freshness ---
+  $proofCursor = Join-Path $Repo "args\data\stage5_terminal_proof.cursor.json"
+  if (-not (Test-Path -LiteralPath $proofCursor)) {
+    $warns += "terminal_proof_cursor_missing"
+  } else {
+    $fiP = Get-Item -LiteralPath $proofCursor
+    $ageP = ([DateTime]::UtcNow - $fiP.LastWriteTimeUtc).TotalSeconds
+    if ($ageP -gt 21600) { $warns += ("terminal_proof_stale_sec=" + [Math]::Round($ageP,1)) }  # 6h
+  }
   # --- Task status ---
   $t1 = _task_status "ARGS_IBKR_Tap_1m"
   $t2 = _task_status "ARGS_Stage5_Evidence_5m"
@@ -103,3 +111,4 @@ catch {
   ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
