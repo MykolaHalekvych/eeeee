@@ -1,0 +1,3 @@
+﻿{"ts_utc":"2026-01-03T00:01:00Z","orderId":2,"permId":102,"clientId":17,"symbol":"SPY","status":"Submitted","totalQty":10,"filled":0,"remaining":10}
+{"ts_utc":"2026-01-03T00:01:01Z","orderId":2,"permId":102,"clientId":17,"symbol":"SPY","execId":"E3","execQty":4,"execPrice":100.5}
+{"ts_utc":"2026-01-03T00:01:02Z","orderId":2,"permId":102,"clientId":17,"symbol":"SPY","status":"Cancelled","totalQty":10,"filled":4,"remaining":6}

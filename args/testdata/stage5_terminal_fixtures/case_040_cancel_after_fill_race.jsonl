@@ -1,0 +1,2 @@
+﻿{"ts_utc":"2026-01-03T00:04:00Z","orderId":5,"permId":105,"clientId":17,"symbol":"SPY","status":"Filled","totalQty":5,"filled":5,"remaining":0}
+{"ts_utc":"2026-01-03T00:04:01Z","orderId":5,"permId":105,"clientId":17,"symbol":"SPY","status":"Cancelled","totalQty":5,"filled":5,"remaining":0}

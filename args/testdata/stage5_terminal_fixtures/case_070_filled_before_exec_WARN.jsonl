@@ -1,0 +1,2 @@
+﻿{"ts_utc":"2026-01-03T00:07:00Z","orderId":20,"permId":120,"clientId":17,"symbol":"SPY","status":"Filled","totalQty":2,"filled":2,"remaining":0}
+{"ts_utc":"2026-01-03T00:07:02Z","orderId":20,"permId":120,"clientId":17,"symbol":"SPY","execId":"L1","execQty":2,"execPrice":100.0}

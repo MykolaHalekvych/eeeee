@@ -1,0 +1,5 @@
+﻿{"ts_utc":"2026-01-03T00:00:00Z","orderId":1,"permId":101,"clientId":17,"symbol":"SPY","status":"Submitted","totalQty":10,"filled":0,"remaining":10}
+{"ts_utc":"2026-01-03T00:00:01Z","orderId":1,"permId":101,"clientId":17,"symbol":"SPY","execId":"E1","execQty":3,"execPrice":100.0}
+{"ts_utc":"2026-01-03T00:00:02Z","orderId":1,"permId":101,"clientId":17,"symbol":"SPY","execId":"E1","execQty":3,"execPrice":100.0}
+{"ts_utc":"2026-01-03T00:00:03Z","orderId":1,"permId":101,"clientId":17,"symbol":"SPY","execId":"E2","execQty":7,"execPrice":101.0}
+{"ts_utc":"2026-01-03T00:00:04Z","orderId":1,"permId":101,"clientId":17,"symbol":"SPY","status":"Filled","totalQty":10,"filled":10,"remaining":0}

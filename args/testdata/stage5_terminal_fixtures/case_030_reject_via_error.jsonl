@@ -1,0 +1,2 @@
+﻿{"ts_utc":"2026-01-03T00:02:00Z","orderId":3,"permId":103,"clientId":17,"symbol":"SPY","status":"Submitted","totalQty":1,"filled":0,"remaining":1}
+{"ts_utc":"2026-01-03T00:02:01Z","orderId":3,"permId":103,"clientId":17,"symbol":"SPY","errorCode":201,"errorMsg":"Order rejected: invalid price"}
