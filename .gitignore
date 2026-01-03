@@ -180,3 +180,8 @@ args/logs/stop.flag
 args/ops_evidence/terminal/
 args/data/ibkr_positions_snapshot_v0.json
 
+
+# local script backups
+scripts/*.bak_*
+scripts/*.bak_*.*
+
