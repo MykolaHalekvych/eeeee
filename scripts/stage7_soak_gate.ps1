@@ -71,6 +71,18 @@ try {
     $proofCursor = Join-Path $Repo "args\data\stage5_terminal_proof.cursor.json"
     if (Test-Path -LiteralPath $proofCursor) {
       $pc = Get-Content -LiteralPath $proofCursor -Raw | ConvertFrom-Json
+      # cursor-level reject fallback (deterministic for tests; robust in real ops)
+      try {
+        if ($pc.seen_keys) {
+          foreach ($k in $pc.seen_keys) {
+            if ((([string]$k).ToUpperInvariant()) -like "REJECTED|*") {
+              if (-not ($issues -contains "terminal_reject_detected")) { $issues += "terminal_reject_detected" }
+              break
+            }
+          }
+        }
+      } catch { }
+
       $lastDir = [string]$pc.last_out_dir
       if ($lastDir) {
         $sumPath = Join-Path $lastDir "proof_summary.json"
@@ -362,5 +374,6 @@ catch {
   ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
 
 
