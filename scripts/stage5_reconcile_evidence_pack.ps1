@@ -71,7 +71,7 @@ function _parse_json_lines([string]$path) {
   $invalid = 0
   if (-not (Test-Path -LiteralPath $path)) { return [ordered]@{ objs=@(); invalid=0 } }
   foreach ($line in Get-Content -LiteralPath $path) {
-    $t = ($line ?? "").Trim()
+    $t = ([string]$line).Trim()
     if (-not $t.StartsWith("{")) { continue }
     try { $objs += ($t | ConvertFrom-Json) } catch { $invalid += 1 }
   }
@@ -231,3 +231,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
