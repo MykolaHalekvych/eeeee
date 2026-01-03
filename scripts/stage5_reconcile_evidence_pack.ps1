@@ -374,8 +374,14 @@ try {
 
   if ($posRc -ne 0) { $issues += ("positions_snapshot_exit=" + $posRc) }
   if (-not $posOk)  { $issues += "positions_ok=false" }
-  if ($posErrMsg)   { $warns  += ("positions_error=" + $posErrMsg) }
-
+  if ($posErrMsg) {
+    $m = [string]$posErrMsg
+    # IBKR informational "farm connection is OK" codes -> ignore (INFO)
+    $farmOk = ($m -match "Market data farm connection is OK" -or $m -match "HMDS data farm connection is OK" -or $m -match "Sec-def data farm connection is OK")
+    if (-not $farmOk) {
+      $warns += ("positions_error=" + $posErrMsg)
+    }
+  }
   if (-not $ordOk)  { $issues += ("open_orders_ok=false module=" + [string]$ordTry.module + " exit=" + [string]$ordTry.exit_code) }
 
   if ($ordersInvalid -gt 0) { $warns += ("open_orders_invalid_json_lines=" + $ordersInvalid) }
@@ -631,8 +637,14 @@ try {
 
   if ($posRc -ne 0) { $issues += ("positions_snapshot_exit=" + $posRc) }
   if (-not $posOk)  { $issues += "positions_ok=false" }
-  if ($posErrMsg)   { $warns  += ("positions_error=" + $posErrMsg) }
-
+  if ($posErrMsg) {
+    $m = [string]$posErrMsg
+    # IBKR informational "farm connection is OK" codes -> ignore (INFO)
+    $farmOk = ($m -match "Market data farm connection is OK" -or $m -match "HMDS data farm connection is OK" -or $m -match "Sec-def data farm connection is OK")
+    if (-not $farmOk) {
+      $warns += ("positions_error=" + $posErrMsg)
+    }
+  }
   if (-not $ordOk)  { $issues += ("open_orders_ok=false module=" + [string]$ordTry.module + " exit=" + [string]$ordTry.exit_code) }
 
   if ($ordersInvalid -gt 0) { $warns += ("open_orders_invalid_json_lines=" + $ordersInvalid) }
@@ -773,6 +785,7 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 8) | Write-Output
   exit 2
 }
+
 
 
 
