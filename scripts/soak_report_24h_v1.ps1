@@ -49,7 +49,7 @@ try {
   if ($counts.FAIL -gt 0) { $worst="FAIL"; $exit=2 } elseif ($counts.WARN -gt 0) { $worst="WARN"; $exit=1 }
 
   $maxGapSec = 0
-  $gateSorted = $gate | Sort-Object { _parse_ts $_.ts_utc }
+  $gateSorted = @($gate | Sort-Object { _parse_ts $_.ts_utc })
   for ($i=1; $i -lt $gateSorted.Count; $i++) {
     $a=_parse_ts $gateSorted[$i-1].ts_utc; $b=_parse_ts $gateSorted[$i].ts_utc
     if ($a -and $b) { $gap=($b-$a).TotalSeconds; if ($gap -gt $maxGapSec) { $maxGapSec=[int][Math]::Round($gap,0) } }
@@ -62,7 +62,7 @@ try {
       try { $dt=[DateTime]::ParseExact($d.Name,"yyyyMMddTHHmmssZ",$null).ToUniversalTime(); if ($dt -ge $cutoff) { $evidenceDirs += $d.Name } } catch {}
     }
   }
-  $evidenceDirs = $evidenceDirs | Sort-Object -Descending
+  $evidenceDirs = @($evidenceDirs | Sort-Object -Descending)
 
   $proofDirs=@(); $reject=0; $fill=0; $cancel=0
   if (Test-Path -LiteralPath $proofBase) {
@@ -82,7 +82,7 @@ try {
       }
     }
   }
-  $proofDirs = $proofDirs | Sort-Object -Descending
+  $proofDirs = @($proofDirs | Sort-Object -Descending)
 
   $tap=$null; if (Test-Path -LiteralPath $tapHealth) { try { $tap=Get-Content $tapHealth -Raw | ConvertFrom-Json } catch {} }
 
@@ -106,3 +106,4 @@ catch {
   ($out | ConvertTo-Json -Compress -Depth 6) | Write-Output
   exit 2
 }
+
