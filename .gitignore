@@ -185,3 +185,7 @@ args/data/ibkr_positions_snapshot_v0.json
 scripts/*.bak_*
 scripts/*.bak_*.*
 
+
+# control plane local backups
+args/data/control_plane.json.bak_*
+
