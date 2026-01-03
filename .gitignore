@@ -189,3 +189,7 @@ scripts/*.bak_*.*
 # control plane local backups
 args/data/control_plane.json.bak_*
 
+
+# Ops artifacts (latest)
+args/data/baseline_*_latest*.json
+
