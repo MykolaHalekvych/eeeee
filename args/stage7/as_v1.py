@@ -151,6 +151,24 @@ def _as_path(repo: Path, p: Any) -> Optional[Path]:
         return None
 
 
+def _base_symbol_from_local(local_symbol: str) -> str:
+    # IBKR localSymbol часто: "MHG MAR26" или "MHG   MAR26" — берём первый токен
+    s = (local_symbol or "").strip()
+    if not s:
+        return ""
+    return s.split()[0].strip()
+
+
+def _symbol_match(sym: str, symbol: str, local_symbol: str) -> bool:
+    sym = (sym or "").strip()
+    if not sym:
+        return False
+    symbol = (symbol or "").strip()
+    local_symbol = (local_symbol or "").strip()
+    token = _base_symbol_from_local(local_symbol)
+    return (symbol == sym) or (local_symbol == sym) or (token == sym)
+
+
 # -------------------------
 # Control plane
 # -------------------------
@@ -285,6 +303,12 @@ def resolve_open_orders_snapshot_path(repo: Path, reconcile_obj: Any) -> Optiona
 
 
 def load_positions_qty_from_snapshot(pos_snapshot: Any, sym: str) -> float:
+    """
+    Match position rows by:
+      - row.symbol == sym
+      - row.localSymbol == sym
+      - base token of row.localSymbol (e.g. "MHG MAR26" -> "MHG") == sym
+    """
     if not isinstance(pos_snapshot, dict):
         return 0.0
     rows = pos_snapshot.get("rows")
@@ -292,8 +316,11 @@ def load_positions_qty_from_snapshot(pos_snapshot: Any, sym: str) -> float:
         for r in rows:
             if not isinstance(r, dict):
                 continue
-            s = str(r.get("symbol") or r.get("localSymbol") or "")
-            if s == sym:
+
+            s_symbol = str(r.get("symbol") or "").strip()
+            s_local = str(r.get("localSymbol") or "").strip()
+
+            if _symbol_match(sym, s_symbol, s_local):
                 try:
                     return float(r.get("position") or 0.0)
                 except Exception:
@@ -302,6 +329,12 @@ def load_positions_qty_from_snapshot(pos_snapshot: Any, sym: str) -> float:
 
 
 def count_open_orders_from_jsonl(path: Path, sym: str, max_lines: int = 5000) -> int:
+    """
+    Match open orders lines by:
+      - obj.symbol == sym OR obj.ticker == sym
+      - obj.localSymbol == sym
+      - base token of obj.localSymbol == sym
+    """
     if not path.exists():
         return 0
     c = 0
@@ -319,8 +352,11 @@ def count_open_orders_from_jsonl(path: Path, sym: str, max_lines: int = 5000) ->
             continue
         if not isinstance(obj, dict):
             continue
-        s = str(obj.get("symbol") or obj.get("localSymbol") or obj.get("ticker") or "")
-        if s == sym:
+
+        s_symbol = str(obj.get("symbol") or obj.get("ticker") or "").strip()
+        s_local = str(obj.get("localSymbol") or "").strip()
+
+        if _symbol_match(sym, s_symbol, s_local):
             c += 1
     return c
 
@@ -386,7 +422,7 @@ def pick_intent(
             blocked_by.append("mode_blocks_exit")
             return "NONE", None, 0, confidence, ["mode_blocks_exit"], blocked_by
 
-        # exit-on-warn gate: if gate is not OK, we must not emit exit/TP/REDUCE intents
+        # exit-on-warn: if gate is not OK, do not emit exit-like intents
         if not gate_ok:
             blocked_by.append(f"{gate_tag}_not_ok")
 
@@ -473,7 +509,9 @@ def main() -> int:
     reconcile_ok = (reconcile_status == "OK")
     reconcile_warn = (reconcile_status == "WARN")
 
-    # exit-on-warn gates
+    # exit-on-warn gates:
+    # - ENTER only when soak OK and reconcile OK
+    # - EXIT/REDUCE/TP allowed when soak OK and reconcile OK/WARN
     enter_gate_ok = soak_ok and reconcile_ok
     exit_gate_ok = soak_ok and (reconcile_ok or reconcile_warn)
 
@@ -568,6 +606,11 @@ def main() -> int:
                 "reason": reason,
                 "actionable": actionable,
                 "blocked_by": blocked_by,
+                # debug helpers
+                "pos_qty": float(pos_qty),
+                "open_orders": int(open_orders),
+                "gate_tag": gate_tag,
+                "gate_ok": bool(gate_ok_for_symbol),
             }
         )
 
@@ -579,7 +622,7 @@ def main() -> int:
             "open_orders": open_orders,
         }
 
-    # IMPORTANT: process-level OK if exits are allowed (exit-on-warn). Entries may still be blocked.
+    # IMPORTANT: process-level OK if exits are allowed (exit-on-warn).
     status = "OK" if exit_gate_ok else "WARN"
     exit_code = 0 if exit_gate_ok else 1
 
