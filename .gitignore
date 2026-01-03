@@ -165,3 +165,8 @@ args/data/soak_report_7d.json
 /args/data/soak_report_24h_latest.json
 /args/ops_evidence/soak_reports/
 # soak reports runtime outputs
+
+# reconcile evidence runtime outputs
+/args/data/reconcile_evidence_latest.json
+/args/ops_evidence/reconcile/
+
