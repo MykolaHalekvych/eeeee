@@ -60,23 +60,37 @@ def _u(x: Any) -> str:
 
 
 def sanitize_order_v0(order: Order) -> Dict[str, Any]:
+    """
+    Bulletproof sanitizer for ibapi Order:
+      - force eTradeOnly/firmQuoteOnly False when possible
+      - remove nbboPriceCap ONLY if present in __dict__ (safe across ibapi variants)
+    Never raises.
+    """
     changes: Dict[str, Any] = {}
+    d = getattr(order, "__dict__", None)
+
+    # Remove deprecated/invalid attribute safely
+    try:
+        if isinstance(d, dict) and "nbboPriceCap" in d:
+            prev = d.get("nbboPriceCap")
+            d.pop("nbboPriceCap", None)
+            changes["nbboPriceCap"] = {"prev": prev, "deleted": True}
+    except Exception:
+        pass
+
     for k in ("eTradeOnly", "firmQuoteOnly"):
-        if hasattr(order, k):
+        try:
+            prev = getattr(order, k) if hasattr(order, k) else None
+            setattr(order, k, False)
+            changes[k] = {"prev": prev, "new": False}
+        except Exception:
             try:
-                prev = getattr(order, k)
-                setattr(order, k, False)
-                changes[k] = {"prev": prev, "new": False}
+                if isinstance(d, dict):
+                    prev = d.get(k)
+                    d[k] = False
+                    changes[k] = {"prev": prev, "new": False, "via": "__dict__"}
             except Exception:
                 pass
-
-    if hasattr(order, "nbboPriceCap"):
-        try:
-            prev = getattr(order, "nbboPriceCap")
-            delattr(order, "nbboPriceCap")
-            changes["nbboPriceCap"] = {"prev": prev, "new": None, "deleted": True}
-        except Exception:
-            pass
 
     return changes
 
@@ -506,14 +520,14 @@ def main() -> int:
                 raise RuntimeError("FILL_CONFIRM_REQUIRED: pass --confirm-fill YES")
 
             pos = _load_positions_snapshot(repo)
-            if not pos:
-                raise RuntimeError("POSITIONS_SNAPSHOT_MISSING: write args/data/ibkr_positions_snapshot_v0.json first")
+            if not pos and str(args.confirm_roundtrip).strip().upper() != "YES":
+                raise RuntimeError("POSITIONS_SNAPSHOT_MISSING: write args/data/ibkr_positions_snapshot_v0.json OR pass --confirm-roundtrip YES")
 
             sym = str(contract_item.get("symbol") or args.symbol or "")
             if not sym:
                 raise RuntimeError("SYMBOL_REQUIRED_FOR_FILL")
 
-            qty_pos = _extract_pos_qty(pos, sym)
+            qty_pos = _extract_pos_qty(pos, sym) if pos else 0.0
 
             # If position exists -> EXIT ONLY (allowed under ONLY_EXITS/HALT)
             if abs(qty_pos) > 0.0:
@@ -657,3 +671,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
