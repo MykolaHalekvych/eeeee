@@ -1,0 +1,9 @@
+﻿{
+  "global": { "stop_flag_path": "stop.flag" },
+  "engineering": {
+    "mode": "DRYRUN",
+    "allowed_factories": ["OBS_FACTORY","REL_FACTORY","CICD_FACTORY","SEC_FACTORY","DATA_FACTORY"],
+    "allowed_products": ["observability-pack-v0","reliability-pack-v0","cicd-release-pack-v0"],
+    "forbidden_path_prefixes": ["fin/","private/","secrets/","stage5/","stage7/"]
+  }
+}
