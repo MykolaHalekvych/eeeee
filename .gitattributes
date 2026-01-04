@@ -1,0 +1,14 @@
+﻿# Deterministic EOL for ENGINE artifacts
+* text=auto
+
+# Code & manifests: LF
+*.py  text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+
+manifests/** text eol=lf
+packs/**     text eol=lf
+templates/** text eol=lf
+
+# PowerShell scripts: CRLF is fine on Windows
+*.ps1 text eol=crlf
