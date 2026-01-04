@@ -2,20 +2,10 @@
 .SYNOPSIS
   Stage5.B terminal proofs window (PAPER+HALT+stop.flag) with auto-revert.
 
-.DESCRIPTION
-  - Requires baseline CLEAN before running (open_orders=0), unless -AllowDirtyBaseline is set
-  - Arms PAPER execution (execution_mode=PAPER, enable_paper_execution=true, global_mode=HALT + args/logs/stop.flag)
-  - Runs proof-pack wrapper v1c for:
-      1) scenario_cancelled_v1
-      2) scenario_rejected_v1
-      3) scenario_fill_v1 (ROUNDTRIP)
-  - Reverts back to DRYRUN + removes stop.flag (default)
-  - JSON-only stdout (single object)
-
 Exit codes:
-  0 = ALL_PASS
-  1 = NOT_READY / FAIL / BLOCKED (incl. IB 399 delayed placement)
-  2 = INFRA / SCRIPT_ERROR
+  0 = ALL_PASS (CANCELLED + REJECTED + FILLED_ROUNDTRIP AND post baseline clean)
+  1 = BLOCKED/FAIL (baseline dirty, IB 399 blocked, any proof failed, post baseline not clean)
+  2 = INFRA/SCRIPT_ERROR
 #>
 
 [CmdletBinding()]
@@ -66,43 +56,49 @@ function Run-Proof([string]$repo, [string[]]$argsList) {
   } finally { Pop-Location }
 }
 
-# ---- Report ----
+$exit = 2
+$armed = $false
+
 $report = @{
   schema="stage5_terminal_proofs_window_v1"
   ts_utc=(Get-Date).ToUniversalTime().ToString("o")
   repo=$repo
   ok=$false
+  reason=$null
+
   pre_baseline=$null
   armed=$false
   proofs=@()
   post_baseline=$null
+
   reverted=$false
+  revert_error=$null
+
   exit_code=2
   errors=@()
 }
 
 try {
-  # Pre-check baseline
+  # Pre baseline
   $pre = Run-BaselineCheck $repo
   $report.pre_baseline = $pre
 
   if (-not $AllowDirtyBaseline) {
     if ([int]$pre.rc -ne 0) {
-      $report.exit_code = 1
+      $exit = 1
       $report.reason = "BLOCKED_BASELINE_DIRTY_RUN_CLEAN_WINDOW_FIRST"
-      $report.ok = $false
-      $report | ConvertTo-Json -Depth 8
-      exit 1
+      throw "BLOCKED_BASELINE_DIRTY"
     }
   }
 
-  # Arm PAPER execution for proofs
+  # Arm PAPER execution
   New-Item -ItemType Directory -Force -Path (Split-Path $stopFlag) | Out-Null
   Patch-ControlPlane $repo "PAPER" $true "HALT"
   New-Item -ItemType File -Force -Path $stopFlag | Out-Null
+  $armed = $true
   $report.armed = $true
 
-  # ---- Proof 1: CANCELLED ----
+  # Proof 1: CANCELLED
   $p1 = Run-Proof $repo @(
     "--scenario","scenario_cancelled_v1",
     "--confirm-paper",
@@ -112,7 +108,7 @@ try {
   )
   $report.proofs += @{ name="CANCELLED"; rc=$p1.rc; obj=$p1.obj }
 
-  # ---- Proof 2: REJECTED ----
+  # Proof 2: REJECTED
   $p2 = Run-Proof $repo @(
     "--scenario","scenario_rejected_v1",
     "--confirm-paper",
@@ -121,7 +117,7 @@ try {
   )
   $report.proofs += @{ name="REJECTED"; rc=$p2.rc; obj=$p2.obj }
 
-  # ---- Proof 3: FILLED_ROUNDTRIP ----
+  # Proof 3: FILLED_ROUNDTRIP
   $p3 = Run-Proof $repo @(
     "--scenario","scenario_fill_v1",
     "--confirm-paper",
@@ -137,39 +133,45 @@ try {
   $post = Run-BaselineCheck $repo
   $report.post_baseline = $post
 
-  # Decide exit code:
-  # 0 if all proofs rc==0 AND post baseline clean
+  # Decide
   $allOk = $true
   foreach ($pp in $report.proofs) { if ([int]$pp.rc -ne 0) { $allOk = $false } }
   $postClean = ([int]$post.rc -eq 0)
 
   if ($allOk -and $postClean) {
     $report.ok = $true
-    $report.exit_code = 0
-    $report | ConvertTo-Json -Depth 10
-    exit 0
+    $exit = 0
+  } else {
+    $report.ok = $false
+    $exit = 1
+    if (-not $allOk) { $report.reason = "PROOF_FAILED_OR_BLOCKED" }
+    elseif (-not $postClean) { $report.reason = "POST_BASELINE_NOT_CLEAN" }
   }
 
-  $report.ok = $false
-  $report.exit_code = 1
-  $report | ConvertTo-Json -Depth 10
-  exit 1
-
 } catch {
-  $report.errors += @{ where="exception"; error=($_ | Out-String) }
-  $report.ok = $false
-  $report.exit_code = 2
-  $report | ConvertTo-Json -Depth 10
-  exit 2
-
+  # If we threw a deliberate BLOCKED_BASELINE_DIRTY, keep exit=1
+  if ($exit -eq 2) {
+    $exit = 2
+    $report.errors += @{ where="exception"; error=($_ | Out-String) }
+  }
 } finally {
   if (-not $NoRevert) {
     try {
+      # Always revert to DRYRUN and remove stop.flag (safe even if not armed)
       Patch-ControlPlane $repo "DRYRUN" $false "ONLY_EXITS"
       if (Test-Path $stopFlag) { Remove-Item $stopFlag -Force }
       $report.reverted = $true
     } catch {
-      # do not write extra output; revert errors already captured if needed
+      $report.reverted = $false
+      $report.revert_error = ($_ | Out-String)
+      if ($exit -eq 0) { $exit = 2 }  # do not allow PASS if revert failed
     }
   }
 }
+
+$report.ts_end_utc = (Get-Date).ToUniversalTime().ToString("o")
+$report.exit_code = $exit
+
+# JSON-only stdout (single object)
+$report | ConvertTo-Json -Depth 12
+exit $exit
