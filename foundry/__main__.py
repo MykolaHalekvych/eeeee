@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -12,7 +12,7 @@ EXIT_FAIL = 1
 EXIT_INFRA = 2
 
 def load_json(p: Path) -> dict:
-    return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(p.read_text(encoding="utf-8-sig"))
 
 def stop_or_halt(cp: dict) -> tuple[bool,str]:
     stop_path = cp.get("global", {}).get("stop_flag_path", "stop.flag")

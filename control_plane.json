@@ -1,4 +1,4 @@
-﻿{
+{
   "global": { "stop_flag_path": "stop.flag" },
   "engineering": {
     "mode": "DRYRUN",
