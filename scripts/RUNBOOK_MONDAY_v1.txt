@@ -1,0 +1,22 @@
+﻿MONDAY / LIVE WINDOW RUNBOOK (ARGS Core v1)
+
+1) Start unattended OPS (DRYRUN):
+   scripts\run_auto_loop_guarded_v1.cmd   (every 5 minutes)
+
+2) Baseline clean (repeat until EXIT=0):
+   scripts\run_baseline_clean_window_v1.cmd
+   - EXIT=0 CLEAN
+   - EXIT=1 WAIT_MARKET_OPEN / PENDING_CANCEL
+   - EXIT=2 INFRA FAIL
+
+3) Stage5.B terminal proofs window (only after baseline CLEAN):
+   scripts\run_stage5_terminal_proofs_window_v1.cmd
+   - EXIT=0 PASS
+   - EXIT=1 BLOCKED/FAIL (see JSON)
+   - EXIT=2 INFRA/SCRIPT ERROR
+
+4) If PASS: supervised soak 2–4h, then decide about unattended PAPER execution.
+
+Notes:
+- EXIT=255 means you killed the batch job (Ctrl+C + Y). Ignore; rerun.
+- Never arm PAPER execution when baseline is DIRTY.
