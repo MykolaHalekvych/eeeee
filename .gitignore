@@ -200,4 +200,7 @@ args/data/baseline_*_latest*.json
 legacy_fin/**/__pycache__/
 legacy_fin/**/logs/
 legacy_fin/**/.pytest_cache/
+# args/data is runtime; keep only placeholder
+args/data/*
+!args/data/.keep
 
