@@ -15,11 +15,14 @@ from ibapi.wrapper import EWrapper
 
 SCHEMA = "baseline_cleaner_v1"
 
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+
 def _read_json_sig(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_bytes().decode("utf-8-sig"))
+
 
 def _extract_ibkr_conn(cp: Dict[str, Any], fallback_client_id: int = 79) -> Tuple[str, int, int]:
     host = "localhost"
@@ -33,13 +36,18 @@ def _extract_ibkr_conn(cp: Dict[str, Any], fallback_client_id: int = 79) -> Tupl
         client_id = int(ibkr.get("client_id") or client_id)
 
     if "client_id" in cp:
-        try: client_id = int(cp["client_id"])
-        except Exception: pass
+        try:
+            client_id = int(cp["client_id"])
+        except Exception:
+            pass
     if "snapshot_client_id" in cp:
-        try: client_id = int(cp["snapshot_client_id"])
-        except Exception: pass
+        try:
+            client_id = int(cp["snapshot_client_id"])
+        except Exception:
+            pass
 
     return host, port, client_id
+
 
 def _run_module(repo: Path, mod_args: List[str], timeout_s: int) -> Tuple[int, str, str]:
     p = subprocess.run(
@@ -50,6 +58,7 @@ def _run_module(repo: Path, mod_args: List[str], timeout_s: int) -> Tuple[int, s
         timeout=timeout_s,
     )
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+
 
 def _parse_open_orders_jsonl(path: Path) -> List[Dict[str, Any]]:
     orders: List[Dict[str, Any]] = []
@@ -67,18 +76,38 @@ def _parse_open_orders_jsonl(path: Path) -> List[Dict[str, Any]]:
             orders.append(obj)
     return orders
 
+
 class _App(EWrapper, EClient):
     def __init__(self) -> None:
         EClient.__init__(self, self)
         self.ready = threading.Event()
         self.errors: List[Dict[str, Any]] = []
         self.status: List[Dict[str, Any]] = []
+
     def nextValidId(self, orderId: int) -> None:
         self.ready.set()
+
     def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
         self.errors.append({"reqId": reqId, "code": errorCode, "msg": errorString})
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:
-        self.status.append({"orderId": orderId, "status": status, "filled": filled, "remaining": remaining, "permId": permId})
+
+    def orderStatus(
+        self,
+        orderId,
+        status,
+        filled,
+        remaining,
+        avgFillPrice,
+        permId,
+        parentId,
+        lastFillPrice,
+        clientId,
+        whyHeld,
+        mktCapPrice,
+    ) -> None:
+        self.status.append(
+            {"orderId": orderId, "status": status, "filled": filled, "remaining": remaining, "permId": permId}
+        )
+
 
 def _gate_check(cp: Dict[str, Any], stop_flag: Path, require_halt: bool) -> Tuple[bool, str]:
     if not stop_flag.exists():
@@ -90,6 +119,7 @@ def _gate_check(cp: Dict[str, Any], stop_flag: Path, require_halt: bool) -> Tupl
     if require_halt and str(cp.get("global_mode", "")).upper() != "HALT":
         return False, "GLOBAL_MODE_NOT_HALT"
     return True, "OK"
+
 
 def _attempt_cancel(host: str, port: int, client_id: int, order_ids: List[int], sleep_s: float) -> Dict[str, Any]:
     attempt: Dict[str, Any] = {
@@ -113,11 +143,13 @@ def _attempt_cancel(host: str, port: int, client_id: int, order_ids: List[int], 
 
         attempt["connect_ok"] = True
 
-        # Best-effort: bind/open orders to this client (safe)
-        try:
-            app.reqAutoOpenOrders(True)
-        except Exception:
-            pass
+        # NOTE: IBKR allows auto-bind only for the default client_id=0.
+        # Calling reqAutoOpenOrders(True) for client_id!=0 yields code=321 noise.
+        if client_id == 0:
+            try:
+                app.reqAutoOpenOrders(True)
+            except Exception:
+                pass
 
         for oid in order_ids:
             try:
@@ -145,6 +177,7 @@ def _attempt_cancel(host: str, port: int, client_id: int, order_ids: List[int], 
             app.disconnect()
         except Exception:
             pass
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -204,24 +237,35 @@ def main() -> int:
         return 2
 
     host, port, primary_client_id = _extract_ibkr_conn(cp, fallback_client_id=79)
-    if args.host: host = args.host
-    if args.port: port = int(args.port)
-    if args.client_id: primary_client_id = int(args.client_id)
+    if args.host:
+        host = args.host
+    if args.port:
+        port = int(args.port)
+    if args.client_id:
+        primary_client_id = int(args.client_id)
 
     # Snapshot BEFORE (read-only)
     mod = [
         "args.ibkr.ibkr_open_orders_snapshotter_v0",
-        "--host", host,
-        "--port", str(port),
-        "--client-id", str(primary_client_id),
-        "--timeout-s", str(args.timeout_s),
-        "--wait-s", str(args.wait_s),
-        "--out", str(out_orders),
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--client-id",
+        str(primary_client_id),
+        "--timeout-s",
+        str(args.timeout_s),
+        "--wait-s",
+        str(args.wait_s),
+        "--out",
+        str(out_orders),
     ]
     rc, stdout, stderr = _run_module(repo, mod, timeout_s=max(15, args.timeout_s + 20))
     if rc != 0:
         report["status"] = "INFRA_FAIL"
-        report["errors"].append({"where": "open_orders_snapshot_before", "rc": rc, "stderr": stderr, "stdout": stdout[:300]})
+        report["errors"].append(
+            {"where": "open_orders_snapshot_before", "rc": rc, "stderr": stderr, "stdout": stdout[:300]}
+        )
         report_out.parent.mkdir(parents=True, exist_ok=True)
         report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False))
@@ -231,7 +275,9 @@ def main() -> int:
     order_ids = [o.get("order_id") for o in before_orders if isinstance(o.get("order_id"), int)]
     report["before"] = {
         "count": len(before_orders),
-        "statuses": sorted({(o.get("order_state") or {}).get("status") for o in before_orders if (o.get("order_state") or {}).get("status")}),
+        "statuses": sorted(
+            {(o.get("order_state") or {}).get("status") for o in before_orders if (o.get("order_state") or {}).get("status")}
+        ),
         "order_ids": order_ids,
         "out_path": str(out_orders),
         "conn": {"host": host, "port": port, "client_id": primary_client_id},
@@ -247,6 +293,7 @@ def main() -> int:
 
     # Candidate client_ids: primary + fallbacks (unique)
     candidates: List[int] = []
+
     def _add(cid: int) -> None:
         if cid not in candidates:
             candidates.append(cid)
@@ -268,7 +315,9 @@ def main() -> int:
     rc2, stdout2, stderr2 = _run_module(repo, mod, timeout_s=max(15, args.timeout_s + 20))
     if rc2 != 0:
         report["status"] = "INFRA_FAIL"
-        report["errors"].append({"where": "open_orders_snapshot_after", "rc": rc2, "stderr": stderr2, "stdout": stdout2[:300]})
+        report["errors"].append(
+            {"where": "open_orders_snapshot_after", "rc": rc2, "stderr": stderr2, "stdout": stdout2[:300]}
+        )
         report_out.parent.mkdir(parents=True, exist_ok=True)
         report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False))
@@ -299,6 +348,7 @@ def main() -> int:
     report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
     return rc_out
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
