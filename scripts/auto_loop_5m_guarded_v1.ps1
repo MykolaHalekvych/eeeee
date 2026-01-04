@@ -2,17 +2,16 @@
 .SYNOPSIS
   Guarded autoloop wrapper: blocks execution when baseline is dirty.
 
-.DESCRIPTION
-  - Runs args.ops.baseline_check_v1
-  - Reads control_plane.json + stop.flag
+BEHAVIOR
+  - Runs baseline_check_v1 (read-only)
+  - Reads control_plane.json + stop.flag (execution gate)
   - If baseline dirty AND execution is armed (PAPER + enable_paper_execution=true + stop.flag exists) => exit 2 (HALT)
   - Otherwise runs scripts/auto_loop_5m.ps1
+  - Maps auto_loop exit codes:
+      0 => OK
+      1 => WARN (propagate as 1)
+      >=2 => HALT (2)
   - JSON-only stdout (single object)
-
-Exit codes:
-  0 = OK
-  1 = WARN (baseline dirty but execution NOT armed; autoloop still ran)
-  2 = FAIL/HALT (baseline dirty while execution armed OR infra fail OR exception)
 #>
 
 [CmdletBinding()]
@@ -27,7 +26,12 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $repo = (Resolve-Path $Repo).Path
-$stopFlag = Join-Path $repo "args\logs\stop.flag"
+
+# Execution gate stop.flag (used by paper proofs / execution arming)
+$stopFlagExec = Join-Path $repo "args\logs\stop.flag"
+# Autoloop stop.flag (if your core loop uses it)
+$stopFlagOps  = Join-Path $repo "args\data\stop.flag"
+
 $autoLoop = Join-Path $repo "scripts\auto_loop_5m.ps1"
 
 function Read-ControlPlane([string]$repo) {
@@ -45,21 +49,37 @@ function Run-BaselineCheck([string]$repo) {
     $rc = $LASTEXITCODE
     $obj = $null
     try { $obj = $out | ConvertFrom-Json } catch { $obj = @{ parse_error = "baseline_check_not_json"; raw = ($out | Out-String) } }
-    return @{ rc=$rc; raw=$out; obj=$obj }
+    return @{ rc=$rc; obj=$obj }
   } finally { Pop-Location }
+}
+
+function Tail-Text([string]$text, [int]$maxLines, [int]$maxChars) {
+  $lines = ($text -split "`r`n|`n|`r") | Where-Object { $_ -and $_.Trim().Length -gt 0 }
+  $tailLines = $lines | Select-Object -Last $maxLines
+  $tail = ($tailLines -join "`n")
+  if ($tail.Length -gt $maxChars) {
+    $tail = $tail.Substring($tail.Length - $maxChars)
+  }
+  return $tail
 }
 
 $report = @{
   schema = "auto_loop_5m_guarded_v1"
   ts_utc = (Get-Date).ToUniversalTime().ToString("o")
   repo = $repo
-  stop_flag_exists = (Test-Path $stopFlag)
+
+  stop_flag_exec_exists = (Test-Path $stopFlagExec)
+  stop_flag_ops_exists  = (Test-Path $stopFlagOps)
+
   control_plane = $null
   baseline = $null
+
   execution_armed = $false
   decision = "UNKNOWN"
+
   auto_loop_rc = $null
   auto_loop_output_tail = ""
+
   exit_code = 2
   errors = @()
 }
@@ -80,7 +100,7 @@ try {
 
   $execMode = ("" + $cp.execution_mode).ToUpper()
   $enable = [bool]$cp.enable_paper_execution
-  $armed = ($execMode -eq "PAPER") -and $enable -and (Test-Path $stopFlag)
+  $armed = ($execMode -eq "PAPER") -and $enable -and (Test-Path $stopFlagExec)
   $report.execution_armed = $armed
 
   $brc = [int]$b.rc
@@ -99,7 +119,7 @@ try {
     exit 2
   }
 
-  # Run autoloop (capture output, JSON-only wrapper output)
+  # Run autoloop (capture output; wrapper prints JSON only)
   Push-Location $repo
   try {
     $autoOut = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $autoLoop -Cycles $Cycles -IntervalSec $IntervalSec 2>&1 | Out-String
@@ -107,27 +127,38 @@ try {
   } finally { Pop-Location }
 
   $report.auto_loop_rc = $autoRC
-  $report.auto_loop_output_tail = ($autoOut.TrimEnd() | Select-Object -Last 1)
+  $report.auto_loop_output_tail = Tail-Text $autoOut 12 2000
 
-  # If baseline dirty but not armed: WARN if autoloop succeeded
-  if ($brc -eq 1 -and -not $armed -and $autoRC -eq 0) {
-    $report.decision = "WARN_BASELINE_DIRTY_BUT_EXECUTION_NOT_ARMED"
+  if ($autoRC -eq 0) {
+    if ($brc -eq 1 -and -not $armed) {
+      $report.decision = "WARN_BASELINE_DIRTY_EXECUTION_NOT_ARMED"
+      $report.exit_code = 1
+      $report | ConvertTo-Json -Depth 8
+      exit 1
+    }
+    $report.decision = "OK"
+    $report.exit_code = 0
+    $report | ConvertTo-Json -Depth 8
+    exit 0
+  }
+
+  if ($autoRC -eq 1) {
+    # Treat as WARN, not HALT
+    if ($brc -eq 1 -and -not $armed) {
+      $report.decision = "WARN_AUTO_LOOP_EXIT_1_AND_BASELINE_DIRTY"
+    } else {
+      $report.decision = "WARN_AUTO_LOOP_EXIT_1"
+    }
     $report.exit_code = 1
     $report | ConvertTo-Json -Depth 8
     exit 1
   }
 
-  if ($autoRC -eq 0) {
-    $report.decision = "OK"
-    $report.exit_code = 0
-    $report | ConvertTo-Json -Depth 8
-    exit 0
-  } else {
-    $report.decision = "HALT_AUTO_LOOP_NONZERO"
-    $report.exit_code = 2
-    $report | ConvertTo-Json -Depth 8
-    exit 2
-  }
+  # autoRC >= 2
+  $report.decision = "HALT_AUTO_LOOP_EXIT_GE2"
+  $report.exit_code = 2
+  $report | ConvertTo-Json -Depth 8
+  exit 2
 
 } catch {
   $report.decision = "HALT_EXCEPTION"
