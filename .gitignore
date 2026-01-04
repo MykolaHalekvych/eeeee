@@ -203,4 +203,6 @@ legacy_fin/**/.pytest_cache/
 # args/data is runtime; keep only placeholder
 args/data/*
 !args/data/.keep
+.gitattributes text eol=lf
+.gitattributes text eol=lf
 
