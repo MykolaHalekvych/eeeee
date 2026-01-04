@@ -1,0 +1,18 @@
+﻿{
+  "schema": "engine_product_v0",
+  "product_id": "cicd_release_pack_v0",
+  "title": "CI/CD Release Pack v0",
+  "version": "0.1.0",
+  "payload": {
+    "include_paths": [
+      "packs/cicd_release_pack_v0/**",
+      "templates/cicd_release_pack_v0/**"
+    ]
+  },
+  "runbook": {
+    "template_path": "templates/cicd_release_pack_v0/runbook.md"
+  },
+  "evidence": {
+    "min_required": ["policy_summary", "gate_summary"]
+  }
+}

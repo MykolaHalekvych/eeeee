@@ -1,0 +1,11 @@
+﻿{
+  "schema": "engine_factories_v0",
+  "factories": [
+    {
+      "factory_id": "local",
+      "kind": "local",
+      "description": "Local build factory (runs on developer machine)",
+      "default_out_dir": "dist"
+    }
+  ]
+}

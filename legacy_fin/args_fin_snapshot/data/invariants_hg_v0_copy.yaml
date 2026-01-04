@@ -1,0 +1,207 @@
+schema_version: args.ma.policy.v0
+policy_name: HG_5m_IBKR_PAPER_LABEL_v0
+instrument: HG
+timeframe: 5m
+environment: IBKR_PAPER_LABEL
+decision_set:
+  allowed:
+  - ALLOW
+  - REDUCE
+  - NO_TRADE
+  - UNKNOWN
+  - EXIT
+risk_envelope:
+  limits:
+    conf_min: 0.6
+    margin_max: 0.35
+    timestamp_drift_ms_max: 1000
+    missing_bars_max: 0
+blocks:
+  hard_gates:
+    rules:
+    - rule_id: data_integrity_gate
+      enabled: true
+      reason: Data integrity is not provable.
+      decision: UNKNOWN
+      enforce:
+      - NO_TRADE
+      when:
+        any:
+        - path: data.qc
+          op: eq
+          value: FAIL
+        - path: data.missing_bars
+          op: gt
+          value: 0
+        - path: data.stale_quotes
+          op: eq
+          value: true
+        - path: data.timestamp_drift_ms
+          op: gt
+          value: 1000
+    - rule_id: state_unknown_gate
+      enabled: true
+      reason: State is UNKNOWN or confidence is too low.
+      decision: NO_TRADE
+      enforce:
+      - NO_TRADE
+      when:
+        any:
+        - path: state.regime
+          op: eq
+          value: UNKNOWN
+        - path: state.confidence
+          op: lt
+          value: 0.6
+    - rule_id: holiday_gate
+      enabled: true
+      reason: Market session is closed/holiday (is_holiday=true).
+      decision: NO_TRADE
+      enforce:
+      - NO_TRADE
+      when:
+        any:
+        - path: session_flags.is_holiday
+          op: eq
+          value: true
+    - rule_id: weekly_close_gate
+      enabled: true
+      reason: Too close to weekly close (minutes_to_close <= 60).
+      decision: NO_TRADE
+      enforce:
+      - NO_TRADE
+      when:
+        any:
+        - path: session_flags.minutes_to_close
+          op: lt
+          value: 60
+    - rule_id: roll_expiry_gate
+      enabled: true
+      when:
+        any:
+        - path: roll_flags.in_roll_window
+          op: eq
+          value: true
+        - path: roll_flags.days_to_expiry
+          op: lte
+          value: 7
+      decision: NO_TRADE
+      enforce:
+      - NO_TRADE
+      reason: Contract is in roll/expiry window (days_to_expiry<=7 or in_roll_window=true).
+        New entries are forbidden.
+    - rule_id: baseline_allow_gate
+      enabled: true
+      reason: All safety conditions satisfied -> allow new entries.
+      decision: ALLOW
+      enforce: []
+      when:
+        all:
+        - path: data.qc
+          op: eq
+          value: PASS
+        - path: data.missing_bars
+          op: eq
+          value: 0
+        - path: data.stale_quotes
+          op: eq
+          value: false
+        - path: data.timestamp_drift_ms
+          op: lte
+          value: 1000
+        - path: exec.kill_switch
+          op: eq
+          value: false
+        - path: state.regime
+          op: neq
+          value: UNKNOWN
+        - path: state.confidence
+          op: gte
+          value: 0.6
+        - path: state.tail_risk
+          op: neq
+          value: UNKNOWN
+        - path: state.tail_risk
+          op: neq
+          value: UNRESOLVED
+        - path: risk.margin_usage
+          op: lte
+          value: 0.35
+        - path: market.liquidity
+          op: gte
+          value: 1.0
+        - path: session_flags.is_holiday
+          op: eq
+          value: false
+        - path: session_flags.minutes_to_close
+          op: gte
+          value: 60
+        - path: roll_flags.in_roll_window
+          op: eq
+          value: false
+        - path: roll_flags.days_to_expiry
+          op: gt
+          value: 7
+  kill_switch.triggers:
+    rules:
+    - rule_id: manual_kill_switch
+      enabled: true
+      reason: Manual kill-switch requested.
+      decision: EXIT
+      enforce:
+      - NO_TRADE
+      when:
+        all:
+        - path: exec.kill_switch
+          op: eq
+          value: true
+  margin_gates:
+    rules:
+    - rule_id: margin_usage_gate
+      enabled: true
+      reason: Margin usage above safe threshold.
+      decision: NO_TRADE
+      enforce: []
+      when:
+        all:
+        - path: risk.margin_usage
+          op: gt
+          value: 0.35
+  tail_risk_gates:
+    rules:
+    - rule_id: tail_unknown_gate
+      enabled: true
+      reason: Tail risk is UNKNOWN or UNRESOLVED.
+      decision: NO_TRADE
+      enforce: []
+      when:
+        all:
+        - path: state.tail_risk
+          op: in
+          value:
+          - UNKNOWN
+          - UNRESOLVED
+  liquidity_gates:
+    rules:
+    - rule_id: liquidity_floor
+      enabled: true
+      reason: Liquidity below minimum threshold.
+      decision: NO_TRADE
+      enforce: []
+      when:
+        all:
+        - path: market.liquidity
+          op: lt
+          value: 1.0
+  correlation_gates:
+    rules:
+    - rule_id: correlation_stub
+      enabled: false
+      reason: Stub correlation gate (disabled in v0).
+      decision: NO_TRADE
+      enforce: []
+      when:
+        all:
+        - path: stats.correlation
+          op: gt
+          value: 0.9
