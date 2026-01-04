@@ -1,11 +1,11 @@
 ﻿<#
 .SYNOPSIS
-  Stage5.B terminal proofs window (PAPER+HALT+stop.flag) with auto-revert.
+  Stage5.B terminal proofs window (PAPER+HALT+stop.flag) with per-proof baseline cleanup + auto-revert.
 
 Exit codes:
-  0 = ALL_PASS (CANCELLED + REJECTED + FILLED_ROUNDTRIP AND post baseline clean)
-  1 = BLOCKED/FAIL (baseline dirty, IB 399 blocked, any proof failed, post baseline not clean)
-  2 = INFRA/SCRIPT_ERROR
+  0 = ALL_PASS (all proofs rc==0 AND post baseline clean)
+  1 = BLOCKED/FAIL (baseline dirty, any proof failed/blocked, post baseline not clean)
+  2 = INFRA/SCRIPT_ERROR (exceptions, infra failures)
 #>
 
 [CmdletBinding()]
@@ -45,6 +45,17 @@ function Run-BaselineCheck([string]$repo) {
   } finally { Pop-Location }
 }
 
+function Run-BaselineCleaner([string]$repo) {
+  Push-Location $repo
+  try {
+    $out = py -3.11 -m args.ops.baseline_cleaner_v1 --repo $repo
+    $rc = $LASTEXITCODE
+    $obj = $null
+    try { $obj = $out | ConvertFrom-Json } catch { $obj = @{ parse_error = "baseline_cleaner_not_json"; raw = ($out | Out-String) } }
+    return @{ rc=$rc; obj=$obj }
+  } finally { Pop-Location }
+}
+
 function Run-Proof([string]$repo, [string[]]$argsList) {
   Push-Location $repo
   try {
@@ -57,7 +68,6 @@ function Run-Proof([string]$repo, [string[]]$argsList) {
 }
 
 $exit = 2
-$armed = $false
 
 $report = @{
   schema="stage5_terminal_proofs_window_v1"
@@ -68,7 +78,11 @@ $report = @{
 
   pre_baseline=$null
   armed=$false
+
   proofs=@()
+  baseline_steps=@()
+  cleanup_steps=@()
+
   post_baseline=$null
 
   reverted=$false
@@ -91,50 +105,50 @@ try {
     }
   }
 
-  # Arm PAPER execution
+  # Arm PAPER execution for proofs
   New-Item -ItemType Directory -Force -Path (Split-Path $stopFlag) | Out-Null
   Patch-ControlPlane $repo "PAPER" $true "HALT"
   New-Item -ItemType File -Force -Path $stopFlag | Out-Null
-  $armed = $true
   $report.armed = $true
 
-  # Proof 1: CANCELLED
-  $p1 = Run-Proof $repo @(
-    "--scenario","scenario_cancelled_v1",
-    "--confirm-paper",
-    "--contract-json",$ContractJson,
-    "--symbol",$Symbol,
-    "--lmt-price",$LmtPrice
+  $proofDefs = @(
+    @{ name="CANCELLED"; args=@("--scenario","scenario_cancelled_v1","--confirm-paper","--contract-json",$ContractJson,"--symbol",$Symbol,"--lmt-price",$LmtPrice) },
+    @{ name="REJECTED"; args=@("--scenario","scenario_rejected_v1","--confirm-paper","--contract-json",$ContractJson,"--symbol",$Symbol) },
+    @{ name="FILLED_ROUNDTRIP"; args=@("--scenario","scenario_fill_v1","--confirm-paper","--confirm-fill","YES","--confirm-roundtrip","YES","--roundtrip-qty",$RoundtripQty,"--contract-json",$ContractJson,"--symbol",$Symbol) }
   )
-  $report.proofs += @{ name="CANCELLED"; rc=$p1.rc; obj=$p1.obj }
 
-  # Proof 2: REJECTED
-  $p2 = Run-Proof $repo @(
-    "--scenario","scenario_rejected_v1",
-    "--confirm-paper",
-    "--contract-json",$ContractJson,
-    "--symbol",$Symbol
-  )
-  $report.proofs += @{ name="REJECTED"; rc=$p2.rc; obj=$p2.obj }
+  foreach ($def in $proofDefs) {
+    # Run proof
+    $p = Run-Proof $repo $def.args
+    $report.proofs += @{ name=$def.name; rc=$p.rc; obj=$p.obj }
 
-  # Proof 3: FILLED_ROUNDTRIP
-  $p3 = Run-Proof $repo @(
-    "--scenario","scenario_fill_v1",
-    "--confirm-paper",
-    "--confirm-fill","YES",
-    "--confirm-roundtrip","YES",
-    "--roundtrip-qty",$RoundtripQty,
-    "--contract-json",$ContractJson,
-    "--symbol",$Symbol
-  )
-  $report.proofs += @{ name="FILLED_ROUNDTRIP"; rc=$p3.rc; obj=$p3.obj }
+    # Baseline after proof
+    $b1 = Run-BaselineCheck $repo
+    $report.baseline_steps += @{ stage=("$($def.name)_after_proof"); rc=$b1.rc; obj=$b1.obj }
 
-  # Post baseline
+    # If dirty, attempt cleanup (cancel-only, gated)
+    if ([int]$b1.rc -ne 0) {
+      $c = Run-BaselineCleaner $repo
+      $report.cleanup_steps += @{ stage=("$($def.name)_cleanup"); rc=$c.rc; obj=$c.obj }
+
+      $b2 = Run-BaselineCheck $repo
+      $report.baseline_steps += @{ stage=("$($def.name)_after_cleanup"); rc=$b2.rc; obj=$b2.obj }
+    }
+
+    # Fail-fast: if proof not ok, stop chain
+    if ([int]$p.rc -ne 0) {
+      $exit = 1
+      $report.reason = "PROOF_FAILED_OR_BLOCKED"
+      break
+    }
+  }
+
+  # Post baseline (final)
   $post = Run-BaselineCheck $repo
   $report.post_baseline = $post
 
-  # Decide
-  $allOk = $true
+  $allRan = ($report.proofs.Count -eq 3)
+  $allOk = $allRan
   foreach ($pp in $report.proofs) { if ([int]$pp.rc -ne 0) { $allOk = $false } }
   $postClean = ([int]$post.rc -eq 0)
 
@@ -142,29 +156,29 @@ try {
     $report.ok = $true
     $exit = 0
   } else {
+    if ($exit -eq 2) { $exit = 1 }
     $report.ok = $false
-    $exit = 1
-    if (-not $allOk) { $report.reason = "PROOF_FAILED_OR_BLOCKED" }
-    elseif (-not $postClean) { $report.reason = "POST_BASELINE_NOT_CLEAN" }
+    if (-not $report.reason) {
+      if (-not $allOk) { $report.reason = "PROOF_FAILED_OR_BLOCKED" }
+      elseif (-not $postClean) { $report.reason = "POST_BASELINE_NOT_CLEAN" }
+      else { $report.reason = "NOT_ALL_PROOFS_RAN" }
+    }
   }
 
 } catch {
-  # If we threw a deliberate BLOCKED_BASELINE_DIRTY, keep exit=1
-  if ($exit -eq 2) {
-    $exit = 2
+  if ($exit -eq 2 -and $report.reason -eq $null) {
     $report.errors += @{ where="exception"; error=($_ | Out-String) }
   }
 } finally {
   if (-not $NoRevert) {
     try {
-      # Always revert to DRYRUN and remove stop.flag (safe even if not armed)
       Patch-ControlPlane $repo "DRYRUN" $false "ONLY_EXITS"
       if (Test-Path $stopFlag) { Remove-Item $stopFlag -Force }
       $report.reverted = $true
     } catch {
       $report.reverted = $false
       $report.revert_error = ($_ | Out-String)
-      if ($exit -eq 0) { $exit = 2 }  # do not allow PASS if revert failed
+      if ($exit -eq 0) { $exit = 2 }
     }
   }
 }
@@ -172,6 +186,5 @@ try {
 $report.ts_end_utc = (Get-Date).ToUniversalTime().ToString("o")
 $report.exit_code = $exit
 
-# JSON-only stdout (single object)
-$report | ConvertTo-Json -Depth 12
+$report | ConvertTo-Json -Depth 14
 exit $exit
