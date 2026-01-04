@@ -197,3 +197,7 @@ args/data/baseline_*_latest*.json
 # Foundry outputs
 /dist/
 
+legacy_fin/**/__pycache__/
+legacy_fin/**/logs/
+legacy_fin/**/.pytest_cache/
+
