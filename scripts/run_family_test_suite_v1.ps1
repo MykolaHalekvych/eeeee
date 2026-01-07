@@ -102,6 +102,49 @@ function Invoke-PsFile {
 
   Ensure-Dir $SuiteEvidenceDir
 
+  $outText = ""
+  $rc_raw = 2
+
+  try {
+    Push-Location -Path $RepoPath
+    try {
+      # Важно: аргументы передаются как объекты -> символ '|' не ломает парсинг командной строки
+      $outLines = & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath @Args 2> $stderrPath
+      $rc_raw = $LASTEXITCODE
+      $outText = ($outLines | Out-String)
+    } finally {
+      Pop-Location
+    }
+  } catch {
+    $rc_raw = 2
+    $outText = ""
+    try { ($_ | Out-String) | Set-Content -Encoding utf8 -Path $stderrPath } catch {}
+  }
+
+  try { Set-Content -Encoding utf8 -Path $stdoutPath -Value $outText } catch {}
+
+  $rc = Normalize-Exit $rc_raw
+  $obj = Parse-OneJson $outText
+
+  return [ordered]@{
+    infra = $false
+    rc = $rc
+    rc_raw = $rc_raw
+    stdout_path = $stdoutPath
+    stderr_path = $stderrPath
+    stdout = $outText
+    json = $obj
+    error = ""
+  }
+}
+
+  $stdoutPath = Join-Path $SuiteEvidenceDir ("{0}.stdout.txt" -f $CaseId)
+  $stderrPath = Join-Path $SuiteEvidenceDir ("{0}.stderr.txt" -f $CaseId)
+  if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -Force $stdoutPath }
+  if (Test-Path -LiteralPath $stderrPath) { Remove-Item -Force $stderrPath }
+
+  Ensure-Dir $SuiteEvidenceDir
+
   $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) + $Args
 
   $p = Start-Process -FilePath "powershell" -WorkingDirectory $RepoPath `
@@ -213,7 +256,7 @@ try {
       if ($accOk -eq $true) { $ok = $true }
     }
 
-    if ($res.infra) { $infraHit = $true }
+    if ($res.infra -or $res.rc -eq 2) { $infraHit = $true }
 
     if ($caseId -eq "e2e_service" -and $ok -and -not [string]::IsNullOrWhiteSpace($runId)) {
       $serviceRunIdForChaos = $runId
