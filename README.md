@@ -163,3 +163,9 @@ schtasks /Query /TN "\ARGS_Stage5_Evidence_5m" /V /FO LIST | Select-String "Logo
 - `args/data/ops_health.json` is the runtime health snapshot.
 - Required properties: `ok`, `mode`, `loops`, `events_seen`, `reconcile_ratio`, `last_error`.
 
+
+## Product Standard
+См. docs/product_standard_v1.md — канонический стандарт артефактов, exit codes, JSON stdout и debug-by-evidence.
+
+## Golden commands
+См. docs/product_standard_v1.md (раздел 4).
