@@ -1,0 +1,11 @@
+{
+    "schema":  "product_manifest_v0",
+    "product_id":  "reli_rate_limiter_cli_v0",
+    "version":  "0.1.0",
+    "kind":  "windows_portable_exe",
+    "template_dir":  "templates/windows_cli_tool_v0",
+    "entrypoint":  "src/main.py",
+    "exe_name":  "app.exe",
+    "python_min":  "3.11",
+    "description":  "Minimal Windows CLI tool scaffold for EXE Pack v0 (PyInstaller onefile)."
+}
