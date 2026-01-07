@@ -13,9 +13,21 @@ from typing import Any, Callable, Dict, List, Tuple
 
 SCHEMA = "release_pack_v0"
 
+RC_OK = 0
+RC_FAIL = 1
+RC_INFRA = 2
+
+ENV_FORCE_REPACK = "FOUNDRY_FORCE_REPACK"
+ENV_RELEASE_ID_OVERRIDE = "FOUNDRY_RELEASE_ID_OVERRIDE"
+
 
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def env_truthy(name: str) -> bool:
+    v = (os.environ.get(name) or "").strip().lower()
+    return v in ("1", "true", "yes")
 
 
 def sha256_bytes(b: bytes) -> str:
@@ -64,12 +76,14 @@ def emit_and_exit(payload: Dict[str, Any], code: int) -> int:
     return int(code)
 
 
-def classify_exit_code(exc: Exception) -> int:
+def classify_exception(exc: Exception) -> Tuple[int, str]:
     # FAIL: missing inputs / validation / content issues
-    if isinstance(exc, (FileNotFoundError, ValueError)):
-        return 1
+    if isinstance(exc, (FileNotFoundError, ValueError, json.JSONDecodeError)):
+        return RC_FAIL, "fail"
     # INFRA: OS/IO/locks/etc.
-    return 2
+    if isinstance(exc, (PermissionError, OSError, zipfile.BadZipFile)):
+        return RC_INFRA, "infra"
+    return RC_INFRA, "infra"
 
 
 def _tmp_path_for(dst: Path) -> Path:
@@ -105,10 +119,15 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
-    manifest = load_product_manifest(repo, args.product_id)
+    product_id = str(args.product_id)
+
+    force_repack = env_truthy(ENV_FORCE_REPACK)
+    release_id_override = (os.environ.get(ENV_RELEASE_ID_OVERRIDE) or "").strip()
+
+    manifest = load_product_manifest(repo, product_id)
     version = str(manifest.get("version", "0.0.0"))
 
-    product_dist = Path(args.product_dist).resolve() if args.product_dist else (repo / "dist" / args.product_id)
+    product_dist = Path(args.product_dist).resolve() if args.product_dist else (repo / "dist" / product_id)
     releases_dir = Path(args.releases_dir).resolve() if args.releases_dir else (repo / "dist" / "releases")
     releases_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,9 +166,47 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
         tag = sha256_bytes(("|".join(parts)).encode("utf-8"))[:10]
         tag_mode = "hashes_plus_optional"
 
-    release_id = args.release_id or f"{args.product_id}__v{version}__{tag}"
+    computed_release_id = f"{product_id}__v{version}__{tag}"
+
+    if args.release_id:
+        release_id = str(args.release_id)
+        release_id_source = "arg"
+    elif release_id_override:
+        release_id = release_id_override
+        release_id_source = "env"
+    else:
+        release_id = computed_release_id
+        release_id_source = "computed"
+
     release_zip = releases_dir / f"{release_id}.zip"
     release_hashes = releases_dir / f"{release_id}.hashes.json"
+
+    # Idempotent mode (skip) unless forced
+    skipped_existing = False
+    if (not force_repack) and release_zip.exists() and release_hashes.exists():
+        skipped_existing = True
+        out = {
+            "schema": SCHEMA,
+            "product_id": product_id,
+            "version": version,
+            "release_id": release_id,
+            "release_id_source": release_id_source,
+            "computed_release_id": computed_release_id,
+            "tag_mode": tag_mode,
+            "product_dist": str(product_dist),
+            "release_zip": str(release_zip),
+            "release_hashes": str(release_hashes),
+            "files": included,
+            "optional_included": present_optional,
+            "force_repack": force_repack,
+            "skipped_existing": skipped_existing,
+            "sha256": {
+                "zip": sha256_file(release_zip),
+                "hashes_json": sha256_file(release_hashes),
+                "hashes_input": hashes_sha,
+            },
+        }
+        return out, RC_OK
 
     # Atomic write: zip (tmp -> replace)
     def _write_zip(tmp_zip: Path) -> None:
@@ -167,15 +224,22 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     outer = {
         "schema": "release_hashes_v0",
         "ts_utc": utc_ts(),
-        "product_id": args.product_id,
+        "product_id": product_id,
         "version": version,
         "release_id": release_id,
+        "release_id_source": release_id_source,
+        "computed_release_id": computed_release_id,
         "tag_mode": tag_mode,
         "included_files": included,
         "file_sha256": file_sha256,
         "artifacts": {
             "release_zip": {"path": str(release_zip), "sha256": zip_sha},
-            "hashes_json": {"path": str(hashes_path), "sha256": hashes_sha},
+            "hashes_input_json": {"path": str(hashes_path), "sha256": hashes_sha},
+        },
+        "flags": {
+            "force_repack": force_repack,
+            "skipped_existing": skipped_existing,
+            "release_id_override_env": bool(release_id_override),
         },
     }
     outer_text = json.dumps(outer, indent=2, ensure_ascii=False) + "\n"
@@ -189,18 +253,22 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     out = {
         "schema": SCHEMA,
-        "product_id": args.product_id,
+        "product_id": product_id,
         "version": version,
         "release_id": release_id,
+        "release_id_source": release_id_source,
+        "computed_release_id": computed_release_id,
         "product_dist": str(product_dist),
         "release_zip": str(release_zip),
         "release_hashes": str(release_hashes),
         "files": included,
         "optional_included": present_optional,
         "tag_mode": tag_mode,
-        "sha256": {"zip": zip_sha, "hashes_json": hashes_sha},
+        "force_repack": force_repack,
+        "skipped_existing": skipped_existing,
+        "sha256": {"zip": zip_sha, "hashes_input": hashes_sha},
     }
-    return out, 0
+    return out, RC_OK
 
 
 def main() -> int:
@@ -208,8 +276,14 @@ def main() -> int:
         payload, code = main_inner()
         return emit_and_exit(payload, code)
     except Exception as e:  # noqa: BLE001
-        code = classify_exit_code(e)
-        payload = {"schema": SCHEMA, "error": {"kind": e.__class__.__name__, "message": str(e)}}
+        code, kind = classify_exception(e)
+        err: Dict[str, Any] = {"kind": kind, "type": e.__class__.__name__, "message": str(e)}
+        if isinstance(e, OSError):
+            err["os_error"] = {
+                "errno": getattr(e, "errno", None),
+                "winerror": getattr(e, "winerror", None),
+            }
+        payload = {"schema": SCHEMA, "error": err}
         return emit_and_exit(payload, code)
 
 
