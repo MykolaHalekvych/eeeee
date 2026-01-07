@@ -1,6 +1,6 @@
 {
     "schema":  "product_manifest_v0",
-    "product_id":  "demo_cli_tool",
+    "product_id":  "obs_health_cli_v0",
     "version":  "0.1.0",
     "kind":  "windows_portable_exe",
     "template_dir":  "templates/windows_cli_tool_v0",
