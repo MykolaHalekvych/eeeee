@@ -1,7 +1,8 @@
 ﻿param(
   [Parameter(Mandatory=$false)][string]$Repo = (Get-Location).Path,
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$RunAcceptance = "YES",
-  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$IncludeChaos = "YES"
+  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$IncludeChaos = "YES",
+  [Parameter(Mandatory=$false)][string]$MatrixPath = "manifests\family_suite_matrix_v1.json"
 )
 
 Set-StrictMode -Version Latest
@@ -64,6 +65,13 @@ function Parse-OneJson([string]$Raw) {
   return $null
 }
 
+function Read-JsonUtf8Sig([string]$Path) {
+  $raw = Get-Content -Raw -Encoding utf8 -Path $Path
+  if ($null -eq $raw) { $raw = "" }
+  $raw = ($raw -replace "^\uFEFF","")
+  return ($raw | ConvertFrom-Json -ErrorAction Stop)
+}
+
 function Invoke-PsFile {
   param(
     [Parameter(Mandatory=$true)][string]$RepoPath,
@@ -74,15 +82,18 @@ function Invoke-PsFile {
   )
 
   $scriptPath = Join-Path $RepoPath $RelScriptPath
-  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-    return [ordered]@{ infra=$true; rc=2; rc_raw=2; stdout_path=""; stderr_path=""; stdout=""; json=$null; error=("script_not_found: " + $scriptPath) }
-  }
-
   Ensure-Dir $SuiteEvidenceDir
+
   $stdoutPath = Join-Path $SuiteEvidenceDir ("{0}.stdout.txt" -f $CaseId)
   $stderrPath = Join-Path $SuiteEvidenceDir ("{0}.stderr.txt" -f $CaseId)
   if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -Force $stdoutPath }
   if (Test-Path -LiteralPath $stderrPath) { Remove-Item -Force $stderrPath }
+
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+    Set-Content -Encoding utf8 -Path $stderrPath -Value ("script_not_found: " + $scriptPath)
+    Set-Content -Encoding utf8 -Path $stdoutPath -Value ""
+    return [ordered]@{ infra=$true; rc=2; rc_raw=2; stdout_path=$stdoutPath; stderr_path=$stderrPath; stdout=""; json=$null; error=("script_not_found: " + $scriptPath) }
+  }
 
   $outText = ""
   $rc_raw = 2
@@ -108,7 +119,6 @@ function Invoke-PsFile {
   $rc = Normalize-Exit $rc_raw
   $obj = Parse-OneJson $outText
 
-  # If script returned non-JSON, treat as INFRA
   $infra = $false
   if ($null -eq $obj) { $infra = $true; $rc = 2; $rc_raw = 2 }
 
@@ -144,7 +154,6 @@ $suiteRunDir = ""
 $suiteEvidence = ""
 $suiteEvents = ""
 $suiteFinal = ""
-
 $cases = @()
 $infraHit = $false
 
@@ -159,18 +168,65 @@ try {
   Ensure-Dir $suiteEvidence
   Ensure-Dir $suiteRunDir
 
-  Append-Event $suiteEvents $suiteRunId "start" @{ repo=$repoPath; suite_run_id=$suiteRunId; run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos }
+  Append-Event $suiteEvents $suiteRunId "start" @{ repo=$repoPath; suite_run_id=$suiteRunId; run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos; matrix_path=$MatrixPath }
 
-  $serviceRunIdForChaos = ""
+  $matrixAbs = $MatrixPath
+  if (-not [System.IO.Path]::IsPathRooted($matrixAbs)) {
+    $matrixAbs = Join-Path $repoPath $MatrixPath
+  }
 
-  # ---------- Positive E2E (no-LLM) ----------
-  $pos = @(
-    @{ case_id="e2e_cli"; kit_id="kit_cli_tool_v1"; product_id="demo_cli_tool" },
-    @{ case_id="e2e_service"; kit_id="kit_windows_service_v0"; product_id="windows_service_v0" },
-    @{ case_id="e2e_dashboard"; kit_id="kit_web_dashboard_v0"; product_id="web_dashboard_v0" }
-  )
+  if (-not (Test-Path -LiteralPath $matrixAbs -PathType Leaf)) {
+    $final = [ordered]@{
+      schema="family_test_suite_v1"
+      ts_utc=UtcNowIso
+      ok=$false
+      exit_code=$RC_FAIL
+      repo=$repoPath
+      suite_run_id=$suiteRunId
+      suite_run_dir=$suiteRunDir
+      evidence_dir=$suiteEvidence
+      events_jsonl=$suiteEvents
+      final_report_json=$suiteFinal
+      error=@{ kind="fail"; type="missing_matrix"; message="Matrix file not found"; path=$matrixAbs }
+      cases=@()
+    }
+    Write-JsonAtomic $suiteFinal $final
+    Append-Event $suiteEvents $suiteRunId "error" @{ message="missing_matrix"; path=$matrixAbs }
+    Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
+    exit $RC_FAIL
+  }
 
-  foreach ($c in $pos) {
+  $m = Read-JsonUtf8Sig $matrixAbs
+  $mSchema = ""
+  try { $mSchema = [string]$m.schema } catch { $mSchema = "" }
+  if ($mSchema -ne "family_suite_matrix_v1") {
+    $final = [ordered]@{
+      schema="family_test_suite_v1"
+      ts_utc=UtcNowIso
+      ok=$false
+      exit_code=$RC_FAIL
+      repo=$repoPath
+      suite_run_id=$suiteRunId
+      suite_run_dir=$suiteRunDir
+      evidence_dir=$suiteEvidence
+      events_jsonl=$suiteEvents
+      final_report_json=$suiteFinal
+      error=@{ kind="fail"; type="invalid_matrix_schema"; message="Expected schema=family_suite_matrix_v1"; got=$mSchema; path=$matrixAbs }
+      cases=@()
+    }
+    Write-JsonAtomic $suiteFinal $final
+    Append-Event $suiteEvents $suiteRunId "error" @{ message="invalid_matrix_schema"; got=$mSchema }
+    Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
+    exit $RC_FAIL
+  }
+
+  Copy-Item -Force $matrixAbs (Join-Path $suiteEvidence "matrix_used.json") | Out-Null
+  Append-Event $suiteEvents $suiteRunId "matrix_loaded" @{ path=$matrixAbs }
+
+  $runIdByCase = @{}
+
+  # ---------- Positive E2E ----------
+  foreach ($c in @($m.positive_e2e)) {
     $caseId = [string]$c.case_id
     $kitId = [string]$c.kit_id
     $productId = [string]$c.product_id
@@ -193,10 +249,7 @@ try {
     }
 
     if ($res.infra -or $res.rc -eq 2) { $infraHit = $true }
-
-    if ($caseId -eq "e2e_service" -and $ok -and -not [string]::IsNullOrWhiteSpace($runId)) {
-      $serviceRunIdForChaos = $runId
-    }
+    if ($ok -and -not [string]::IsNullOrWhiteSpace($runId)) { $runIdByCase[$caseId] = $runId }
 
     $cases += [ordered]@{
       case_id=$caseId; kind="positive_e2e"; kit_id=$kitId; product_id=$productId;
@@ -207,27 +260,19 @@ try {
       error=$res.error
     }
 
-    Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="positive_e2e"; rc=$res.rc; rc_raw=$res.rc_raw; infra=$res.infra; ok=$ok }
+    Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="positive_e2e"; rc=$res.rc; infra=$res.infra; ok=$ok }
   }
 
-  # ---------- Negative tests (expect FAIL=1) ----------
-  $negKit = "kit_windows_service_v0"
-  $negProduct = "windows_service_v0"
-
-  $negDefs = @(
-    @{ id="neg_missing_codegen"; prep="missing_codegen" },
-    @{ id="neg_missing_job_request"; prep="missing_job_request" },
-    @{ id="neg_invalid_codegen_json"; prep="invalid_codegen_json" },
-    @{ id="neg_allowed_paths_block_all"; prep="allowed_paths_block_all" }
-  )
-
-  foreach ($n in $negDefs) {
-    $id = [string]$n.id
+  # ---------- Negative ----------
+  foreach ($n in @($m.negative)) {
+    $id = [string]$n.case_id
     $prep = [string]$n.prep
+    $kitId = [string]$n.kit_id
+    $productId = [string]$n.product_id
     $summary = ("FamilySuite v1 neg {0}" -f $id)
 
     $p = Prompt-CreateRun -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -SuiteEvents $suiteEvents -SuiteRunId $suiteRunId `
-      -KitId $negKit -ProductId $negProduct -Summary $summary -CaseId ("prep_" + $id)
+      -KitId $kitId -ProductId $productId -Summary $summary -CaseId ("prep_" + $id)
 
     if (-not $p.ok) {
       $infraHit = $true
@@ -304,28 +349,34 @@ try {
       error=$res.error
     }
 
-    Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$id; kind="negative"; rc=$res.rc; rc_raw=$res.rc_raw; infra=$res.infra; ok=$ok }
+    Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$id; kind="negative"; rc=$res.rc; infra=$res.infra; ok=$ok }
   }
 
-  # ---------- Chaos P6 ----------
+  # ---------- Chaos ----------
   if ($IncludeChaos -eq "YES") {
-    $caseId = "chaos_file_lock_release_pack"
+    foreach ($z in @($m.chaos)) {
+      $caseId = [string]$z.case_id
+      $req = [string]$z.requires_positive_case_id
 
-    if ([string]::IsNullOrWhiteSpace($serviceRunIdForChaos)) {
-      $infraHit = $true
-      $cases += [ordered]@{
-        case_id=$caseId; kind="chaos";
-        expected=@{ exit_code=0; pass=@{ build_release_infra=$true; zip_unchanged=$true } };
-        actual=@{ infra=$true; rc=2; rc_raw=2; run_id="" };
-        ok=$false;
-        evidence=@{ stdout_path=""; stderr_path="" };
-        error="missing_prereq: e2e_service run_id not available"
+      $runId = ""
+      if ($runIdByCase.ContainsKey($req)) { $runId = [string]$runIdByCase[$req] }
+
+      if ([string]::IsNullOrWhiteSpace($runId)) {
+        $cases += [ordered]@{
+          case_id=$caseId; kind="chaos";
+          expected=@{ exit_code=0; pass=@{ build_release_infra=$true; zip_unchanged=$true } };
+          actual=@{ infra=$false; rc=1; rc_raw=1; run_id="" };
+          ok=$false;
+          evidence=@{ stdout_path=""; stderr_path="" };
+          error=("missing_prereq: " + $req + " run_id not available")
+        }
+        Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="chaos"; ok=$false; error="missing_prereq" }
+        continue
       }
-      Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="chaos"; infra=$true; ok=$false; error="missing_prereq" }
-    } else {
+
       $res = Invoke-PsFile -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -CaseId $caseId `
         -RelScriptPath "scripts\run_chaos_file_lock_release_pack_v1.ps1" `
-        -Args @("-RunId",$serviceRunIdForChaos,"-RestoreFinalReport","YES")
+        -Args @("-RunId",$runId,"-RestoreFinalReport","YES")
 
       $pass1 = $false; $pass2 = $false; $ok = $false
       if (-not $res.infra -and $res.rc -eq 0) {
@@ -339,13 +390,13 @@ try {
       $cases += [ordered]@{
         case_id=$caseId; kind="chaos";
         expected=@{ exit_code=0; pass=@{ build_release_infra=$true; zip_unchanged=$true } };
-        actual=@{ infra=$res.infra; rc=$res.rc; rc_raw=$res.rc_raw; run_id=$serviceRunIdForChaos; pass=@{ build_release_infra=$pass1; zip_unchanged=$pass2 } };
+        actual=@{ infra=$res.infra; rc=$res.rc; rc_raw=$res.rc_raw; run_id=$runId; pass=@{ build_release_infra=$pass1; zip_unchanged=$pass2 } };
         ok=$ok;
         evidence=@{ stdout_path=$res.stdout_path; stderr_path=$res.stderr_path };
         error=$res.error
       }
 
-      Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="chaos"; rc=$res.rc; rc_raw=$res.rc_raw; infra=$res.infra; ok=$ok }
+      Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="chaos"; rc=$res.rc; infra=$res.infra; ok=$ok }
     }
   }
 
@@ -367,7 +418,7 @@ try {
     evidence_dir=$suiteEvidence
     events_jsonl=$suiteEvents
     final_report_json=$suiteFinal
-    config=@{ run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos }
+    config=@{ run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos; matrix_path=$matrixAbs }
     summary=@{ total=$total; passed=$passed; failed=$failed; infra=$infraHit }
     cases=$cases
   }
