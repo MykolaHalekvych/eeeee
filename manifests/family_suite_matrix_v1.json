@@ -1,6 +1,11 @@
 {
   "schema": "family_suite_matrix_v1",
   "version": 1,
+  "defaults": {
+    "run_acceptance": "YES",
+    "include_chaos": "YES",
+    "negative_expected_exit_code": 1
+  },
   "positive_e2e": [
     {
       "case_id": "e2e_cli",
