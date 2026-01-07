@@ -14,6 +14,12 @@ $RC_INFRA = 2
 
 function New-UtcIso { return (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ") }
 
+function Normalize-ExitCode([int]$rcRaw) {
+  if ($rcRaw -eq 0) { return 0 }
+  if ($rcRaw -eq 1) { return 1 }
+  return 2
+}
+
 function Ensure-Dir([string]$p) {
   if (-not (Test-Path -Path $p -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $p | Out-Null
@@ -40,7 +46,7 @@ function Write-RunEvent {
     step      = $Step
     status    = $Status
     ok        = $Ok
-    exit_code = $ExitCode
+    exit_code = (Normalize-ExitCode $ExitCode)
     details   = $Details
   }
   Add-Content -Encoding utf8 -Path $eventsPath -Value (($ev | ConvertTo-Json -Compress -Depth 30))
@@ -71,10 +77,11 @@ function Invoke-Step {
   $p = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $CmdLine) -NoNewWindow -PassThru -Wait `
         -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
-  $rc = [int]$p.ExitCode
+  $rc_raw = [int]$p.ExitCode
+  $rc = Normalize-ExitCode $rc_raw
   $stdout = Safe-ReadTextUtf8 $stdoutPath
 
-  return [ordered]@{ rc=$rc; stdout=$stdout; stdout_path=$stdoutPath; stderr_path=$stderrPath }
+  return [ordered]@{ rc=$rc; rc_raw=$rc_raw; stdout=$stdout; stdout_path=$stdoutPath; stderr_path=$stderrPath }
 }
 
 function Fail-And-Exit {
@@ -83,14 +90,16 @@ function Fail-And-Exit {
     [string]$LastOutputPath,[string]$LastStdout,[string]$LastStdoutPath,[string]$LastStderrPath
   )
 
-  Write-RunEvent -RunDir $RunDir -RunId $RunId -Step $Step -Status "FAIL" -Ok $false -ExitCode $ExitCode -Details @{
+  $code = Normalize-ExitCode $ExitCode
+
+  Write-RunEvent -RunDir $RunDir -RunId $RunId -Step $Step -Status "FAIL" -Ok $false -ExitCode $code -Details @{
     evidence_dir=$EvidenceDir; last_output=$LastOutputPath; last_stdout_path=$LastStdoutPath; last_stderr_path=$LastStderrPath
   }
 
   $final = [ordered]@{
     schema            = "factory_final_report_v1"
     ok                = $false
-    exit_code         = $ExitCode
+    exit_code         = $code
     run_id            = $RunId
     product_id        = $ProductId
     run_dir           = $RunDir
@@ -106,7 +115,7 @@ function Fail-And-Exit {
 
   Write-FinalReportFile -RunDir $RunDir -Report $final
   ($final | ConvertTo-Json -Compress -Depth 30)
-  exit $ExitCode
+  exit $code
 }
 
 function Preflight-Missing-File {
@@ -143,6 +152,7 @@ $repoResolved = $Repo
 $run_dir = ""
 $EvidenceDir = ""
 $product_id = ""
+$entrypoint = "src/main.py"
 
 try {
   if (-not $RunId -or $RunId.Trim().Length -lt 5) {
@@ -185,7 +195,6 @@ try {
       -MissingPath $codegen_path -Message "codegen_output.json missing in run_dir"
   }
 
-  # Load job_request (FAIL=1 on empty/parse issues)
   $jr_raw = Safe-ReadTextUtf8 $jr_path
   if ([string]::IsNullOrWhiteSpace($jr_raw)) {
     $msg = "job_request.json empty"
@@ -212,8 +221,17 @@ try {
       -LastOutputPath $jr_path -LastStdout $jr_raw -LastStdoutPath "" -LastStderrPath $errPath
   }
 
+  # kit-aware entrypoint
+  $entrypoint = "src/main.py"
+  try {
+    if ($jr.workspace -and $jr.workspace.entrypoint) {
+      $ep = [string]$jr.workspace.entrypoint
+      if (-not [string]::IsNullOrWhiteSpace($ep)) { $entrypoint = $ep }
+    }
+  } catch { }
+
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "load_job_request" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    product_id=$product_id; job_request=$jr_path; codegen_output=$codegen_path
+    product_id=$product_id; job_request=$jr_path; codegen_output=$codegen_path; entrypoint=$entrypoint
   }
 
   # 1) Apply patch
@@ -225,7 +243,7 @@ try {
   if ($res.rc -ne 0) { Fail-And-Exit -RunDir $run_dir -RunId $RunId -ProductId $product_id -Step "apply_patch" -ExitCode $res.rc -EvidenceDir $EvidenceDir `
       -LastOutputPath $apply_path -LastStdout $apply -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path }
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "apply_patch" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    output=$apply_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path
+    output=$apply_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; rc_raw=$res.rc_raw
   }
 
   $apply_obj = $apply | ConvertFrom-Json
@@ -240,12 +258,12 @@ try {
   if ($res.rc -ne 0) { Fail-And-Exit -RunDir $run_dir -RunId $RunId -ProductId $product_id -Step "workspace_gate" -ExitCode $res.rc -EvidenceDir $EvidenceDir `
       -LastOutputPath $gate_path -LastStdout $gate -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path }
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "workspace_gate" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    output=$gate_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; workspace=$ws
+    output=$gate_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; workspace=$ws; rc_raw=$res.rc_raw
   }
 
-  # 3) Build EXE
+  # 3) Build EXE (entrypoint from job_request)
   $out_dir = Join-Path $repoResolved ("dist\" + $product_id)
-  $cmd = "py -3.11 -m args.foundry.build_exe_v0 --product-id `"$product_id`" --workspace `"$ws`" --entrypoint src/main.py --out-dir `"$out_dir`""
+  $cmd = "py -3.11 -m args.foundry.build_exe_v0 --product-id `"$product_id`" --workspace `"$ws`" --entrypoint `"$entrypoint`" --out-dir `"$out_dir`""
   $res = Invoke-Step -RunDir $run_dir -RunId $RunId -StepName "build_exe" -CmdLine $cmd -EvidenceDir $EvidenceDir
   $build = $res.stdout
   $build_path = Join-Path $run_dir 'build_exe.json'
@@ -253,10 +271,10 @@ try {
   if ($res.rc -ne 0) { Fail-And-Exit -RunDir $run_dir -RunId $RunId -ProductId $product_id -Step "build_exe" -ExitCode $res.rc -EvidenceDir $EvidenceDir `
       -LastOutputPath $build_path -LastStdout $build -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path }
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "build_exe" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    output=$build_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; out_dir=$out_dir
+    output=$build_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; out_dir=$out_dir; entrypoint=$entrypoint; rc_raw=$res.rc_raw
   }
 
-  # 4) Acceptance on DIR (so it gets embedded into zip)
+  # 4) Acceptance on DIR
   $acceptance_ok = $false
   $acceptance_report_path = (Join-Path $run_dir "acceptance_gate.json")
   $acceptance_dist_path = (Join-Path $out_dir "acceptance_gate.json")
@@ -278,7 +296,6 @@ try {
         -LastOutputPath $acceptance_report_path -LastStdout $acc -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path
     }
 
-    # copy acceptance artifacts into dist/<product> so release_pack includes them
     try {
       Copy-Item -Force $acceptance_report_path $acceptance_dist_path
       Copy-Item -Force $res.stdout_path (Join-Path $out_dir "acceptance_gate.stdout.txt")
@@ -287,7 +304,7 @@ try {
 
     Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "acceptance_gate" -Status "OK" -Ok $true -ExitCode 0 -Details @{
       output=$acceptance_report_path; embedded=$acceptance_dist_path; out_dir=$out_dir
-      stdout_path=$res.stdout_path; stderr_path=$res.stderr_path
+      stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; rc_raw=$res.rc_raw
     }
   } else {
     Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "acceptance_gate" -Status "SKIP" -Ok $true -ExitCode 0 -Details @{
@@ -295,7 +312,7 @@ try {
     }
   }
 
-  # 5) Release pack (now includes acceptance files)
+  # 5) Release pack
   $cmd = "py -3.11 -m args.foundry.release_pack_v0 --product-id `"$product_id`""
   $res = Invoke-Step -RunDir $run_dir -RunId $RunId -StepName "release_pack" -CmdLine $cmd -EvidenceDir $EvidenceDir
   $rel = $res.stdout
@@ -304,7 +321,7 @@ try {
   if ($res.rc -ne 0) { Fail-And-Exit -RunDir $run_dir -RunId $RunId -ProductId $product_id -Step "release_pack" -ExitCode $res.rc -EvidenceDir $EvidenceDir `
       -LastOutputPath $rel_path -LastStdout $rel -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path }
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "release_pack" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    output=$rel_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path
+    output=$rel_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; rc_raw=$res.rc_raw
   }
 
   $rel_obj = $rel | ConvertFrom-Json
@@ -321,32 +338,34 @@ try {
   if ($res.rc -ne 0) { Fail-And-Exit -RunDir $run_dir -RunId $RunId -ProductId $product_id -Step "release_verify" -ExitCode $res.rc -EvidenceDir $EvidenceDir `
       -LastOutputPath $ver_path -LastStdout $ver -LastStdoutPath $res.stdout_path -LastStderrPath $res.stderr_path }
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "release_verify" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    output=$ver_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; release_id=$rid
+    output=$ver_path; stdout_path=$res.stdout_path; stderr_path=$res.stderr_path; release_id=$rid; rc_raw=$res.rc_raw
   }
 
   # 7) Final report
   $final = [ordered]@{
-    schema            = 'factory_final_report_v1'
-    ok                = $true
-    exit_code         = 0
-    run_id            = $RunId
-    product_id        = $product_id
-    run_dir           = $run_dir
-    release_id        = $rid
-    release_zip       = $release_zip
-    release_hashes    = $release_hashes
-    evidence_dir      = $EvidenceDir
-    events_jsonl      = (Join-Path $run_dir "events.jsonl")
-    final_report_json = (Join-Path $run_dir "final_report.json")
-    acceptance_ok     = $acceptance_ok
-    acceptance_report = $(if ($RunAcceptance -eq "YES") { $acceptance_report_path } else { "" })
+    schema              = 'factory_final_report_v1'
+    ok                  = $true
+    exit_code           = 0
+    run_id              = $RunId
+    product_id          = $product_id
+    run_dir             = $run_dir
+    entrypoint          = $entrypoint
+    release_id          = $rid
+    release_zip         = $release_zip
+    release_hashes      = $release_hashes
+    evidence_dir        = $EvidenceDir
+    events_jsonl        = (Join-Path $run_dir "events.jsonl")
+    final_report_json   = (Join-Path $run_dir "final_report.json")
+    acceptance_ok       = $acceptance_ok
+    run_acceptance      = $RunAcceptance
+    acceptance_report   = $(if ($RunAcceptance -eq "YES") { $acceptance_report_path } else { "" })
     acceptance_embedded = $(if ($RunAcceptance -eq "YES") { $acceptance_dist_path } else { "" })
   }
 
   Write-FinalReportFile -RunDir $run_dir -Report $final
 
   Write-RunEvent -RunDir $run_dir -RunId $RunId -Step "build_release" -Status "OK" -Ok $true -ExitCode 0 -Details @{
-    release_id=$rid; release_zip=$release_zip; acceptance_ok=$acceptance_ok; run_acceptance=$RunAcceptance
+    release_id=$rid; release_zip=$release_zip; acceptance_ok=$acceptance_ok; run_acceptance=$RunAcceptance; entrypoint=$entrypoint
   }
 
   ($final | ConvertTo-Json -Compress -Depth 30)
@@ -355,7 +374,6 @@ try {
 catch {
   $msg = $_.Exception.Message
 
-  # If we have a valid run_dir, write evidence + final_report, then emit exactly one JSON.
   if ($run_dir -and (Test-Path -Path $run_dir -PathType Container)) {
     if (-not $EvidenceDir) { $EvidenceDir = Join-Path $run_dir "evidence" }
     Ensure-Dir $EvidenceDir
@@ -380,7 +398,6 @@ catch {
       -LastOutputPath $errOut -LastStdout $errJson -LastStdoutPath "" -LastStderrPath $errPath
   }
 
-  # Fallback (no run_dir): still one JSON stdout
   ($([ordered]@{
     schema="factory_final_report_v1"
     ok=$false
