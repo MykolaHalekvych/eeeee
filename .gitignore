@@ -204,5 +204,23 @@ legacy_fin/**/.pytest_cache/
 args/data/*
 !args/data/.keep
 .gitattributes text eol=lf
-.gitattributes text eol=lf
+git add .\args\foundry\gate_v0.py
+git add .\args\foundry\release_v0.py
+git add .\scripts\factory_release_window_v1.ps1
+git restore .\control_plane.json
+git restore .\args\foundry\build_v0.py
+git restore .\args\foundry\manifests_v0.py
+git add .\args\foundry\gate_v0.py
+git add .\args\foundry\release_v0.py
+git add .\args\foundry\build_v0.py
+git add .\args\foundry\manifests_v0.py
+git add .\scripts\factory_release_window_v1.ps1
+git add .\control_plane.json
+git add .\.gitignore
 
+
+# local scratch / temp
+*.bak
+tmp_*
+tmp_prompt.*
+foundry/

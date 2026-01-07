@@ -1,35 +1,37 @@
-﻿from __future__ import annotations
+﻿
+from __future__ import annotations
 
 import argparse
 import fnmatch
 import hashlib
-import io
 import json
 import sys
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from args.foundry.guard_v0 import find_repo_root, require_engine_repo
-from args.foundry.manifests_v0 import load_factories, load_product, ManifestError
+from args.foundry.manifests_v0 import ManifestError, load_factories, load_product
+from args.foundry.gate_v0 import run_gate  # returns (exit_code, summary) with 0/1/2
 
 EXIT_OK = 0
 EXIT_EVAL_FAIL = 1
 EXIT_INFRA = 2
 
+# Deterministic ZIP metadata
 FIXED_ZIP_DT = (1980, 1, 1, 0, 0, 0)
+ZIP_MODE_644 = (0o644 & 0xFFFF) << 16
+
 
 def dump(obj: Dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False))
     sys.stdout.write("\n")
 
+
 def read_json(path: Path) -> Dict[str, Any]:
     raw = path.read_text(encoding="utf-8-sig")
     return json.loads(raw)
 
-def sha256_bytes(b: bytes) -> str:
-    return hashlib.sha256(b).hexdigest()
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -38,24 +40,23 @@ def sha256_file(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
 def normalize_rel(p: Path) -> str:
-    # always forward slashes for determinism
+    # Always forward slashes for determinism
     return p.as_posix()
+
 
 def expand_patterns(repo_root: Path, patterns: List[str]) -> List[Path]:
     """
-    Expands glob-like patterns with **, but using deterministic matching.
-    Patterns are relative to repo_root, like "packs/x/**".
+    Expand glob-like patterns (including **) using deterministic matching.
+    Patterns are repo-relative, e.g. "packs/x/**".
     """
-    # Pre-list all candidate files under repo_root for deterministic fnmatch
-    # To keep it cheap, we restrict scan to top-level roots inferred from patterns.
     roots: List[Path] = []
     for pat in patterns:
-        # take first segment before wildcard as root
         seg = pat.split("/")[0]
         if seg and seg not in ("**", "*"):
             roots.append(repo_root / seg)
-    # if nothing inferred, fallback to repo_root
+
     scan_roots = sorted(set([r for r in roots if r.exists()])) or [repo_root]
 
     candidates: List[Path] = []
@@ -69,15 +70,17 @@ def expand_patterns(repo_root: Path, patterns: List[str]) -> List[Path]:
         rel = normalize_rel(p.relative_to(repo_root))
         for pat in patterns:
             if fnmatch.fnmatch(rel, pat):
-                # ignore pycache/pyc deterministically
                 if "__pycache__" in rel or rel.endswith(".pyc"):
                     continue
                 out.append(p)
                 break
 
-    # unique + sorted
-    uniq = sorted({str(p.resolve()): p for p in out}.values(), key=lambda x: normalize_rel(x.relative_to(repo_root)))
+    uniq = sorted(
+        {str(p.resolve()): p for p in out}.values(),
+        key=lambda x: normalize_rel(x.relative_to(repo_root)),
+    )
     return uniq
+
 
 def policy_check_build(cp: Dict[str, Any], product_id: str, factory_id: str) -> Tuple[bool, List[str]]:
     blocked: List[str] = []
@@ -97,29 +100,45 @@ def policy_check_build(cp: Dict[str, Any], product_id: str, factory_id: str) -> 
 
     return (len(blocked) == 0), blocked
 
-def write_runbook(repo_root: Path, template_rel: str, out_path: Path) -> None:
+
+def copy_runbook_bytes(repo_root: Path, template_rel: str, out_path: Path) -> None:
     src = repo_root / template_rel
     if not src.exists():
         raise RuntimeError(f"runbook template missing: {template_rel}")
-    out_path.write_text(src.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    out_path.write_bytes(src.read_bytes())
+
 
 def make_zip_deterministic(zip_path: Path, repo_root: Path, files: List[Path]) -> None:
+    """
+    Deterministic zip:
+      - fixed timestamps
+      - fixed file mode
+      - stable file order
+      - ZIP_STORED (no zlib variability across machines)
+    """
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+    with zipfile.ZipFile(zip_path, "w") as zf:
         for p in files:
             rel = p.relative_to(repo_root)
             arc = "payload/" + normalize_rel(rel)
             data = p.read_bytes()
 
             zi = zipfile.ZipInfo(arc, date_time=FIXED_ZIP_DT)
-            zi.compress_type = zipfile.ZIP_DEFLATED
-            # normalize permissions (644)
-            zi.external_attr = (0o644 & 0xFFFF) << 16
+            zi.compress_type = zipfile.ZIP_STORED
+            zi.external_attr = ZIP_MODE_644
 
             zf.writestr(zi, data)
 
-def write_evidence(out_path: Path, product_id: str, version: str, included: List[str], policy_summary: Dict[str, Any], gate_summary: Dict[str, Any]) -> None:
-    # Deterministic: no timestamps, no run_id.
+
+def write_evidence(
+    out_path: Path,
+    product_id: str,
+    version: str,
+    included: List[str],
+    policy_summary: Dict[str, Any],
+    gate_summary: Dict[str, Any],
+) -> None:
+    # Deterministic: no timestamps, no run_id
     lines: List[str] = []
     lines.append(f"# Evidence — {product_id} v{version}")
     lines.append("")
@@ -135,10 +154,11 @@ def write_evidence(out_path: Path, product_id: str, version: str, included: List
     lines.append("")
     lines.append("## Payload files included")
     lines.append(f"- count: {len(included)}")
-    for rel in included:
-        lines.append(f"- {rel}")
+    for r in included:
+        lines.append(f"- {r}")
     lines.append("")
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="foundry_build_v0")
@@ -151,36 +171,55 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_INFRA,"error":str(e)})
+        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
         return EXIT_INFRA
 
-    # load control plane
+    # Load control plane
+    cp_path = (repo_root / Path(args.control_plane)).resolve()
     try:
-        cp = read_json((repo_root / Path(args.control_plane)).resolve())
+        cp = read_json(cp_path)
     except Exception as e:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_INFRA,"error":f"control_plane load failed: {type(e).__name__}: {e}"})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": f"control_plane load failed: {type(e).__name__}: {e}",
+            }
+        )
         return EXIT_INFRA
 
-    # policy must allow build
+    # Policy must allow build
     ok_policy, blocked_by = policy_check_build(cp, args.product, args.factory)
     if not ok_policy:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_INFRA,"blocked_by":blocked_by})
+        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "blocked_by": blocked_by})
         return EXIT_INFRA
 
-    # load manifests
+    # Load manifests
     try:
         factories = load_factories(repo_root)
         if args.factory not in factories:
             raise ManifestError(f"unknown factory_id: {args.factory}")
         product = load_product(repo_root, args.product)
     except ManifestError as e:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_INFRA,"error":str(e)})
+        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
         return EXIT_INFRA
 
-    out_dir = repo_root / factories[args.factory].default_out_dir / product.product_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Run quality gate (M4) — must PASS before build
+    gate_code, gate_summary = run_gate(repo_root)
+    if gate_code != 0:
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": gate_code,
+                "error": "gate failed",
+                "gate": gate_summary,
+            }
+        )
+        return gate_code
 
-    # Gate v0 (minimal): make sure payload expands to non-empty and runbook template exists
+    # Expand payload and validate build inputs
     try:
         files = expand_patterns(repo_root, product.include_paths)
         if len(files) == 0:
@@ -189,7 +228,7 @@ def main() -> int:
         if not rb_src.exists():
             raise RuntimeError(f"missing runbook template: {product.runbook_template_path}")
     except Exception as e:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_EVAL_FAIL,"error":str(e)})
+        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_EVAL_FAIL, "error": str(e)})
         return EXIT_EVAL_FAIL
 
     included_rel = [normalize_rel(p.relative_to(repo_root)) for p in files]
@@ -200,24 +239,18 @@ def main() -> int:
         "execution_mode": cp.get("execution_mode", "DRYRUN"),
         "permissions": (cp.get("engine", {}) or {}).get("permissions", {}),
         "allowlist": (cp.get("engine", {}) or {}).get("allowlist", {}),
-        "control_plane_sha256": sha256_file((repo_root / Path(args.control_plane)).resolve()),
+        "control_plane_sha256": sha256_file(cp_path),
     }
 
-    gate_summary = {
-        "schema": "engine_gate_summary_v0",
-        "ok": True,
-        "checks": [
-            {"id":"payload_nonempty", "ok": True, "count": len(files)},
-            {"id":"runbook_template_exists", "ok": True, "path": product.runbook_template_path},
-        ]
-    }
+    out_dir = repo_root / factories[args.factory].default_out_dir / product.product_id
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) runbook.md
     runbook_path = out_dir / "runbook.md"
     try:
-        write_runbook(repo_root, product.runbook_template_path, runbook_path)
+        copy_runbook_bytes(repo_root, product.runbook_template_path, runbook_path)
     except Exception as e:
-        dump({"schema":"foundry_build_v0","ok":False,"exit_code":EXIT_EVAL_FAIL,"error":str(e)})
+        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_EVAL_FAIL, "error": str(e)})
         return EXIT_EVAL_FAIL
 
     # 2) bundle.zip (deterministic)
@@ -226,7 +259,14 @@ def main() -> int:
 
     # 3) evidence.md (deterministic)
     evidence_path = out_dir / "evidence.md"
-    write_evidence(evidence_path, product.product_id, product.version, included_rel, policy_summary, gate_summary)
+    write_evidence(
+        evidence_path,
+        product.product_id,
+        product.version,
+        included_rel,
+        policy_summary,
+        gate_summary,
+    )
 
     # 4) hashes.json (hash 3 files; no self-hash)
     hashes = {
@@ -237,25 +277,28 @@ def main() -> int:
             "bundle.zip": sha256_file(bundle_path),
             "evidence.md": sha256_file(evidence_path),
             "runbook.md": sha256_file(runbook_path),
-        }
+        },
     }
     hashes_path = out_dir / "hashes.json"
     hashes_path.write_text(json.dumps(hashes, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    dump({
-        "schema":"foundry_build_v0",
-        "ok": True,
-        "exit_code": 0,
-        "out_dir": str(out_dir),
-        "artifacts": {
-            "bundle_zip": str(bundle_path),
-            "evidence_md": str(evidence_path),
-            "hashes_json": str(hashes_path),
-            "runbook_md": str(runbook_path),
-        },
-        "payload_count": len(files)
-    })
+    dump(
+        {
+            "schema": "foundry_build_v0",
+            "ok": True,
+            "exit_code": 0,
+            "out_dir": str(out_dir),
+            "artifacts": {
+                "bundle_zip": str(bundle_path),
+                "evidence_md": str(evidence_path),
+                "hashes_json": str(hashes_path),
+                "runbook_md": str(runbook_path),
+            },
+            "payload_count": len(files),
+        }
+    )
     return EXIT_OK
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

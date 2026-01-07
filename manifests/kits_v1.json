@@ -1,0 +1,69 @@
+﻿{
+  "schema": "kits_registry_v1",
+  "kits": [
+    {
+      "kit_id": "kit_cli_tool_v1",
+      "default_product_id": "windows_cli_tool_v0",
+      "workspace": {
+        "entrypoint": "src/main.py",
+        "cli_entry": "src/cli.py",
+        "stdlib_only": true
+      },
+      "allowed_paths": [
+        "src/cli.py",
+        "src/main.py",
+        "src/canonical_json_v1.py",
+        "src/product_manifest_v1.py",
+        "src/sample_product_manifest_v1.json",
+        "tests/test_manifest_v1.py",
+        "tests/test_smoke.py",
+        "config.example.json",
+        ".gitignore"
+      ],
+      "requirements_default": {
+        "summary": "Extend existing CLI: keep hello/version/hash; ensure ping/selftest/manifest validate exist; stdlib-only; deterministic selftest that works inside PyInstaller EXE."
+      }
+    },
+    {
+      "kit_id": "kit_windows_service_v0",
+      "default_product_id": "windows_service_v0",
+      "workspace": {
+        "entrypoint": "src/service_main.py",
+        "cli_entry": "src/cli.py",
+        "stdlib_only": true
+      },
+      "allowed_paths": [
+        "src/service_main.py",
+        "src/service_core.py",
+        "src/cli.py",
+        "src/canonical_json_v1.py",
+        "tests/test_smoke.py",
+        "config.example.json",
+        ".gitignore"
+      ],
+      "requirements_default": {
+        "summary": "Create a minimal Windows service-style scaffold (stdlib-only). Provide CLI commands: ping/selftest/version. Service core must be deterministic and testable without network."
+      }
+    },
+    {
+      "kit_id": "kit_web_dashboard_v0",
+      "default_product_id": "web_dashboard_v0",
+      "workspace": {
+        "entrypoint": "src/app.py",
+        "cli_entry": "src/cli.py",
+        "stdlib_only": true
+      },
+      "allowed_paths": [
+        "src/app.py",
+        "src/cli.py",
+        "src/canonical_json_v1.py",
+        "tests/test_smoke.py",
+        "config.example.json",
+        ".gitignore"
+      ],
+      "requirements_default": {
+        "summary": "Create a minimal dashboard scaffold (stdlib-only). Provide CLI commands: ping/selftest/version. The dashboard entrypoint is src/app.py (placeholder)."
+      }
+    }
+  ]
+}

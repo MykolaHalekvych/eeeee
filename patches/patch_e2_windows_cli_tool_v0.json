@@ -1,0 +1,42 @@
+{
+  "schema": "codegen_patch_v0",
+  "scope": ["E2_windows_cli_tool_v0_scaffold"],
+  "ops": [
+    {
+      "op": "write_file",
+      "path": "manifests/products/windows_cli_tool_v0.json",
+      "encoding": "utf-8",
+      "content": "{\n  \"schema\": \"product_manifest_v0\",\n  \"product_id\": \"windows_cli_tool_v0\",\n  \"version\": \"0.1.0\",\n  \"kind\": \"windows_portable_exe\",\n  \"template_dir\": \"templates/windows_cli_tool_v0\",\n  \"entrypoint\": \"src/main.py\",\n  \"exe_name\": \"app.exe\",\n  \"python_min\": \"3.11\",\n  \"description\": \"Minimal Windows CLI tool scaffold for EXE Pack v0 (PyInstaller onefile).\"\n}\n"
+    },
+    {
+      "op": "write_file",
+      "path": "templates/windows_cli_tool_v0/src/main.py",
+      "encoding": "utf-8",
+      "content": "from __future__ import annotations\n\nimport json\nimport sys\nfrom pathlib import Path\n\nfrom cli import build_parser\n\n__version__ = \"0.1.0\"\n\n\ndef cmd_hello(name: str) -> int:\n    print(f\"hello, {name}\")\n    return 0\n\n\ndef cmd_version() -> int:\n    print(__version__)\n    return 0\n\n\ndef cmd_hash(path: str) -> int:\n    import hashlib\n\n    p = Path(path)\n    if not p.exists() or not p.is_file():\n        print(f\"ERROR: file not found: {p}\", file=sys.stderr)\n        return 2\n\n    h = hashlib.sha256()\n    with p.open(\"rb\") as f:\n        for chunk in iter(lambda: f.read(1024 * 1024), b\"\"):\n            h.update(chunk)\n\n    out = {\n        \"schema\": \"sha256_v0\",\n        \"path\": str(p),\n        \"sha256\": h.hexdigest(),\n    }\n    print(json.dumps(out, ensure_ascii=False))\n    return 0\n\n\ndef main(argv: list[str] | None = None) -> int:\n    argv = sys.argv[1:] if argv is None else argv\n    parser = build_parser()\n    args = parser.parse_args(argv)\n\n    if args.command == \"hello\":\n        return cmd_hello(args.name)\n    if args.command == \"version\":\n        return cmd_version()\n    if args.command == \"hash\":\n        return cmd_hash(args.path)\n\n    parser.print_help()\n    return 2\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n"
+    },
+    {
+      "op": "write_file",
+      "path": "templates/windows_cli_tool_v0/src/cli.py",
+      "encoding": "utf-8",
+      "content": "from __future__ import annotations\n\nimport argparse\n\n\ndef build_parser() -> argparse.ArgumentParser:\n    p = argparse.ArgumentParser(\n        prog=\"app\",\n        description=\"windows_cli_tool_v0: minimal CLI scaffold (EXE Pack v0)\",\n    )\n    sub = p.add_subparsers(dest=\"command\", required=True)\n\n    p_hello = sub.add_parser(\"hello\", help=\"print a hello message\")\n    p_hello.add_argument(\"--name\", default=\"world\")\n\n    sub.add_parser(\"version\", help=\"print version\")\n\n    p_hash = sub.add_parser(\"hash\", help=\"print sha256 (JSON) for a file\")\n    p_hash.add_argument(\"path\")\n\n    return p\n"
+    },
+    {
+      "op": "write_file",
+      "path": "templates/windows_cli_tool_v0/config.example.json",
+      "encoding": "utf-8",
+      "content": "{\n  \"schema\": \"windows_cli_tool_config_v0\",\n  \"log_level\": \"INFO\",\n  \"example\": {\n    \"message\": \"edit this file and rename to config.json if your app later needs config\"\n  }\n}\n"
+    },
+    {
+      "op": "write_file",
+      "path": "templates/windows_cli_tool_v0/tests/test_smoke.py",
+      "encoding": "utf-8",
+      "content": "from __future__ import annotations\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\n\ndef run(cmd: list[str]) -> subprocess.CompletedProcess[str]:\n    return subprocess.run(cmd, capture_output=True, text=True, check=False)\n\n\ndef test_help_exit_zero() -> None:\n    root = Path(__file__).resolve().parents[1]\n    main_py = root / \"src\" / \"main.py\"\n    cp = run([sys.executable, str(main_py), \"--help\"])\n    assert cp.returncode == 0\n\n\ndef test_hello_exit_zero() -> None:\n    root = Path(__file__).resolve().parents[1]\n    main_py = root / \"src\" / \"main.py\"\n    cp = run([sys.executable, str(main_py), \"hello\", \"--name\", \"kolya\"])\n    assert cp.returncode == 0\n    assert \"hello, kolya\" in (cp.stdout or \"\")\n"
+    },
+    {
+      "op": "write_file",
+      "path": "templates/windows_cli_tool_v0/.gitignore",
+      "encoding": "utf-8",
+      "content": "__pycache__/\n*.pyc\n.pytest_cache/\ndist/\nbuild/\n"
+    }
+  ]
+}

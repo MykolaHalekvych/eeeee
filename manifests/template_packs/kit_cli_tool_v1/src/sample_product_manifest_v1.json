@@ -1,0 +1,12 @@
+﻿{
+  "schema": "product_manifest_v1",
+  "version": 1,
+  "product_id": "windows_cli_tool_v0",
+  "commands": [
+    { "name": "ping" },
+    { "name": "version" },
+    { "name": "hash" },
+    { "name": "selftest" },
+    { "name": "manifest-validate" }
+  ]
+}

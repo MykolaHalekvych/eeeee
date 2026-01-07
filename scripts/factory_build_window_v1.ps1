@@ -8,8 +8,137 @@
 
 $ErrorActionPreference = "Stop"
 
+# ----------------------------
+# M8 RUNS/EVIDENCE v0 (WRAPPED INTO WINDOW)
+# writes:
+#   args\data\runs\<run_id>\events.jsonl
+#   args\data\runs\<run_id>\final_report.json
+# stdout remains single JSON
+# ----------------------------
+
+$runId = $null
+$runDir = $null
+$runsEventsPath = $null
+$runsFinalReportPath = $null
+
+$pyParts = $Python -split '\s+'
+$pyExe = $pyParts[0]
+$pyBaseArgs = @()
+if ($pyParts.Length -gt 1) { $pyBaseArgs = $pyParts[1..($pyParts.Length-1)] }
+
+function RunsSafeCall {
+  param([string[]]$Args)
+  try {
+    & $pyExe @pyBaseArgs @Args | Out-Null
+  } catch {
+    # best-effort; do not break window execution if evidence logging fails
+  }
+}
+
+function RunsStatusFromRc([int]$rc) {
+  if ($rc -eq 0) { return "PASS" }
+  elseif ($rc -eq 2) { return "ERROR" }
+  else { return "FAIL" }
+}
+
+function RunsInit {
+  param([string]$RepoRoot, [string]$ControlPlanePath, [string]$ProductName, [string]$FactoryName)
+
+  $runsRoot = Join-Path $RepoRoot "args\data\runs"
+  New-Item -ItemType Directory -Force $runsRoot | Out-Null
+
+  $rid = (& $pyExe @pyBaseArgs -m args.foundry.runs_v0 new-run-id --repo-root $RepoRoot) 2>$null
+  if ($LASTEXITCODE -ne 0) { return @{ ok=$false } }
+
+  $rid = ($rid | Out-String).Trim()
+  $rdir = Join-Path $runsRoot $rid
+  New-Item -ItemType Directory -Force $rdir | Out-Null
+
+  RunsSafeCall @(
+    "-m","args.foundry.runs_v0","init",
+    "--run-dir",$rdir,
+    "--run-id",$rid,
+    "--repo-root",$RepoRoot,
+    "--product",$ProductName,
+    "--factory",$FactoryName,
+    "--control-plane",$ControlPlanePath
+  )
+
+  return @{
+    ok=$true
+    run_id=$rid
+    run_dir=$rdir
+    events_path=(Join-Path $rdir "events.jsonl")
+    final_report_path=(Join-Path $rdir "final_report.json")
+  }
+}
+
+function RunsEvent {
+  param([string]$RunDir, [string]$Event, [int]$Rc, [hashtable]$Data)
+
+  $status = RunsStatusFromRc $Rc
+  if ($null -ne $Data) {
+    $dataJson = ($Data | ConvertTo-Json -Compress -Depth 20)
+    RunsSafeCall @(
+      "-m","args.foundry.runs_v0","event",
+      "--run-dir",$RunDir,
+      "--event",$Event,
+      "--status",$status,
+      "--exit-code",$Rc,
+      "--data-json",$dataJson
+    )
+  } else {
+    RunsSafeCall @(
+      "-m","args.foundry.runs_v0","event",
+      "--run-dir",$RunDir,
+      "--event",$Event,
+      "--status",$status,
+      "--exit-code",$Rc
+    )
+  }
+}
+
+function RunsFinalize {
+  param([string]$RunDir, [int]$OverallRc, [hashtable]$Seed)
+
+  $overallStatus = if ($OverallRc -eq 0) { "PASS" } elseif ($OverallRc -eq 2) { "HALT" } else { "FAIL" }
+
+  $seedPath = Join-Path $RunDir "seed.json"
+  if ($null -ne $Seed) {
+    ($Seed | ConvertTo-Json -Depth 30) | Set-Content -LiteralPath $seedPath -Encoding utf8
+    RunsSafeCall @(
+      "-m","args.foundry.runs_v0","finalize",
+      "--run-dir",$RunDir,
+      "--overall-status",$overallStatus,
+      "--overall-exit-code",$OverallRc,
+      "--seed-file",$seedPath
+    )
+  } else {
+    RunsSafeCall @(
+      "-m","args.foundry.runs_v0","finalize",
+      "--run-dir",$RunDir,
+      "--overall-status",$overallStatus,
+      "--overall-exit-code",$OverallRc
+    )
+  }
+}
+
+# ----------------------------
+# original helpers (kept)
+# ----------------------------
+
 function EmitJsonAndExit([hashtable]$obj, [int]$code) {
   $obj.exit_code = $code
+
+  # attach runs info if present
+  if ($runId) {
+    $obj.run_id = $runId
+    $obj.run_dir = $runDir
+    if (-not $obj.paths) { $obj.paths = @{} }
+    $obj.paths.events_jsonl = $runsEventsPath
+    $obj.paths.final_report_json = $runsFinalReportPath
+  }
+
   $json = ($obj | ConvertTo-Json -Compress -Depth 20)
   Write-Output $json
   exit $code
@@ -37,7 +166,7 @@ $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 # --- Guards ---
 if (-not (Test-Path -LiteralPath ".\.args_engine_repo")) {
   EmitJsonAndExit @{
-    schema="factory_build_window_v1";
+    schema="factory_build_window_m8_v1";
     ok=$false;
     ts_utc=$ts;
     error="ENG guard failed: missing .args_engine_repo";
@@ -46,8 +175,30 @@ if (-not (Test-Path -LiteralPath ".\.args_engine_repo")) {
 
 $stopFlag = ".\args\control\stop.flag"
 if (Test-Path -LiteralPath $stopFlag) {
+  # create a run even on HALT (useful evidence)
+  $cpTry = $ControlPlane
+  try { $cpTry = (Resolve-Path -LiteralPath $ControlPlane).Path } catch { $cpTry = $ControlPlane }
+
+  $init = RunsInit -RepoRoot $repoPath -ControlPlanePath $cpTry -ProductName $Product -FactoryName $Factory
+  if ($init.ok) {
+    $runId = $init.run_id
+    $runDir = $init.run_dir
+    $runsEventsPath = $init.events_path
+    $runsFinalReportPath = $init.final_report_path
+
+    RunsEvent -RunDir $runDir -Event "HALT" -Rc 2 -Data @{ reason="stop.flag present"; stop_flag=$stopFlag }
+    RunsFinalize -RunDir $runDir -OverallRc 2 -Seed @{
+      window="scripts/factory_build_window_m8_v1.ps1"
+      repo_root=$repoPath
+      product=$Product
+      factory=$Factory
+      control_plane=$ControlPlane
+      stop_flag=$stopFlag
+    }
+  }
+
   EmitJsonAndExit @{
-    schema="factory_build_window_v1";
+    schema="factory_build_window_m8_v1";
     ok=$false;
     ts_utc=$ts;
     error="HALT: stop.flag present";
@@ -59,14 +210,34 @@ if (Test-Path -LiteralPath $stopFlag) {
 $cpPath = (Resolve-Path -LiteralPath $ControlPlane).Path
 $backupPath = TempJson "control_plane_backup"
 
+# --- Init runs (after guards) ---
+$initRuns = RunsInit -RepoRoot $repoPath -ControlPlanePath $cpPath -ProductName $Product -FactoryName $Factory
+if ($initRuns.ok) {
+  $runId = $initRuns.run_id
+  $runDir = $initRuns.run_dir
+  $runsEventsPath = $initRuns.events_path
+  $runsFinalReportPath = $initRuns.final_report_path
+}
+
 # --- Backup control plane to TEMP ---
 $cpRaw = $null
 try {
   $cpRaw = ReadText $cpPath
   WriteText $backupPath $cpRaw
 } catch {
+  if ($runDir) {
+    RunsEvent -RunDir $runDir -Event "CONTROL_PLANE_BACKUP" -Rc 2 -Data @{ error=$_.Exception.Message; control_plane=$cpPath }
+    RunsFinalize -RunDir $runDir -OverallRc 2 -Seed @{
+      window="scripts/factory_build_window_m8_v1.ps1"
+      repo_root=$repoPath
+      product=$Product
+      factory=$Factory
+      control_plane=$ControlPlane
+    }
+  }
+
   EmitJsonAndExit @{
-    schema="factory_build_window_v1";
+    schema="factory_build_window_m8_v1";
     ok=$false;
     ts_utc=$ts;
     repo=$repoPath;
@@ -100,22 +271,41 @@ try {
   $gateCmd = "$Python -m args.foundry.gate_v0 --control-plane .\$ControlPlane"
   $gateJson = Invoke-Expression $gateCmd
   $gateRc = $LASTEXITCODE
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "GATE" -Rc $gateRc -Data @{ cmd=$gateCmd } }
   if ($gateRc -ne 0) { throw "gate failed rc=$gateRc" }
 
   # 1) Plan
   $planCmd = "$Python -m args.foundry.plan_v0 --control-plane .\$ControlPlane --product $Product --factory $Factory"
   $planJson = Invoke-Expression $planCmd
   $planRc = $LASTEXITCODE
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "PLAN" -Rc $planRc -Data @{ cmd=$planCmd; product=$Product; factory=$Factory } }
   if ($planRc -ne 0) { throw "plan failed rc=$planRc" }
 
   # 2) Build
   $buildCmd = "$Python -m args.foundry.build_v0 --control-plane .\$ControlPlane --product $Product --factory $Factory"
   $buildJson = Invoke-Expression $buildCmd
   $buildRc = $LASTEXITCODE
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "BUILD" -Rc $buildRc -Data @{ cmd=$buildCmd; product=$Product } }
   if ($buildRc -ne 0) { throw "build failed rc=$buildRc" }
 
+  if ($runDir) {
+    RunsFinalize -RunDir $runDir -OverallRc 0 -Seed @{
+      window="scripts/factory_build_window_m8_v1.ps1"
+      repo_root=$repoPath
+      product=$Product
+      factory=$Factory
+      control_plane=$ControlPlane
+      artifacts=@(
+        @{ label="bundle_zip";  path="dist/$Product/bundle.zip" },
+        @{ label="evidence_md"; path="dist/$Product/evidence.md" },
+        @{ label="hashes_json"; path="dist/$Product/hashes.json" },
+        @{ label="runbook_md";  path="dist/$Product/runbook.md" }
+      )
+    }
+  }
+
   EmitJsonAndExit @{
-    schema="factory_build_window_v1";
+    schema="factory_build_window_m8_v1";
     ok=$true;
     ts_utc=$ts;
     repo=$repoPath;
@@ -135,8 +325,29 @@ catch {
   $code = 2
   if ($gateRc -eq 1 -or $planRc -eq 1 -or $buildRc -eq 1) { $code = 1 }
 
+  if ($runDir) {
+    RunsEvent -RunDir $runDir -Event "WINDOW_ERROR" -Rc $code -Data @{
+      error=$err; gate_rc=$gateRc; plan_rc=$planRc; build_rc=$buildRc
+    }
+
+    RunsFinalize -RunDir $runDir -OverallRc $code -Seed @{
+      window="scripts/factory_build_window_m8_v1.ps1"
+      repo_root=$repoPath
+      product=$Product
+      factory=$Factory
+      control_plane=$ControlPlane
+      error=$err
+      artifacts=@(
+        @{ label="bundle_zip";  path="dist/$Product/bundle.zip" },
+        @{ label="evidence_md"; path="dist/$Product/evidence.md" },
+        @{ label="hashes_json"; path="dist/$Product/hashes.json" },
+        @{ label="runbook_md";  path="dist/$Product/runbook.md" }
+      )
+    }
+  }
+
   EmitJsonAndExit @{
-    schema="factory_build_window_v1";
+    schema="factory_build_window_m8_v1";
     ok=$false;
     ts_utc=$ts;
     repo=$repoPath;

@@ -1,0 +1,7 @@
+{
+  "schema": "windows_cli_tool_config_v0",
+  "log_level": "INFO",
+  "example": {
+    "message": "edit this file and rename to config.json if your app later needs config"
+  }
+}

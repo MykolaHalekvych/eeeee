@@ -7,7 +7,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from args.foundry.guard_v0 import find_repo_root, require_engine_repo
 from args.foundry.manifests_v0 import ManifestError, load_factories, load_product
