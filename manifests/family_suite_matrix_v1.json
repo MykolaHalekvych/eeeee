@@ -7,19 +7,62 @@
     "negative_expected_exit_code": 1
   },
   "positive_e2e": [
-    { "case_id": "e2e_cli", "kit_id": "kit_cli_tool_v1", "product_id": "demo_cli_tool" },
-    { "case_id": "e2e_obs_health_cli", "kit_id": "kit_cli_tool_v1", "product_id": "obs_health_cli_v0" },
-    { "case_id": "e2e_service", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0" },
-    { "case_id": "e2e_dashboard", "kit_id": "kit_web_dashboard_v0", "product_id": "web_dashboard_v0" },
-    { "case_id": "e2e_reli_rate_limiter_cli", "kit_id": "kit_cli_tool_v1", "product_id": "reli_rate_limiter_cli_v0" }
+    {
+      "case_id": "e2e_cli",
+      "kit_id": "kit_cli_tool_v1",
+      "product_id": "demo_cli_tool"
+    },
+    {
+      "case_id": "e2e_obs_health_cli",
+      "kit_id": "kit_cli_tool_v1",
+      "product_id": "obs_health_cli_v0"
+    },
+    {
+      "case_id": "e2e_service",
+      "kit_id": "kit_windows_service_v0",
+      "product_id": "windows_service_v0"
+    },
+    {
+      "case_id": "e2e_dashboard",
+      "kit_id": "kit_web_dashboard_v0",
+      "product_id": "web_dashboard_v0"
+    },
+    {
+      "case_id": "e2e_reli_rate_limiter_cli",
+      "kit_id": "kit_cli_tool_v1",
+      "product_id": "reli_rate_limiter_cli_v0"
+    }
   ],
   "negative": [
-    { "case_id": "neg_missing_codegen", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0", "prep": "missing_codegen" },
-    { "case_id": "neg_missing_job_request", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0", "prep": "missing_job_request" },
-    { "case_id": "neg_invalid_codegen_json", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0", "prep": "invalid_codegen_json" },
-    { "case_id": "neg_allowed_paths_block_all", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0", "prep": "allowed_paths_block_all" }
+    {
+      "case_id": "neg_missing_codegen",
+      "kit_id": "kit_windows_service_v0",
+      "product_id": "windows_service_v0",
+      "prep": "missing_codegen"
+    },
+    {
+      "case_id": "neg_missing_job_request",
+      "kit_id": "kit_windows_service_v0",
+      "product_id": "windows_service_v0",
+      "prep": "missing_job_request"
+    },
+    {
+      "case_id": "neg_invalid_codegen_json",
+      "kit_id": "kit_windows_service_v0",
+      "product_id": "windows_service_v0",
+      "prep": "invalid_codegen_json"
+    },
+    {
+      "case_id": "neg_allowed_paths_block_all",
+      "kit_id": "kit_windows_service_v0",
+      "product_id": "windows_service_v0",
+      "prep": "allowed_paths_block_all"
+    }
   ],
   "chaos": [
-    { "case_id": "chaos_file_lock_release_pack", "requires_positive_case_id": "e2e_service" }
+    {
+      "case_id": "chaos_file_lock_release_pack",
+      "requires_positive_case_id": "e2e_service"
+    }
   ]
 }
