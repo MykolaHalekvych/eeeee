@@ -1,0 +1,34 @@
+﻿{
+    "schema":  "golden_proofs_v0",
+    "ts_utc":  "2026-01-08T23:30:43Z",
+    "repo":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+    "git":  {
+                "head":  "2dd93e8f7df59431ce7281429d46439ab4e54621",
+                "branch":  "m8-runs-evidence-layer"
+            },
+    "proofs":  {
+                   "preflight_negative":  {
+                                              "expected":  {
+                                                               "exit_code":  1,
+                                                               "step":  "preflight_product_manifest"
+                                                           },
+                                              "cmd":  "run_factory_app_build_release_no_llm_v1.ps1 ProductId=___missing_product___",
+                                              "run_id":  "20260108T213750Z_00b60bf6"
+                                          },
+                   "release_verify_exe_check":  {
+                                                    "expected":  {
+                                                                     "exit_code":  0,
+                                                                     "exec_source":  "release_zip"
+                                                                 },
+                                                    "release_id":  "admin_ops_dashboard_v0__v0.1.0__c8133ef942",
+                                                    "cmd":  "py -3.11 -m args.foundry.release_verify_v0 --release-id admin_ops_dashboard_v0__v0.1.0__c8133ef942 --run-exe-check YES"
+                                                },
+                   "suite_soak":  {
+                                      "include_chaos":  "YES",
+                                      "ok":  true,
+                                      "run_id":  "20260108T223732Z_b84c2f3b",
+                                      "final_report_json":  ".\\args\\data\\runs\\20260108T223732Z_b84c2f3b\\final_report.json",
+                                      "n_target":  10
+                                  }
+               }
+}
