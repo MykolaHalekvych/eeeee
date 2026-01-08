@@ -10,7 +10,8 @@
     { "case_id": "e2e_cli", "kit_id": "kit_cli_tool_v1", "product_id": "demo_cli_tool" },
     { "case_id": "e2e_obs_health_cli", "kit_id": "kit_cli_tool_v1", "product_id": "obs_health_cli_v0" },
     { "case_id": "e2e_service", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0" },
-    { "case_id": "e2e_dashboard", "kit_id": "kit_web_dashboard_v0", "product_id": "web_dashboard_v0" }
+    { "case_id": "e2e_dashboard", "kit_id": "kit_web_dashboard_v0", "product_id": "web_dashboard_v0" },
+    { "case_id": "e2e_reli_rate_limiter_cli", "kit_id": "kit_cli_tool_v1", "product_id": "reli_rate_limiter_cli_v0" }
   ],
   "negative": [
     { "case_id": "neg_missing_codegen", "kit_id": "kit_windows_service_v0", "product_id": "windows_service_v0", "prep": "missing_codegen" },
