@@ -1,8 +1,10 @@
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -55,16 +57,6 @@ def classify_exit_code(exc: Exception) -> int:
     return 2
 
 
-def parse_product_id_from_release_id(release_id: str) -> str:
-    # Expected: <product_id>__vX.Y.Z__<hash>
-    # If format differs, fall back to leftmost token.
-    if "__v" in release_id:
-        return release_id.split("__v", 1)[0]
-    if "__" in release_id:
-        return release_id.split("__", 1)[0]
-    return release_id
-
-
 def run_exe_help(exe_path: Path) -> Tuple[Dict[str, Any], bool]:
     """
     Returns (exec_res, infra_flag).
@@ -94,6 +86,31 @@ def run_exe_help(exe_path: Path) -> Tuple[Dict[str, Any], bool]:
             },
             True,
         )
+
+
+def _find_member_by_basename(z: zipfile.ZipFile, wanted_base_lower: str) -> str | None:
+    # Return first member whose basename matches (case-insensitive), ignoring directories.
+    for n in z.namelist():
+        if not n or n.endswith("/"):
+            continue
+        if Path(n).name.lower() == wanted_base_lower:
+            return n
+    return None
+
+
+def _extract_member_atomic(z: zipfile.ZipFile, member: str, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+
+    with z.open(member, "r") as src, tmp_path.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
+
+    # Replace atomically-ish: remove old then rename
+    if out_path.exists():
+        out_path.unlink(missing_ok=True)
+    tmp_path.replace(out_path)
 
 
 def main_inner() -> Tuple[Dict[str, Any], int]:
@@ -135,9 +152,10 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
         verify_mode = "manifest_superset"
         expected_files = sorted([str(x) for x in included_files])
 
-    # Open zip, list members (root basenames), and verify content + hashes without extraction
-    zip_members_by_base: Dict[str, str] = {}
+    # Verify content + hashes without extraction
+    zip_files: List[str] = []
     duplicate_basenames: List[str] = []
+    zip_members_by_base: Dict[str, str] = {}
 
     try:
         with zipfile.ZipFile(str(release_zip), "r") as z:
@@ -181,56 +199,77 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                         if str(expected_sha).lower() != actual.lower():
                             errors.append(f"sha256 mismatch for {name}")
                     except Exception as e:  # noqa: BLE001
-                        # treat unexpected zip read errors as INFRA
                         errors.append(f"zip read/hash error for {name}: {e.__class__.__name__}")
                         infra = True
 
     except zipfile.BadZipFile:
-        # FAIL(1): bad zip is product/artifact failure, not infra
         errors.append("zip bad file")
         zip_files = []
     except Exception as e:  # noqa: BLE001
-        # INFRA(2): permissions, IO errors opening zip
         errors.append(f"zip open error: {e.__class__.__name__}")
         zip_files = []
         infra = True
 
-    # EXE check (opt-in only)
+    # EXE check (opt-in only) — runs from release zip member, not from dist/
     exec_res: Dict[str, Any] = {"skipped": True, "rc": 0, "stdout": "", "stderr": ""}
     if args.run_exe_check == "YES":
-        product_id = parse_product_id_from_release_id(args.release_id)
-        dist_exe = repo / "dist" / product_id / "app.exe"
-        exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": str(dist_exe)}
+        exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": ""}
 
-        if not dist_exe.exists():
-            errors.append(f"dist app.exe not found: {dist_exe}")
-        else:
-            # If we have hashes for app.exe, enforce match before running
-            expected_exe_sha = None
-            if isinstance(file_sha256, dict):
-                expected_exe_sha = file_sha256.get("app.exe")
-
-            if expected_exe_sha:
-                actual_exe_sha = sha256_file(dist_exe)
-                if str(expected_exe_sha).lower() != actual_exe_sha.lower():
-                    errors.append("dist exe sha256 mismatch vs release_hashes")
+        try:
+            with zipfile.ZipFile(str(release_zip), "r") as z:
+                member = _find_member_by_basename(z, "app.exe")
+                if member is None:
+                    errors.append("missing app.exe in zip")
+                    exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": "", "source": "release_zip"}
                 else:
-                    r, infra_flag = run_exe_help(dist_exe)
-                    exec_res = r
-                    if infra_flag:
-                        infra = True
-                        errors.append("exe check infra error")
-                    elif int(exec_res.get("rc", 1)) != 0:
-                        errors.append("exe --help failed")
-            else:
-                # No expected sha in hashes → still allow run, but result is meaningful only as smoke
-                r, infra_flag = run_exe_help(dist_exe)
-                exec_res = r
-                if infra_flag:
-                    infra = True
-                    errors.append("exe check infra error")
-                elif int(exec_res.get("rc", 1)) != 0:
-                    errors.append("exe --help failed")
+                    # Stable repo temp path (short, deterministic)
+                    exe_tmp_root = repo / "args" / "data" / "tmp" / "release_verify_v0_exe"
+                    exe_tmp_dir = exe_tmp_root / hashlib.sha256(args.release_id.encode("utf-8")).hexdigest()[:12]
+                    exe_out = exe_tmp_dir / "app.exe"
+
+                    _extract_member_atomic(z, member, exe_out)
+
+                    # Verify exe sha if available
+                    expected_exe_sha = file_sha256.get("app.exe") if isinstance(file_sha256, dict) else None
+                    if expected_exe_sha:
+                        actual_exe_sha = sha256_file(exe_out)
+                        if str(expected_exe_sha).lower() != actual_exe_sha.lower():
+                            errors.append("exe sha256 mismatch vs release_hashes")
+                            exec_res = {
+                                "skipped": False,
+                                "rc": 1,
+                                "stdout": "",
+                                "stderr": "",
+                                "path": str(exe_out),
+                                "source": "release_zip",
+                                "zip_member": member,
+                            }
+                        else:
+                            r, infra_flag = run_exe_help(exe_out)
+                            r["source"] = "release_zip"
+                            r["zip_member"] = member
+                            exec_res = r
+                            if infra_flag:
+                                infra = True
+                                errors.append("exe check infra error")
+                            elif int(exec_res.get("rc", 1)) != 0:
+                                errors.append("exe --help failed")
+                    else:
+                        r, infra_flag = run_exe_help(exe_out)
+                        r["source"] = "release_zip"
+                        r["zip_member"] = member
+                        exec_res = r
+                        if infra_flag:
+                            infra = True
+                            errors.append("exe check infra error")
+                        elif int(exec_res.get("rc", 1)) != 0:
+                            errors.append("exe --help failed")
+
+        except zipfile.BadZipFile:
+            errors.append("zip bad file")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"exe check error: {e.__class__.__name__}")
+            infra = True
 
     out: Dict[str, Any] = {
         "schema": SCHEMA,
