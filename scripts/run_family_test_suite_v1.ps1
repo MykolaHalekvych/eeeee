@@ -23,6 +23,12 @@ function Ensure-Dir([string]$p) {
   }
 }
 
+function Normalize-Exit([object]$v) {
+  try { $n = [int]$v } catch { return $RC_INFRA }
+  if ($n -eq 0 -or $n -eq 1 -or $n -eq 2) { return $n }
+  return $RC_INFRA
+}
+
 # ---------- UTF-8 no-BOM writers (factory standard) ----------
 function Write-TextUtf8NoBom([string]$Path, [string]$Text) {
   Ensure-Dir (Split-Path -Parent $Path)
@@ -58,12 +64,6 @@ function Append-Event([string]$EventsPath, [string]$RunId, [string]$Kind, [hasht
   Append-TextUtf8NoBom $EventsPath $line
 }
 
-function Normalize-Exit([object]$v) {
-  try { $n = [int]$v } catch { return $RC_INFRA }
-  if ($n -eq 0 -or $n -eq 1 -or $n -eq 2) { return $n }
-  return $RC_INFRA
-}
-
 function Parse-OneJson([string]$Raw) {
   if ($null -eq $Raw) { return $null }
   $s = $Raw.Trim()
@@ -94,14 +94,71 @@ function Sanitize-Token([string]$s) {
   return ($s -replace '[^A-Za-z0-9_\-]+','_')
 }
 
+# ---------- BOM scrub (Stage 1D) ----------
+function Remove-Utf8BomIfPresent([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  try {
+    $b = [IO.File]::ReadAllBytes($Path)
+    if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) {
+      $nb = New-Object byte[] ($b.Length - 3)
+      [Array]::Copy($b, 3, $nb, 0, $nb.Length)
+      [IO.File]::WriteAllBytes($Path, $nb)
+      return $true
+    }
+  } catch {}
+  return $false
+}
+
+function Scrub-RunDirUtf8Bom([string]$RunDir) {
+  $ts = UtcNowIso
+  $scanned = 0
+  $changed = 0
+  $errors = @()
+
+  if (-not (Test-Path -LiteralPath $RunDir -PathType Container)) {
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$false; exit_code=2; run_dir=$RunDir; scanned=0; changed=0; errors=@("run_dir_missing") }
+  }
+
+  try {
+    $files = Get-ChildItem -LiteralPath $RunDir -Recurse -File -Include *.json,*.jsonl -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+      $scanned++
+      if (Remove-Utf8BomIfPresent $f.FullName) { $changed++ }
+    }
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$true; exit_code=0; run_dir=$RunDir; scanned=$scanned; changed=$changed; errors=@() }
+  } catch {
+    $errors += $_.Exception.Message
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$false; exit_code=2; run_dir=$RunDir; scanned=$scanned; changed=$changed; errors=$errors }
+  }
+}
+
 function Run-ContractGate([string]$SuiteEvidenceDir, [string]$Label, [string]$RunDir) {
   Ensure-Dir $SuiteEvidenceDir
   $outPath = Join-Path $SuiteEvidenceDir $Label
 
+  # paired scrub report path
+  $scrubPath = ($outPath -replace 'contract_gate','bom_scrub')
+  if ($scrubPath -eq $outPath) { $scrubPath = ($outPath + ".bom_scrub.json") }
+
+  # 1) scrub BOM in target run_dir
+  $scr = Scrub-RunDirUtf8Bom $RunDir
+  Write-TextUtf8NoBom $scrubPath (($scr | ConvertTo-Json -Compress -Depth 10))
+
+  if ([int]$scr.exit_code -ne 0) {
+    # scrub failed -> INFRA
+    Write-TextUtf8NoBom $outPath ""
+    return [ordered]@{
+      rc=2; rc_raw=2; ok=$false; infra=$true; parsed_ok=$false;
+      json_path=$outPath; run_dir=$RunDir;
+      bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
+    }
+  }
+
+  # 2) run contract gate in STRICT mode (no BOM allowed)
   $outLines = @()
   $rc_raw = 2
   try {
-    $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES 2>$null
+    $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES --bom-strict YES 2>$null
     $rc_raw = $LASTEXITCODE
   } catch {
     $outLines = @()
@@ -112,21 +169,16 @@ function Run-ContractGate([string]$SuiteEvidenceDir, [string]$Label, [string]$Ru
   $txt = ($outLines -join "`n")
   Write-TextUtf8NoBom $outPath $txt
 
-  $obj = $null
   $parsed_ok = $false
-  try { $obj = ($txt | ConvertFrom-Json -ErrorAction Stop); $parsed_ok = $true } catch { }
+  try { $null = ($txt | ConvertFrom-Json -ErrorAction Stop); $parsed_ok = $true } catch {}
 
   $infra = $false
   if (-not $parsed_ok) { $infra = $true; $rc = 2 }
 
   return [ordered]@{
-    rc        = $rc
-    rc_raw    = $rc_raw
-    ok        = ($rc -eq 0)
-    infra     = $infra
-    parsed_ok = $parsed_ok
-    json_path = $outPath
-    run_dir   = $RunDir
+    rc=$rc; rc_raw=$rc_raw; ok=($rc -eq 0); infra=$infra; parsed_ok=$parsed_ok;
+    json_path=$outPath; run_dir=$RunDir;
+    bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
   }
 }
 
@@ -164,7 +216,6 @@ function Invoke-PsFile {
   try {
     Push-Location -Path $RepoPath
     try {
-      # pipes-safe: args are passed as objects, not via cmdline string
       $outLines = & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath @Args 2> $stderrPath
       $rc_raw = $LASTEXITCODE
       $outText = ($outLines | Out-String)
@@ -304,7 +355,9 @@ try {
     exit $RC_FAIL
   }
 
-  Copy-Item -Force $matrixAbs (Join-Path $suiteEvidence "matrix_used.json") | Out-Null
+  # Save matrix_used.json as UTF-8 no-BOM (do not Copy-Item with BOM)
+  $matrixUsed = Join-Path $suiteEvidence "matrix_used.json"
+  Write-TextUtf8NoBom $matrixUsed (($m | ConvertTo-Json -Compress -Depth 80))
   Append-Event $suiteEvents $suiteRunId "matrix_loaded" @{ path=$matrixAbs }
 
   $runIdByCase = @{}
@@ -349,11 +402,11 @@ try {
 
   # ---------- Negative ----------
   foreach ($n in @($m.negative)) {
-    $id       = [string]$n.case_id
-    $prep     = [string]$n.prep
-    $kitId    = [string]$n.kit_id
-    $productId= [string]$n.product_id
-    $summary  = ("FamilySuite v1 neg {0}" -f $id)
+    $id        = [string]$n.case_id
+    $prep      = [string]$n.prep
+    $kitId     = [string]$n.kit_id
+    $productId = [string]$n.product_id
+    $summary   = ("FamilySuite v1 neg {0}" -f $id)
 
     $p = Prompt-CreateRun -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -SuiteEvents $suiteEvents -SuiteRunId $suiteRunId `
       -KitId $kitId -ProductId $productId -Summary $summary -CaseId ("prep_" + $id)
@@ -513,13 +566,13 @@ try {
     cases=$cases
   }
 
-  # 1) Pre-write final_report so contract_gate can read it for suite run
+  # 1) Pre-write final_report
   Write-JsonAtomic $suiteFinal $final
   Append-Event $suiteEvents $suiteRunId "pre_final_written" @{
     ok=$suiteOk; exit_code=$exitCode; total=$total; passed=$passed; failed=$failed; infra=$infraHit
   }
 
-  # 2) Contract Gate Pack (suite run + each case run_id)
+  # 2) Contract Gate Pack (STRICT)
   $cg = [ordered]@{
     schema = "contract_gate_pack_v1"
     ok = $true
@@ -531,13 +584,11 @@ try {
     errors = @()
   }
 
-  # Gate suite run_dir itself
   $cgSuite = Run-ContractGate -SuiteEvidenceDir $suiteEvidence -Label "contract_gate_suite.json" -RunDir $suiteRunDir
   $cg.suite = $cgSuite
   if ($cgSuite.rc -eq 2) { $cg.infra += 1; $cg.exit_code = 2 }
   elseif ($cgSuite.rc -eq 1) { $cg.failed += 1; if ($cg.exit_code -ne 2) { $cg.exit_code = 1 } }
 
-  # Gate each case run_id (if present)
   foreach ($c in $cases) {
     $caseId = [string]$c.case_id
     $rid = ""
@@ -554,7 +605,11 @@ try {
     $fname  = "contract_gate_case_" + (Sanitize-Token $caseId) + ".json"
     $r = Run-ContractGate -SuiteEvidenceDir $suiteEvidence -Label $fname -RunDir $runDir
 
-    $cg.cases += [ordered]@{ case_id=$caseId; run_id=$rid; rc=$r.rc; ok=$r.ok; infra=$r.infra; json_path=$r.json_path; run_dir=$runDir }
+    $cg.cases += [ordered]@{
+      case_id=$caseId; run_id=$rid; rc=$r.rc; ok=$r.ok; infra=$r.infra;
+      json_path=$r.json_path; run_dir=$runDir;
+      bom_scrub_json=$r.bom_scrub_json; bom_scrub_scanned=$r.bom_scrub_scanned; bom_scrub_changed=$r.bom_scrub_changed
+    }
 
     if ($r.rc -eq 2) { $cg.infra += 1; $cg.exit_code = 2 }
     elseif ($r.rc -eq 1) { $cg.failed += 1; if ($cg.exit_code -ne 2) { $cg.exit_code = 1 } }
@@ -569,7 +624,7 @@ try {
     $final.exit_code = [int]([Math]::Max([int]$final.exit_code, [int]$cg.exit_code))
   }
 
-  # 4) Rewrite final_report with contract_gate included, emit one JSON
+  # 4) Rewrite final + done event + emit ONE JSON
   Write-JsonAtomic $suiteFinal $final
   Append-Event $suiteEvents $suiteRunId "done" @{
     ok=$final.ok; exit_code=$final.exit_code; total=$total; passed=$passed; failed=$failed; infra=$infraHit;
