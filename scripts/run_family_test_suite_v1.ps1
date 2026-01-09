@@ -8,6 +8,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Exit codes (project standard)
 $RC_OK    = 0
 $RC_FAIL  = 1
 $RC_INFRA = 2
@@ -22,16 +23,25 @@ function Ensure-Dir([string]$p) {
   }
 }
 
-function Normalize-Exit([object]$v) {
-  try { $n = [int]$v } catch { return $RC_INFRA }
-  if ($n -eq 0 -or $n -eq 1 -or $n -eq 2) { return $n }
-  return $RC_INFRA
+# ---------- UTF-8 no-BOM writers (factory standard) ----------
+function Write-TextUtf8NoBom([string]$Path, [string]$Text) {
+  Ensure-Dir (Split-Path -Parent $Path)
+  $enc = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
+function Append-TextUtf8NoBom([string]$Path, [string]$Text) {
+  Ensure-Dir (Split-Path -Parent $Path)
+  $enc = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::AppendAllText($Path, $Text, $enc)
 }
 
 function Write-JsonAtomic([string]$Path, [object]$Obj) {
   Ensure-Dir (Split-Path -Parent $Path)
   $tmp = "$Path.tmp"
-  ($Obj | ConvertTo-Json -Compress -Depth 80) | Set-Content -Encoding utf8 -Path $tmp
+  $json = ($Obj | ConvertTo-Json -Compress -Depth 80)
+  $enc = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText($tmp, $json, $enc)
   Move-Item -Force -Path $tmp -Destination $Path
 }
 
@@ -40,12 +50,18 @@ function Append-Event([string]$EventsPath, [string]$RunId, [string]$Kind, [hasht
     schema = "event_v0"
     ts_utc = UtcNowIso
     run_id = $RunId
-    step = "family_test_suite_v1"
-    kind = $Kind
-    data = $Data
+    step   = "family_test_suite_v1"
+    kind   = $Kind
+    data   = $Data
   }
-  Ensure-Dir (Split-Path -Parent $EventsPath)
-  Add-Content -Encoding utf8 -Path $EventsPath -Value ((($ev | ConvertTo-Json -Compress -Depth 80) + "`n"))
+  $line = (($ev | ConvertTo-Json -Compress -Depth 80) + "`n")
+  Append-TextUtf8NoBom $EventsPath $line
+}
+
+function Normalize-Exit([object]$v) {
+  try { $n = [int]$v } catch { return $RC_INFRA }
+  if ($n -eq 0 -or $n -eq 1 -or $n -eq 2) { return $n }
+  return $RC_INFRA
 }
 
 function Parse-OneJson([string]$Raw) {
@@ -66,10 +82,52 @@ function Parse-OneJson([string]$Raw) {
 }
 
 function Read-JsonUtf8Sig([string]$Path) {
+  # Read JSON tolerating UTF-8 BOM
   $raw = Get-Content -Raw -Encoding utf8 -Path $Path
   if ($null -eq $raw) { $raw = "" }
   $raw = ($raw -replace "^\uFEFF","")
   return ($raw | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function Sanitize-Token([string]$s) {
+  if ($null -eq $s) { return "null" }
+  return ($s -replace '[^A-Za-z0-9_\-]+','_')
+}
+
+function Run-ContractGate([string]$SuiteEvidenceDir, [string]$Label, [string]$RunDir) {
+  Ensure-Dir $SuiteEvidenceDir
+  $outPath = Join-Path $SuiteEvidenceDir $Label
+
+  $outLines = @()
+  $rc_raw = 2
+  try {
+    $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES 2>$null
+    $rc_raw = $LASTEXITCODE
+  } catch {
+    $outLines = @()
+    $rc_raw = 2
+  }
+
+  $rc = Normalize-Exit $rc_raw
+  $txt = ($outLines -join "`n")
+  Write-TextUtf8NoBom $outPath $txt
+
+  $obj = $null
+  $parsed_ok = $false
+  try { $obj = ($txt | ConvertFrom-Json -ErrorAction Stop); $parsed_ok = $true } catch { }
+
+  $infra = $false
+  if (-not $parsed_ok) { $infra = $true; $rc = 2 }
+
+  return [ordered]@{
+    rc        = $rc
+    rc_raw    = $rc_raw
+    ok        = ($rc -eq 0)
+    infra     = $infra
+    parsed_ok = $parsed_ok
+    json_path = $outPath
+    run_dir   = $RunDir
+  }
 }
 
 function Invoke-PsFile {
@@ -86,13 +144,18 @@ function Invoke-PsFile {
 
   $stdoutPath = Join-Path $SuiteEvidenceDir ("{0}.stdout.txt" -f $CaseId)
   $stderrPath = Join-Path $SuiteEvidenceDir ("{0}.stderr.txt" -f $CaseId)
+
   if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -Force $stdoutPath }
   if (Test-Path -LiteralPath $stderrPath) { Remove-Item -Force $stderrPath }
 
   if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-    Set-Content -Encoding utf8 -Path $stderrPath -Value ("script_not_found: " + $scriptPath)
-    Set-Content -Encoding utf8 -Path $stdoutPath -Value ""
-    return [ordered]@{ infra=$true; rc=2; rc_raw=2; stdout_path=$stdoutPath; stderr_path=$stderrPath; stdout=""; json=$null; error=("script_not_found: " + $scriptPath) }
+    Write-TextUtf8NoBom $stderrPath ("script_not_found: " + $scriptPath)
+    Write-TextUtf8NoBom $stdoutPath ""
+    return [ordered]@{
+      infra=$true; rc=2; rc_raw=2;
+      stdout_path=$stdoutPath; stderr_path=$stderrPath;
+      stdout=""; json=$null; error=("script_not_found: " + $scriptPath)
+    }
   }
 
   $outText = ""
@@ -111,10 +174,20 @@ function Invoke-PsFile {
   } catch {
     $rc_raw = 2
     $outText = ""
-    try { ($_ | Out-String) | Set-Content -Encoding utf8 -Path $stderrPath } catch {}
+    try { Write-TextUtf8NoBom $stderrPath (($_ | Out-String)) } catch {}
   }
 
-  try { Set-Content -Encoding utf8 -Path $stdoutPath -Value $outText } catch {}
+  # Normalize evidence encodings to UTF-8 no BOM
+  try { Write-TextUtf8NoBom $stdoutPath $outText } catch {}
+  try {
+    if (Test-Path -LiteralPath $stderrPath) {
+      $errText = Get-Content -Raw -Path $stderrPath
+      if ($null -eq $errText) { $errText = "" }
+      Write-TextUtf8NoBom $stderrPath $errText
+    } else {
+      Write-TextUtf8NoBom $stderrPath ""
+    }
+  } catch {}
 
   $rc = Normalize-Exit $rc_raw
   $obj = Parse-OneJson $outText
@@ -122,7 +195,11 @@ function Invoke-PsFile {
   $infra = $false
   if ($null -eq $obj) { $infra = $true; $rc = 2; $rc_raw = 2 }
 
-  return [ordered]@{ infra=$infra; rc=$rc; rc_raw=$rc_raw; stdout_path=$stdoutPath; stderr_path=$stderrPath; stdout=$outText; json=$obj; error="" }
+  return [ordered]@{
+    infra=$infra; rc=$rc; rc_raw=$rc_raw;
+    stdout_path=$stdoutPath; stderr_path=$stderrPath;
+    stdout=$outText; json=$obj; error=""
+  }
 }
 
 function Prompt-CreateRun {
@@ -135,7 +212,10 @@ function Prompt-CreateRun {
     -RelScriptPath "scripts\run_factory_app_prompt_v2.ps1" `
     -Args @("-KitId",$KitId,"-ProductId",$ProductId,"-Summary",$Summary)
 
-  Append-Event $SuiteEvents $SuiteRunId "prompt_done" @{ case_id=$CaseId; kit_id=$KitId; product_id=$ProductId; rc=$res.rc; rc_raw=$res.rc_raw; infra=$res.infra }
+  Append-Event $SuiteEvents $SuiteRunId "prompt_done" @{
+    case_id=$CaseId; kit_id=$KitId; product_id=$ProductId;
+    rc=$res.rc; rc_raw=$res.rc_raw; infra=$res.infra
+  }
 
   if ($res.infra -or $res.rc -ne 0) { return [ordered]@{ ok=$false; run_id=""; res=$res } }
 
@@ -160,15 +240,18 @@ $infraHit = $false
 try {
   try { $repoPath = (Resolve-Path -Path $Repo -ErrorAction Stop).Path } catch { $repoPath = $Repo }
 
-  $suiteRunDir = Join-Path $repoPath ("args\data\runs\" + $suiteRunId)
+  $suiteRunDir   = Join-Path $repoPath ("args\data\runs\" + $suiteRunId)
   $suiteEvidence = Join-Path $suiteRunDir "evidence"
-  $suiteEvents = Join-Path $suiteRunDir "events.jsonl"
-  $suiteFinal = Join-Path $suiteRunDir "final_report.json"
+  $suiteEvents   = Join-Path $suiteRunDir "events.jsonl"
+  $suiteFinal    = Join-Path $suiteRunDir "final_report.json"
 
-  Ensure-Dir $suiteEvidence
   Ensure-Dir $suiteRunDir
+  Ensure-Dir $suiteEvidence
 
-  Append-Event $suiteEvents $suiteRunId "start" @{ repo=$repoPath; suite_run_id=$suiteRunId; run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos; matrix_path=$MatrixPath }
+  Append-Event $suiteEvents $suiteRunId "start" @{
+    repo=$repoPath; suite_run_id=$suiteRunId;
+    run_acceptance=$RunAcceptance; include_chaos=$IncludeChaos; matrix_path=$MatrixPath
+  }
 
   $matrixAbs = $MatrixPath
   if (-not [System.IO.Path]::IsPathRooted($matrixAbs)) {
@@ -199,6 +282,7 @@ try {
   $m = Read-JsonUtf8Sig $matrixAbs
   $mSchema = ""
   try { $mSchema = [string]$m.schema } catch { $mSchema = "" }
+
   if ($mSchema -ne "family_suite_matrix_v1") {
     $final = [ordered]@{
       schema="family_test_suite_v1"
@@ -227,10 +311,10 @@ try {
 
   # ---------- Positive E2E ----------
   foreach ($c in @($m.positive_e2e)) {
-    $caseId = [string]$c.case_id
-    $kitId = [string]$c.kit_id
+    $caseId    = [string]$c.case_id
+    $kitId     = [string]$c.kit_id
     $productId = [string]$c.product_id
-    $summary = ("FamilySuite v1 {0} {1}" -f $caseId, $productId)
+    $summary   = ("FamilySuite v1 {0} {1}" -f $caseId, $productId)
 
     $res = Invoke-PsFile -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -CaseId $caseId `
       -RelScriptPath "scripts\run_factory_app_build_release_no_llm_v1.ps1" `
@@ -265,11 +349,11 @@ try {
 
   # ---------- Negative ----------
   foreach ($n in @($m.negative)) {
-    $id = [string]$n.case_id
-    $prep = [string]$n.prep
-    $kitId = [string]$n.kit_id
-    $productId = [string]$n.product_id
-    $summary = ("FamilySuite v1 neg {0}" -f $id)
+    $id       = [string]$n.case_id
+    $prep     = [string]$n.prep
+    $kitId    = [string]$n.kit_id
+    $productId= [string]$n.product_id
+    $summary  = ("FamilySuite v1 neg {0}" -f $id)
 
     $p = Prompt-CreateRun -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -SuiteEvents $suiteEvents -SuiteRunId $suiteRunId `
       -KitId $kitId -ProductId $productId -Summary $summary -CaseId ("prep_" + $id)
@@ -288,11 +372,11 @@ try {
       continue
     }
 
-    $rid = $p.run_id
+    $rid    = $p.run_id
     $runDir = Join-Path $repoPath ("args\data\runs\" + $rid)
-    $jr = Join-Path $runDir "job_request.json"
-    $tmpl = Join-Path $runDir "codegen_output.template.json"
-    $out = Join-Path $runDir "codegen_output.json"
+    $jr     = Join-Path $runDir "job_request.json"
+    $tmpl   = Join-Path $runDir "codegen_output.template.json"
+    $out    = Join-Path $runDir "codegen_output.json"
 
     try {
       if ($prep -eq "missing_codegen") {
@@ -304,18 +388,23 @@ try {
       }
       elseif ($prep -eq "invalid_codegen_json") {
         Copy-Item -Force $tmpl $out
-        "{INVALID_JSON" | Set-Content -Encoding utf8 -Path $out
+        Write-TextUtf8NoBom $out "{INVALID_JSON"
       }
       elseif ($prep -eq "allowed_paths_block_all") {
         Copy-Item -Force $tmpl $out
-        $jrText = Get-Content -Raw -Encoding utf8 $jr
+        $jrText = Get-Content -Raw -Encoding utf8 -Path $jr
+        if ($null -eq $jrText) { $jrText = "" }
+        $jrText = ($jrText -replace "^\uFEFF","")
         $jrObj = $jrText | ConvertFrom-Json
+
         if ($null -eq $jrObj.allowed_paths) {
           $jrObj | Add-Member -NotePropertyName allowed_paths -NotePropertyValue @() -Force
         } else {
           $jrObj.allowed_paths = @()
         }
-        ($jrObj | ConvertTo-Json -Depth 80) | Set-Content -Encoding utf8 -Path $jr
+
+        $jrJson = ($jrObj | ConvertTo-Json -Depth 80)
+        Write-TextUtf8NoBom $jr $jrJson
       }
       else {
         throw "unknown_prep_kind: $prep"
@@ -356,7 +445,7 @@ try {
   if ($IncludeChaos -eq "YES") {
     foreach ($z in @($m.chaos)) {
       $caseId = [string]$z.case_id
-      $req = [string]$z.requires_positive_case_id
+      $req    = [string]$z.requires_positive_case_id
 
       $runId = ""
       if ($runIdByCase.ContainsKey($req)) { $runId = [string]$runIdByCase[$req] }
@@ -400,11 +489,12 @@ try {
     }
   }
 
-  $total = $cases.Count
+  # ---------- Summary ----------
+  $total  = $cases.Count
   $passed = @($cases | Where-Object { $_.ok -eq $true }).Count
   $failed = $total - $passed
 
-  $suiteOk = ($failed -eq 0) -and (-not $infraHit)
+  $suiteOk  = ($failed -eq 0) -and (-not $infraHit)
   $exitCode = $(if ($infraHit) { $RC_INFRA } elseif ($suiteOk) { $RC_OK } else { $RC_FAIL })
 
   $final = [ordered]@{
@@ -423,11 +513,71 @@ try {
     cases=$cases
   }
 
+  # 1) Pre-write final_report so contract_gate can read it for suite run
   Write-JsonAtomic $suiteFinal $final
-  Append-Event $suiteEvents $suiteRunId "done" @{ ok=$suiteOk; exit_code=$exitCode; total=$total; passed=$passed; failed=$failed; infra=$infraHit }
+  Append-Event $suiteEvents $suiteRunId "pre_final_written" @{
+    ok=$suiteOk; exit_code=$exitCode; total=$total; passed=$passed; failed=$failed; infra=$infraHit
+  }
+
+  # 2) Contract Gate Pack (suite run + each case run_id)
+  $cg = [ordered]@{
+    schema = "contract_gate_pack_v1"
+    ok = $true
+    exit_code = 0
+    failed = 0
+    infra = 0
+    suite = $null
+    cases = @()
+    errors = @()
+  }
+
+  # Gate suite run_dir itself
+  $cgSuite = Run-ContractGate -SuiteEvidenceDir $suiteEvidence -Label "contract_gate_suite.json" -RunDir $suiteRunDir
+  $cg.suite = $cgSuite
+  if ($cgSuite.rc -eq 2) { $cg.infra += 1; $cg.exit_code = 2 }
+  elseif ($cgSuite.rc -eq 1) { $cg.failed += 1; if ($cg.exit_code -ne 2) { $cg.exit_code = 1 } }
+
+  # Gate each case run_id (if present)
+  foreach ($c in $cases) {
+    $caseId = [string]$c.case_id
+    $rid = ""
+    try { $rid = [string]$c.actual.run_id } catch { $rid = "" }
+
+    if ([string]::IsNullOrWhiteSpace($rid)) {
+      $cg.cases += [ordered]@{ case_id=$caseId; run_id=""; rc=2; ok=$false; infra=$true; json_path=""; error="missing_case_run_id" }
+      $cg.infra += 1
+      $cg.exit_code = 2
+      continue
+    }
+
+    $runDir = Join-Path $repoPath ("args\data\runs\" + $rid)
+    $fname  = "contract_gate_case_" + (Sanitize-Token $caseId) + ".json"
+    $r = Run-ContractGate -SuiteEvidenceDir $suiteEvidence -Label $fname -RunDir $runDir
+
+    $cg.cases += [ordered]@{ case_id=$caseId; run_id=$rid; rc=$r.rc; ok=$r.ok; infra=$r.infra; json_path=$r.json_path; run_dir=$runDir }
+
+    if ($r.rc -eq 2) { $cg.infra += 1; $cg.exit_code = 2 }
+    elseif ($r.rc -eq 1) { $cg.failed += 1; if ($cg.exit_code -ne 2) { $cg.exit_code = 1 } }
+  }
+
+  $cg.ok = ($cg.exit_code -eq 0)
+  $final.contract_gate = $cg
+
+  # 3) Enforce: contract gate overrides suite result
+  if ($cg.exit_code -ne 0) {
+    $final.ok = $false
+    $final.exit_code = [int]([Math]::Max([int]$final.exit_code, [int]$cg.exit_code))
+  }
+
+  # 4) Rewrite final_report with contract_gate included, emit one JSON
+  Write-JsonAtomic $suiteFinal $final
+  Append-Event $suiteEvents $suiteRunId "done" @{
+    ok=$final.ok; exit_code=$final.exit_code; total=$total; passed=$passed; failed=$failed; infra=$infraHit;
+    contract_gate_exit_code=$cg.exit_code; contract_gate_failed=$cg.failed; contract_gate_infra=$cg.infra
+  }
 
   Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
-  exit $exitCode
+  exit ([int]$final.exit_code)
 }
 catch {
   $msg = $_.Exception.Message
@@ -445,8 +595,10 @@ catch {
     error=@{ kind="infra"; type="unhandled_exception"; message=$msg }
     cases=$cases
   }
+
   try { if ($suiteFinal) { Write-JsonAtomic $suiteFinal $final } } catch {}
   try { if ($suiteEvents) { Append-Event $suiteEvents $suiteRunId "error" @{ message=$msg } } } catch {}
+
   Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
   exit $RC_INFRA
 }
