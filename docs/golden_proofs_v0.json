@@ -1,10 +1,11 @@
 {
     "schema":  "golden_proofs_v0",
-    "ts_utc":  "2026-01-08T23:30:43Z",
+    "ts_utc":  "2026-01-09T02:19:41Z",
     "repo":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
     "git":  {
-                "head":  "2dd93e8f7df59431ce7281429d46439ab4e54621",
-                "branch":  "m8-runs-evidence-layer"
+                "head":  "1919dacce383f9d713693be0a49c3b45e8c5c105",
+                "branch":  "m8-runs-evidence-layer",
+                "tag":  "sellable_v0_20260108"
             },
     "proofs":  {
                    "preflight_negative":  {
@@ -12,23 +13,86 @@
                                                                "exit_code":  1,
                                                                "step":  "preflight_product_manifest"
                                                            },
-                                              "cmd":  "run_factory_app_build_release_no_llm_v1.ps1 ProductId=___missing_product___",
-                                              "run_id":  "20260108T213750Z_00b60bf6"
+                                              "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_factory_app_build_release_no_llm_v1.ps1 -KitId \"kit_web_dashboard_v0\" -ProductId \"___missing_product___\" -Summary \"preflight_negative\" -RunAcceptance \"YES\"",
+                                              "actual":  {
+                                                             "exit_code":  1,
+                                                             "run_id":  "20260108T213750Z_00b60bf6"
+                                                         }
                                           },
+                   "family_suite":  {
+                                        "expected":  {
+                                                         "exit_code":  0,
+                                                         "total":  13,
+                                                         "include_chaos":  "YES",
+                                                         "run_acceptance":  "YES"
+                                                     },
+                                        "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_family_test_suite_v1.ps1 -RunAcceptance \"YES\" -IncludeChaos \"YES\"",
+                                        "actual":  {
+                                                       "exit_code":  0,
+                                                       "suite_run_id":  "20260108T233138Z_9a70a0dc",
+                                                       "suite_run_dir":  ".\\args\\data\\runs\\20260108T233138Z_9a70a0dc",
+                                                       "events_jsonl":  ".\\args\\data\\runs\\20260108T233138Z_9a70a0dc\\events.jsonl",
+                                                       "final_report_json":  ".\\args\\data\\runs\\20260108T233138Z_9a70a0dc\\final_report.json",
+                                                       "summary":  {
+                                                                       "total":  13,
+                                                                       "passed":  13,
+                                                                       "failed":  0,
+                                                                       "infra":  false
+                                                                   }
+                                                   }
+                                    },
+                   "golden_no_llm_release":  {
+                                                 "expected":  {
+                                                                  "exit_code":  0,
+                                                                  "acceptance_ok":  true
+                                                              },
+                                                 "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_factory_app_build_release_no_llm_v1.ps1 -KitId \"kit_web_dashboard_v0\" -ProductId \"admin_ops_dashboard_v0\" -Summary \"golden\" -RunAcceptance \"YES\"",
+                                                 "actual":  {
+                                                                "exit_code":  0,
+                                                                "acceptance_ok":  true,
+                                                                "run_id":  "20260108T233721Z_a56773f0",
+                                                                "release_id":  "admin_ops_dashboard_v0__v0.1.0__37fccedb2d",
+                                                                "release_zip":  ".\\dist\\releases\\admin_ops_dashboard_v0__v0.1.0__37fccedb2d.zip",
+                                                                "events_jsonl":  ".\\args\\data\\runs\\20260108T233721Z_a56773f0\\events.jsonl",
+                                                                "final_report_json":  ".\\args\\data\\runs\\20260108T233721Z_a56773f0\\final_report.json"
+                                                            }
+                                             },
                    "release_verify_exe_check":  {
                                                     "expected":  {
                                                                      "exit_code":  0,
                                                                      "exec_source":  "release_zip"
                                                                  },
-                                                    "release_id":  "admin_ops_dashboard_v0__v0.1.0__c8133ef942",
-                                                    "cmd":  "py -3.11 -m args.foundry.release_verify_v0 --release-id admin_ops_dashboard_v0__v0.1.0__c8133ef942 --run-exe-check YES"
+                                                    "cmd":  "py -3.11 -m args.foundry.release_verify_v0 --release-id admin_ops_dashboard_v0__v0.1.0__37fccedb2d --run-exe-check YES",
+                                                    "actual":  {
+                                                                   "exit_code":  0,
+                                                                   "release_id":  "admin_ops_dashboard_v0__v0.1.0__37fccedb2d",
+                                                                   "release_zip":  ".\\dist\\releases\\admin_ops_dashboard_v0__v0.1.0__37fccedb2d.zip",
+                                                                   "exec":  {
+                                                                                "source":  "release_zip",
+                                                                                "rc":  0
+                                                                            }
+                                                               }
                                                 },
                    "suite_soak":  {
-                                      "include_chaos":  "YES",
-                                      "ok":  true,
-                                      "run_id":  "20260108T223732Z_b84c2f3b",
-                                      "final_report_json":  ".\\args\\data\\runs\\20260108T223732Z_b84c2f3b\\final_report.json",
-                                      "n_target":  10
+                                      "expected":  {
+                                                       "exit_code":  0,
+                                                       "n_target":  10,
+                                                       "include_chaos":  "YES",
+                                                       "run_acceptance":  "YES"
+                                                   },
+                                      "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_suite_soak_v1.ps1 -N 10 -IncludeChaos YES -RunAcceptance YES",
+                                      "actual":  {
+                                                     "exit_code":  0,
+                                                     "run_id":  "20260108T233810Z_7b42ec91",
+                                                     "run_dir":  ".\\args\\data\\runs\\20260108T233810Z_7b42ec91",
+                                                     "events_jsonl":  ".\\args\\data\\runs\\20260108T233810Z_7b42ec91\\events.jsonl",
+                                                     "final_report_json":  ".\\args\\data\\runs\\20260108T233810Z_7b42ec91\\final_report.json",
+                                                     "summary":  {
+                                                                     "n_ran":  10,
+                                                                     "failed":  0,
+                                                                     "infra":  0
+                                                                 }
+                                                 }
                                   }
                }
 }
