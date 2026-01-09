@@ -11,14 +11,41 @@ RC_OK = 0
 RC_FAIL = 1
 RC_INFRA = 2
 
-REQUIRED_FINAL_KEYS = [
-    "schema",
-    "step",
-    "repo",
-    "run_id",
-    "exit_code",
-    "ok",
-]
+# Contract profiles by final_report["schema"]
+PROFILES = {
+    # Produced by scripts/run_suite_soak_v1.ps1 (final_report.json may omit ok/exit_code)
+    "suite_soak_v1": {
+        "required": ["schema", "step", "repo", "run_id", "run_dir", "evidence_dir", "events_jsonl", "final_report_json", "summary"],
+        "id_key": "run_id",
+        "step_key": "step",
+        "requires_ok_exit": False,
+        "derive_ok_exit_from_summary": True,
+    },
+    # Produced by scripts/run_family_test_suite_v1.ps1
+    "family_test_suite_v1": {
+        "required": ["schema", "ts_utc", "repo", "ok", "exit_code", "suite_run_id", "suite_run_dir", "evidence_dir", "events_jsonl", "final_report_json"],
+        "id_key": "suite_run_id",
+        "step_value": "family_suite",
+        "requires_ok_exit": True,
+        "derive_ok_exit_from_summary": False,
+    },
+    # Produced by args.foundry build/release pipeline
+    "factory_final_report_v1": {
+        "required": ["schema", "ok", "exit_code", "run_id", "run_dir", "evidence_dir", "events_jsonl", "final_report_json"],
+        "id_key": "run_id",
+        "step_value": "factory_final_report",
+        "requires_ok_exit": True,
+        "derive_ok_exit_from_summary": False,
+    },
+}
+
+DEFAULT_PROFILE = {
+    "required": ["schema", "ok", "exit_code"],
+    "id_key": "run_id",
+    "step_key": "step",
+    "requires_ok_exit": True,
+    "derive_ok_exit_from_summary": False,
+}
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -40,6 +67,40 @@ def _read_json_allow_utf8_bom(path: Path):
         b = b[len(codecs.BOM_UTF8):]
     text = b.decode("utf-8")
     return json.loads(text), had_bom
+
+def _derive_ok_exit_from_summary(summary: object):
+    """
+    Derive (ok, exit_code) from suite_soak_v1 summary.
+    Rules:
+      - if infra > 0 -> exit_code=2, ok=False
+      - elif failed > 0 -> exit_code=1, ok=False
+      - else if ok==True -> exit_code=0, ok=True
+      - fallback -> (False, 1)
+    """
+    if not isinstance(summary, dict):
+        return False, 1
+
+    s_ok = summary.get("ok")
+    failed = summary.get("failed", 0)
+    infra = summary.get("infra", 0)
+
+    try:
+        failed_i = int(failed)
+    except Exception:
+        failed_i = 0
+
+    try:
+        infra_i = int(infra)
+    except Exception:
+        infra_i = 0
+
+    if infra_i > 0:
+        return False, 2
+    if failed_i > 0:
+        return False, 1
+    if s_ok is True:
+        return True, 0
+    return False, 1
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -99,43 +160,81 @@ def main() -> int:
             except Exception as e:
                 set_infra(f"final_report_parse_error: {type(e).__name__}: {e}")
 
-    # Validate final_report contract
+    # Profile selection
+    profile = DEFAULT_PROFILE
+    schema = None
     if exit_code == RC_OK and isinstance(final, dict):
-        missing = [k for k in REQUIRED_FINAL_KEYS if k not in final]
+        schema = str(final.get("schema", ""))
+        checks["final_schema"] = schema
+        profile = PROFILES.get(schema, DEFAULT_PROFILE)
+        checks["contract_profile"] = schema if schema in PROFILES else "DEFAULT"
+
+    # Required keys by profile
+    if exit_code == RC_OK and isinstance(final, dict):
+        missing = [k for k in profile["required"] if k not in final]
         if missing:
             set_fail(f"final_report_missing_required_keys: {missing}")
 
+    # Identify run_id (schema-aware)
+    derived_run_id = None
+    if exit_code == RC_OK and isinstance(final, dict):
+        id_key = profile.get("id_key", "run_id")
+        derived_run_id = final.get(id_key) or final.get("run_id") or final.get("suite_run_id")
+        checks["derived_id_key"] = id_key
+        checks["derived_run_id"] = str(derived_run_id) if derived_run_id is not None else None
+        checks["run_dir_name"] = run_dir.name
+
+        if derived_run_id is None:
+            set_fail("missing_run_identifier")
+        else:
+            # Compare run_dir name to derived run id (strict for our run layout)
+            if str(derived_run_id) != run_dir.name:
+                set_fail(f"run_id_mismatch: derived_run_id={derived_run_id} run_dir.name={run_dir.name}")
+
+    # Step derivation (optional)
+    if exit_code == RC_OK and isinstance(final, dict):
+        step = None
+        if "step_key" in profile and profile["step_key"] in final:
+            step = final.get(profile["step_key"])
+        elif "step_value" in profile:
+            step = profile["step_value"]
+        else:
+            step = final.get("step") or schema
+        checks["derived_step"] = str(step) if step is not None else None
+
+    # ok/exit_code consistency or derivation
+    if exit_code == RC_OK and isinstance(final, dict):
+        requires_ok_exit = bool(profile.get("requires_ok_exit", True))
+
+        if requires_ok_exit:
+            rc = final.get("exit_code")
+            ok = final.get("ok")
+            checks["final_exit_code"] = rc
+            checks["final_ok"] = ok
+
+            if not isinstance(rc, int) or rc not in (0, 1, 2):
+                set_fail(f"invalid_exit_code_value: {rc}")
+            if not isinstance(ok, bool):
+                set_fail(f"invalid_ok_type: {type(ok).__name__}")
+            if exit_code == RC_OK:
+                expected_ok = (rc == 0)
+                if ok != expected_ok:
+                    set_fail(f"ok_exit_code_inconsistent: ok={ok} exit_code={rc}")
+        else:
+            # suite_soak_v1: derive from summary
+            if profile.get("derive_ok_exit_from_summary", False):
+                ok_d, rc_d = _derive_ok_exit_from_summary(final.get("summary"))
+                checks["derived_ok"] = ok_d
+                checks["derived_exit_code"] = rc_d
+
+    # Declared paths
     declared_events = None
     declared_evidence = None
     declared_final = None
-
-    # Resolve declared paths (if present)
     if exit_code == RC_OK and isinstance(final, dict):
         declared_events = final.get("events_jsonl")
         declared_evidence = final.get("evidence_dir")
         declared_final = final.get("final_report_json")
-
-        rid = str(final.get("run_id", ""))
-        checks["final_run_id"] = rid
-        checks["run_dir_name"] = run_dir.name
-        if rid and run_dir.name and rid != run_dir.name:
-            set_fail(f"run_id_mismatch: final.run_id={rid} run_dir.name={run_dir.name}")
-
-    # Exit code / ok consistency
-    if exit_code == RC_OK and isinstance(final, dict):
-        rc = final.get("exit_code")
-        ok = final.get("ok")
-        checks["final_exit_code"] = rc
-        checks["final_ok"] = ok
-
-        if not isinstance(rc, int) or rc not in (0, 1, 2):
-            set_fail(f"invalid_exit_code_value: {rc}")
-        if not isinstance(ok, bool):
-            set_fail(f"invalid_ok_type: {type(ok).__name__}")
-        if exit_code == RC_OK:
-            expected_ok = (rc == 0)
-            if ok != expected_ok:
-                set_fail(f"ok_exit_code_inconsistent: ok={ok} exit_code={rc}")
 
     # Evidence dir existence
     if exit_code == RC_OK and isinstance(final, dict):
