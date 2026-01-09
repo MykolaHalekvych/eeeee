@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import codecs
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -22,23 +23,31 @@ REQUIRED_FINAL_KEYS = [
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-def _read_json(path: Path):
-    return json.loads(_read_text(path))
-
 def _safe_resolve(p: Path) -> Path:
     try:
         return p.resolve()
     except Exception:
         return p
 
+def _read_json_allow_utf8_bom(path: Path):
+    """
+    Read JSON as UTF-8, but tolerate UTF-8 BOM by stripping it.
+    Returns (obj, had_utf8_bom).
+    """
+    b = path.read_bytes()
+    had_bom = b.startswith(codecs.BOM_UTF8)
+    if had_bom:
+        b = b[len(codecs.BOM_UTF8):]
+    text = b.decode("utf-8")
+    return json.loads(text), had_bom
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", required=True, help="Path to args\\data\\runs\\<run_id>")
     ap.add_argument("--events-parse", choices=["YES", "NO"], default="YES")
     ap.add_argument("--max-events-lines", type=int, default=500)
+    ap.add_argument("--bom-strict", choices=["YES", "NO"], default="NO",
+                    help="If YES, treat UTF-8 BOM in JSON artifacts as contract FAIL.")
     args = ap.parse_args()
 
     run_dir = _safe_resolve(Path(args.run_dir))
@@ -47,62 +56,70 @@ def main() -> int:
     errors: list[str] = []
     checks: dict = {}
 
-    def infra(msg: str):
-        errors.append(msg)
-        return RC_INFRA
-
-    def fail(msg: str):
-        errors.append(msg)
-        return RC_FAIL
-
     exit_code = RC_OK
+
+    def set_fail(msg: str):
+        nonlocal exit_code
+        errors.append(msg)
+        if exit_code == RC_OK:
+            exit_code = RC_FAIL
+
+    def set_infra(msg: str):
+        nonlocal exit_code
+        errors.append(msg)
+        exit_code = RC_INFRA
 
     # Basic existence
     if not run_dir.exists() or not run_dir.is_dir():
-        exit_code = infra(f"run_dir_missing_or_not_dir: {run_dir}")
+        set_infra(f"run_dir_missing_or_not_dir: {run_dir}")
+
     checks["run_dir"] = str(run_dir)
 
     final_path = run_dir / "final_report.json"
-    events_path = run_dir / "events.jsonl"
+    events_path_default = run_dir / "events.jsonl"
     evidence_dir_default = run_dir / "evidence"
 
     checks["final_report_path"] = str(final_path)
-    checks["events_path_default"] = str(events_path)
+    checks["events_path_default"] = str(events_path_default)
     checks["evidence_dir_default"] = str(evidence_dir_default)
 
     final = None
+    final_bom = False
+
+    # Load final_report.json
     if exit_code == RC_OK:
         if not final_path.exists():
-            exit_code = infra("final_report_missing")
+            set_infra("final_report_missing")
         else:
             try:
-                final = _read_json(final_path)
+                final, final_bom = _read_json_allow_utf8_bom(final_path)
+                checks["final_report_utf8_bom"] = bool(final_bom)
+                if final_bom and args.bom_strict == "YES":
+                    set_fail("final_report_has_utf8_bom")
             except Exception as e:
-                exit_code = infra(f"final_report_parse_error: {type(e).__name__}: {e}")
+                set_infra(f"final_report_parse_error: {type(e).__name__}: {e}")
 
     # Validate final_report contract
     if exit_code == RC_OK and isinstance(final, dict):
         missing = [k for k in REQUIRED_FINAL_KEYS if k not in final]
         if missing:
-            exit_code = fail(f"final_report_missing_required_keys: {missing}")
+            set_fail(f"final_report_missing_required_keys: {missing}")
 
-    # Resolve declared paths (if present)
     declared_events = None
     declared_evidence = None
     declared_final = None
 
+    # Resolve declared paths (if present)
     if exit_code == RC_OK and isinstance(final, dict):
         declared_events = final.get("events_jsonl")
         declared_evidence = final.get("evidence_dir")
         declared_final = final.get("final_report_json")
 
-        # run_id sanity
         rid = str(final.get("run_id", ""))
         checks["final_run_id"] = rid
         checks["run_dir_name"] = run_dir.name
         if rid and run_dir.name and rid != run_dir.name:
-            # Treat mismatch as FAIL (contract violation), not INFRA
-            exit_code = fail(f"run_id_mismatch: final.run_id={rid} run_dir.name={run_dir.name}")
+            set_fail(f"run_id_mismatch: final.run_id={rid} run_dir.name={run_dir.name}")
 
     # Exit code / ok consistency
     if exit_code == RC_OK and isinstance(final, dict):
@@ -112,24 +129,24 @@ def main() -> int:
         checks["final_ok"] = ok
 
         if not isinstance(rc, int) or rc not in (0, 1, 2):
-            exit_code = fail(f"invalid_exit_code_value: {rc}")
+            set_fail(f"invalid_exit_code_value: {rc}")
         if not isinstance(ok, bool):
-            exit_code = fail(f"invalid_ok_type: {type(ok).__name__}")
+            set_fail(f"invalid_ok_type: {type(ok).__name__}")
         if exit_code == RC_OK:
             expected_ok = (rc == 0)
             if ok != expected_ok:
-                exit_code = fail(f"ok_exit_code_inconsistent: ok={ok} exit_code={rc}")
+                set_fail(f"ok_exit_code_inconsistent: ok={ok} exit_code={rc}")
 
     # Evidence dir existence
     if exit_code == RC_OK and isinstance(final, dict):
         ev_path = evidence_dir_default if not declared_evidence else Path(str(declared_evidence))
         ev_path = _safe_resolve(ev_path)
         checks["evidence_dir"] = str(ev_path)
+
         if not ev_path.exists() or not ev_path.is_dir():
-            exit_code = infra(f"evidence_dir_missing_or_not_dir: {ev_path}")
+            set_infra(f"evidence_dir_missing_or_not_dir: {ev_path}")
         else:
             try:
-                # lightweight inventory
                 n = sum(1 for _ in ev_path.glob("**/*") if _.is_file())
                 checks["evidence_files_count"] = n
             except Exception:
@@ -137,20 +154,22 @@ def main() -> int:
 
     # Events file existence + optional parse
     if exit_code == RC_OK and isinstance(final, dict):
-        evs_path = events_path if not declared_events else Path(str(declared_events))
+        evs_path = events_path_default if not declared_events else Path(str(declared_events))
         evs_path = _safe_resolve(evs_path)
         checks["events_jsonl"] = str(evs_path)
 
         if not evs_path.exists() or not evs_path.is_file():
-            exit_code = infra(f"events_jsonl_missing_or_not_file: {evs_path}")
+            set_infra(f"events_jsonl_missing_or_not_file: {evs_path}")
         else:
             try:
                 size = evs_path.stat().st_size
                 checks["events_bytes"] = size
                 if size <= 0:
-                    exit_code = fail("events_jsonl_empty")
+                    set_fail("events_jsonl_empty")
             except Exception:
                 pass
+
+            had_events_bom = False
 
             if exit_code == RC_OK and args.events_parse == "YES":
                 parsed = 0
@@ -160,6 +179,10 @@ def main() -> int:
                         for i, line in enumerate(f):
                             if i >= int(args.max_events_lines):
                                 break
+                            line = line.rstrip("\n")
+                            if i == 0 and line.startswith("\ufeff"):
+                                had_events_bom = True
+                                line = line.lstrip("\ufeff")
                             line = line.strip()
                             if not line:
                                 continue
@@ -171,22 +194,28 @@ def main() -> int:
                                     bad += 1
                             except Exception:
                                 bad += 1
+
                     checks["events_parsed_lines"] = parsed
                     checks["events_bad_lines"] = bad
+                    checks["events_jsonl_utf8_bom"] = bool(had_events_bom)
+
+                    if had_events_bom and args.bom_strict == "YES":
+                        set_fail("events_jsonl_has_utf8_bom")
+
                     if parsed == 0:
-                        exit_code = fail("events_jsonl_no_parsable_objects")
+                        set_fail("events_jsonl_no_parsable_objects")
                     if bad > 0:
-                        exit_code = infra(f"events_jsonl_has_bad_lines: {bad}")
+                        set_infra(f"events_jsonl_has_bad_lines: {bad}")
+
                 except Exception as e:
-                    exit_code = infra(f"events_jsonl_read_error: {type(e).__name__}: {e}")
+                    set_infra(f"events_jsonl_read_error: {type(e).__name__}: {e}")
 
     # final_report_json declared path consistency (optional)
     if exit_code == RC_OK and isinstance(final, dict) and declared_final:
         df = _safe_resolve(Path(str(declared_final)))
         checks["final_report_json_declared"] = str(df)
         if df != _safe_resolve(final_path):
-            # Not fatal; record as warning-like fail? Keep as FAIL to enforce consistency.
-            exit_code = fail(f"final_report_json_path_mismatch: declared={df} actual={_safe_resolve(final_path)}")
+            set_fail(f"final_report_json_path_mismatch: declared={df} actual={_safe_resolve(final_path)}")
 
     out = {
         "schema": "contract_gate_v1",
