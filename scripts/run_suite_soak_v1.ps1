@@ -81,14 +81,69 @@ function Parse-OneJson([string]$Raw) {
   return $null
 }
 
+# ---------- BOM scrub (Stage 1D) ----------
+function Remove-Utf8BomIfPresent([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  try {
+    $b = [IO.File]::ReadAllBytes($Path)
+    if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) {
+      $nb = New-Object byte[] ($b.Length - 3)
+      [Array]::Copy($b, 3, $nb, 0, $nb.Length)
+      [IO.File]::WriteAllBytes($Path, $nb)
+      return $true
+    }
+  } catch {}
+  return $false
+}
+
+function Scrub-RunDirUtf8Bom([string]$RunDir) {
+  $ts = UtcNowIso
+  $scanned = 0
+  $changed = 0
+  $errors = @()
+
+  if (-not (Test-Path -LiteralPath $RunDir -PathType Container)) {
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$false; exit_code=2; run_dir=$RunDir; scanned=0; changed=0; errors=@("run_dir_missing") }
+  }
+
+  try {
+    $files = Get-ChildItem -LiteralPath $RunDir -Recurse -File -Include *.json,*.jsonl -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+      $scanned++
+      if (Remove-Utf8BomIfPresent $f.FullName) { $changed++ }
+    }
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$true; exit_code=0; run_dir=$RunDir; scanned=$scanned; changed=$changed; errors=@() }
+  } catch {
+    $errors += $_.Exception.Message
+    return [ordered]@{ schema="bom_scrub_v1"; ts_utc=$ts; ok=$false; exit_code=2; run_dir=$RunDir; scanned=$scanned; changed=$changed; errors=$errors }
+  }
+}
+
 function Run-ContractGate([string]$EvidenceDir, [string]$Label, [string]$RunDir) {
   Ensure-Dir $EvidenceDir
   $outPath = Join-Path $EvidenceDir $Label
 
+  # paired scrub report path
+  $scrubPath = ($outPath -replace 'contract_gate','bom_scrub')
+  if ($scrubPath -eq $outPath) { $scrubPath = ($outPath + ".bom_scrub.json") }
+
+  # 1) scrub BOM in target run_dir
+  $scr = Scrub-RunDirUtf8Bom $RunDir
+  Write-TextUtf8NoBom $scrubPath (($scr | ConvertTo-Json -Compress -Depth 10))
+
+  if ([int]$scr.exit_code -ne 0) {
+    Write-TextUtf8NoBom $outPath ""
+    return [ordered]@{
+      rc=2; rc_raw=2; ok=$false; json_path=$outPath; run_dir=$RunDir;
+      bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
+    }
+  }
+
+  # 2) strict contract gate (no BOM allowed)
   $outLines = @()
   $rc_raw = 2
   try {
-    $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES 2>$null
+    $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES --bom-strict YES 2>$null
     $rc_raw = $LASTEXITCODE
   } catch {
     $outLines = @()
@@ -104,7 +159,10 @@ function Run-ContractGate([string]$EvidenceDir, [string]$Label, [string]$RunDir)
 
   if (-not $parsed_ok) { $rc = 2 }
 
-  return [ordered]@{ rc=$rc; rc_raw=$rc_raw; ok=($rc -eq 0); json_path=$outPath; run_dir=$RunDir }
+  return [ordered]@{
+    rc=$rc; rc_raw=$rc_raw; ok=($rc -eq 0); json_path=$outPath; run_dir=$RunDir;
+    bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
+  }
 }
 
 function Invoke-FamilySuiteOnce {
@@ -187,7 +245,6 @@ $runs = @()
 $firstFail = $null
 $infraCount = 0
 $failCount = 0
-$exitCode = 0
 
 for ($i=1; $i -le $N; $i++) {
   Append-Event $events $runId "iter_start" @{ i=$i }
@@ -217,20 +274,18 @@ for ($i=1; $i -le $N; $i++) {
     try { $infra       = [bool]$suite.summary.infra } catch { $infra = $false }
   }
 
-  # Contract gate the suite run_dir (this also validates suite artifacts)
+  # STRICT contract gate on suite run_dir (scrub + --bom-strict YES)
   $cg = $null
   if (-not [string]::IsNullOrWhiteSpace($suiteRunDir)) {
     $cg = Run-ContractGate -EvidenceDir $evidence -Label ("iter_{0:d2}.contract_gate.json" -f $i) -RunDir $suiteRunDir
     if ($cg.rc -ne 0) {
-      # override iteration result on gate failure
       $suiteExit = [int]([Math]::Max($suiteExit, $cg.rc))
       $infra = ($cg.rc -eq 2) -or $infra
     }
   } else {
-    # missing suite run dir is infra
     $suiteExit = 2
     $infra = $true
-    $cg = [ordered]@{ rc=2; rc_raw=2; ok=$false; json_path=""; run_dir="" }
+    $cg = [ordered]@{ rc=2; rc_raw=2; ok=$false; json_path=""; run_dir=""; bom_scrub_json=""; bom_scrub_scanned=0; bom_scrub_changed=0 }
   }
 
   $okIter = ($suiteExit -eq 0)
@@ -258,6 +313,7 @@ for ($i=1; $i -le $N; $i++) {
   elseif ($suiteExit -eq 1) { $failCount += 1 }
 }
 
+$exitCode = 0
 if ($infraCount -gt 0) { $exitCode = 2 }
 elseif ($failCount -gt 0) { $exitCode = 1 }
 else { $exitCode = 0 }
@@ -280,7 +336,7 @@ $final = [ordered]@{
   events_jsonl=$events
   final_report_json=$finalPath
   ts_utc=UtcNowIso
-  config=@{ include_chaos=$IncludeChaos; run_acceptance=$RunAcceptance; n_target=$N; matrix_path=$MatrixPath }
+  config=@{ include_chaos=$IncludeChaos; run_acceptance=$RunAcceptance; n_target=$N; matrix_path=$MatrixPath; bom_strict="YES" }
   summary=$summary
   first_fail=$firstFail
   runs=$runs
@@ -288,7 +344,7 @@ $final = [ordered]@{
   exit_code=$exitCode
 }
 
-# Write final, then self contract gate
+# Write final, then STRICT self contract gate (scrub + --bom-strict YES)
 Write-JsonAtomic $finalPath $final
 
 $cgSelf = Run-ContractGate -EvidenceDir $evidence -Label "contract_gate_self.json" -RunDir $runDir
