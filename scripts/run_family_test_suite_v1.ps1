@@ -1,4 +1,5 @@
-﻿param(
+﻿
+param(
   [Parameter(Mandatory=$false)][string]$Repo = (Get-Location).Path,
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$RunAcceptance = "YES",
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$IncludeChaos = "YES",
@@ -92,6 +93,34 @@ function Read-JsonUtf8Sig([string]$Path) {
 function Sanitize-Token([string]$s) {
   if ($null -eq $s) { return "null" }
   return ($s -replace '[^A-Za-z0-9_\-]+','_')
+}
+
+# ---------- Positive E2E run_id/release_id extraction (Stage 1D strict) ----------
+function Extract-RunMeta([object]$J) {
+  $rid = ""
+  $rel = ""
+
+  # Primary
+  try { $rid = [string]$J.run_id } catch { $rid = "" }
+  try { $rel = [string]$J.release_id } catch { $rel = "" }
+
+  # Fallback: wrapper keeps IDs under build_release.*
+  if ([string]::IsNullOrWhiteSpace($rid)) {
+    try { $rid = [string]$J.build_release.run_id } catch { $rid = "" }
+  }
+  if ([string]::IsNullOrWhiteSpace($rel)) {
+    try { $rel = [string]$J.build_release.release_id } catch { $rel = "" }
+  }
+
+  # Defensive: rare double nesting
+  if ([string]::IsNullOrWhiteSpace($rid)) {
+    try { $rid = [string]$J.build_release.build_release.run_id } catch { $rid = "" }
+  }
+  if ([string]::IsNullOrWhiteSpace($rel)) {
+    try { $rel = [string]$J.build_release.build_release.release_id } catch { $rel = "" }
+  }
+
+  return [pscustomobject]@{ run_id = $rid; release_id = $rel }
 }
 
 # ---------- BOM scrub (Stage 1D) ----------
@@ -357,7 +386,7 @@ try {
 
   # Save matrix_used.json as UTF-8 no-BOM (do not Copy-Item with BOM)
   $matrixUsed = Join-Path $suiteEvidence "matrix_used.json"
-  Write-TextUtf8NoBom $matrixUsed (($m | ConvertTo-Json -Compress -Depth 80))
+  Write-TextUtf8NoBom (($matrixUsed)) (($m | ConvertTo-Json -Compress -Depth 80))
   Append-Event $suiteEvents $suiteRunId "matrix_loaded" @{ path=$matrixAbs }
 
   $runIdByCase = @{}
@@ -380,8 +409,11 @@ try {
 
     if (-not $res.infra -and $res.rc -eq 0) {
       try { $accOk = [bool]$res.json.acceptance_ok } catch { $accOk = $false }
-      try { $runId = [string]$res.json.run_id } catch { $runId = "" }
-      try { $releaseId = [string]$res.json.release_id } catch { $releaseId = "" }
+
+      $meta = Extract-RunMeta $res.json
+      $runId = [string]$meta.run_id
+      $releaseId = [string]$meta.release_id
+
       if ($RunAcceptance -eq "NO") { $ok = $true } else { if ($accOk) { $ok = $true } }
     }
 
