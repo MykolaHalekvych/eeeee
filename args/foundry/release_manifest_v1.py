@@ -6,7 +6,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 RC_OK = 0
 RC_FAIL = 1
@@ -40,53 +40,52 @@ def maybe_file_entry(path: Path) -> Dict[str, Any]:
     return {"path": path.name, "present": True, "sha256": sha256_file(path)}
 
 
-def derive_product_id(run_dir: Path) -> Tuple[str, List[str]]:
-    errors: List[str] = []
+def derive_product_id_from_final_report(run_dir: Path) -> Tuple[str, List[str]]:
     fr = run_dir / "final_report.json"
     if not fr.exists():
-        return "", ["final_report_missing"]
+        return "", []
     try:
         j = read_json_utf8sig(fr)
         pid = str(j.get("product_id") or "").strip()
-        if not pid:
-            errors.append("product_id_missing_in_final_report")
-        return pid, errors
+        return pid, []
     except Exception as e:
         return "", [f"final_report_parse_error:{type(e).__name__}:{e}"]
 
 
 def build_release_manifest_v1(
-    run_dir: Path,
+    run_dir: Optional[Path],
     dist_dir: Path,
     release_id: str,
     product_id: str = "",
 ) -> Tuple[Dict[str, Any], List[str]]:
     errors: List[str] = []
-    run_id = run_dir.name
-
-    final_report = run_dir / "final_report.json"
-    events_jsonl = run_dir / "events.jsonl"
-    evidence_dir = run_dir / "evidence"
-
-    if not run_dir.exists():
-        errors.append(f"run_dir_missing:{run_dir}")
-    if not final_report.exists():
-        errors.append(f"final_report_missing:{final_report}")
-    if not events_jsonl.exists():
-        errors.append(f"events_jsonl_missing:{events_jsonl}")
-    if not evidence_dir.exists():
-        errors.append(f"evidence_dir_missing:{evidence_dir}")
 
     pid = product_id.strip()
-    if not pid:
-        derived_pid, derr = derive_product_id(run_dir)
-        pid = derived_pid
-        errors.extend(derr)
+    run_section: Dict[str, Any] = {
+        "run_id": "",
+        "run_dir": "",
+        "final_report_json": "",
+        "events_jsonl": "",
+        "evidence_dir": "",
+    }
+
+    if run_dir is not None:
+        run_section["run_id"] = run_dir.name
+        run_section["run_dir"] = str(run_dir)
+        run_section["final_report_json"] = str(run_dir / "final_report.json")
+        run_section["events_jsonl"] = str(run_dir / "events.jsonl")
+        run_section["evidence_dir"] = str(run_dir / "evidence")
+
+        # product_id best-effort from final_report if not provided
+        if not pid:
+            dpid, derr = derive_product_id_from_final_report(run_dir)
+            pid = dpid or pid
+            errors.extend(derr)
 
     if not pid:
         errors.append("product_id_missing")
 
-    # dist files (H1 will enforce presence via product gate)
+    # dist files (product gate will enforce strict presence)
     app_exe = dist_dir / "app.exe"
     hashes_json = dist_dir / "hashes.json"
     acceptance_gate = dist_dir / "acceptance_gate.json"
@@ -100,13 +99,7 @@ def build_release_manifest_v1(
         "ts_utc": utc_now_iso(),
         "product_id": pid,
         "release_id": release_id,
-        "run": {
-            "run_id": run_id,
-            "run_dir": str(run_dir),
-            "final_report_json": str(final_report),
-            "events_jsonl": str(events_jsonl),
-            "evidence_dir": str(evidence_dir),
-        },
+        "run": run_section,
         "bundle": {
             "dist_dir": str(dist_dir),
             "release_zip_name": f"{release_id}.zip",
@@ -132,7 +125,7 @@ def emit(obj: Dict[str, Any], code: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run-dir", required=True)
+    ap.add_argument("--run-dir", default="")
     ap.add_argument("--dist-dir", required=True)
     ap.add_argument("--release-id", required=True)
     ap.add_argument("--out", required=True)
@@ -141,9 +134,9 @@ def main() -> None:
 
     ts = utc_now_iso()
     try:
-        run_dir = Path(args.run_dir)
-        dist_dir = Path(args.dist_dir)
-        out = Path(args.out)
+        run_dir = Path(args.run_dir).resolve() if args.run_dir.strip() else None
+        dist_dir = Path(args.dist_dir).resolve()
+        out = Path(args.out).resolve()
 
         manifest, errors = build_release_manifest_v1(
             run_dir=run_dir,
@@ -153,17 +146,15 @@ def main() -> None:
         )
         write_json_no_bom(out, manifest)
 
-        # NOTE: H1 allows manifest build to FAIL only if run artifacts missing.
-        ok = (len(errors) == 0)
-        code = RC_OK if ok else RC_FAIL
+        code = RC_OK if len(errors) == 0 else RC_FAIL
         emit(
             {
                 "schema": "release_manifest_build_v1",
                 "ts_utc": ts,
-                "ok": ok,
+                "ok": (code == 0),
                 "exit_code": code,
                 "out": str(out),
-                "run_dir": str(run_dir),
+                "run_dir": str(run_dir) if run_dir else "",
                 "dist_dir": str(dist_dir),
                 "release_id": str(args.release_id),
                 "errors": errors,

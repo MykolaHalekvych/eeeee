@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 import zipfile
+from args.foundry.release_manifest_v1 import build_release_manifest_v1
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
@@ -63,8 +64,18 @@ def deterministic_write(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
     zi.date_time = (1980, 1, 1, 0, 0, 0)
     zi.compress_type = zipfile.ZIP_DEFLATED
     zf.writestr(zi, data, compress_type=zipfile.ZIP_DEFLATED)
-
-
+def zip_has_basename(zip_path: Path, wanted_base: str) -> bool:
+    wl = wanted_base.lower()
+    try:
+        with zipfile.ZipFile(str(zip_path), "r") as z:
+            for n in z.namelist():
+                if not n or n.endswith("/"):
+                    continue
+                if Path(n).name.lower() == wl:
+                    return True
+    except Exception:
+        return False
+    return False
 def emit_and_exit(payload: Dict[str, Any], code: int) -> int:
     payload["schema"] = payload.get("schema", SCHEMA)
     payload["ts_utc"] = payload.get("ts_utc", utc_ts())
@@ -183,7 +194,7 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     # Idempotent mode (skip) unless forced
     skipped_existing = False
-    if (not force_repack) and release_zip.exists() and release_hashes.exists():
+    if (not force_repack) and release_zip.exists() and release_hashes.exists() and zip_has_basename(release_zip, "release_manifest_v1.json"):
         skipped_existing = True
         out = {
             "schema": SCHEMA,
@@ -208,7 +219,29 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
         }
         return out, RC_OK
 
-    # Atomic write: zip (tmp -> replace)
+        # H1: build release_manifest_v1.json into dist and include it in zip/hashes
+    manifest_path = product_dist / "release_manifest_v1.json"
+    manifest_obj, _merr = build_release_manifest_v1(
+        run_dir=None,
+        dist_dir=product_dist,
+        release_id=release_id,
+        product_id=product_id,
+    )
+    manifest_text = json.dumps(manifest_obj, indent=2, ensure_ascii=False) + "\n"
+
+    def _write_manifest(tmp: Path) -> None:
+        tmp.write_text(manifest_text, encoding="utf-8")
+
+    _atomic_write(manifest_path, _write_manifest)
+
+    if "release_manifest_v1.json" not in included:
+        included.append("release_manifest_v1.json")
+
+    # ensure acceptance proof is inside release for product standard v1
+    if (product_dist / "acceptance_gate.json").exists() and "acceptance_gate.json" not in included:
+        included.append("acceptance_gate.json")
+
+# Atomic write: zip (tmp -> replace)
     def _write_zip(tmp_zip: Path) -> None:
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for name in included:

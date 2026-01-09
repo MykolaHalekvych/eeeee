@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from args.foundry.product_standard_gate_v1 import check_release_zip
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -210,7 +211,20 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
         zip_files = []
         infra = True
 
-    # EXE check (opt-in only) — runs from release zip member, not from dist/
+        # H1: product standard gate (requires release_manifest_v1.json etc.)
+    product_standard = {"ok": True, "exit_code": 0, "skipped": False}
+    try:
+        product_standard = check_release_zip(release_zip)
+        if int(product_standard.get("exit_code", 0)) != 0:
+            errors.append("product_standard_gate_failed")
+            if int(product_standard.get("exit_code", 0)) == 2:
+                infra = True
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"product_standard_gate_error: {e.__class__.__name__}")
+        product_standard = {"ok": False, "exit_code": 2, "errors": [f"{e.__class__.__name__}: {e}"]}
+        infra = True
+
+# EXE check (opt-in only) — runs from release zip member, not from dist/
     exec_res: Dict[str, Any] = {"skipped": True, "rc": 0, "stdout": "", "stderr": ""}
     if args.run_exe_check == "YES":
         exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": ""}
