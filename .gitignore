@@ -1,4 +1,4 @@
-﻿# -----------------------------
+# -----------------------------
 # Python / venv
 __pycache__/
 *.pyc
@@ -224,3 +224,4 @@ git add .\.gitignore
 tmp_*
 tmp_prompt.*
 /foundry/
+*.bak.*
