@@ -29,10 +29,10 @@
                                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_family_test_suite_v1.ps1 -RunAcceptance \"YES\" -IncludeChaos \"YES\"",
                                         "actual":  {
                                                        "exit_code":  0,
-                                                       "suite_run_id":  "20260109T202110Z_0480e109",
-                                                       "suite_run_dir":  ".\\args\\data\\runs\\20260109T202110Z_0480e109",
-                                                       "events_jsonl":  ".\\args\\data\\runs\\20260109T202110Z_0480e109\\events.jsonl",
-                                                       "final_report_json":  ".\\args\\data\\runs\\20260109T202110Z_0480e109\\final_report.json",
+                                                       "suite_run_id":  "20260110T010115Z_0391778d",
+                                                       "suite_run_dir":  ".\\args\\data\\runs\\20260110T010115Z_0391778d",
+                                                       "events_jsonl":  ".\\args\\data\\runs\\20260110T010115Z_0391778d\\events.jsonl",
+                                                       "final_report_json":  ".\\args\\data\\runs\\20260110T010115Z_0391778d\\final_report.json",
                                                        "summary":  {
                                                                        "total":  13,
                                                                        "passed":  13,
@@ -83,10 +83,10 @@
                                       "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_suite_soak_v1.ps1 -N 10 -IncludeChaos YES -RunAcceptance YES",
                                       "actual":  {
                                                      "exit_code":  0,
-                                                     "run_id":  "20260109T203856Z_e0356315",
-                                                     "run_dir":  ".\\args\\data\\runs\\20260109T203856Z_e0356315",
-                                                     "events_jsonl":  ".\\args\\data\\runs\\20260109T203856Z_e0356315\\events.jsonl",
-                                                     "final_report_json":  ".\\args\\data\\runs\\20260109T203856Z_e0356315\\final_report.json",
+                                                     "run_id":  "20260110T001308Z_382c1203",
+                                                     "run_dir":  ".\\args\\data\\runs\\20260110T001308Z_382c1203",
+                                                     "events_jsonl":  ".\\args\\data\\runs\\20260110T001308Z_382c1203\\events.jsonl",
+                                                     "final_report_json":  ".\\args\\data\\runs\\20260110T001308Z_382c1203\\final_report.json",
                                                      "summary":  {
                                                                      "n_ran":  10,
                                                                      "failed":  0,
