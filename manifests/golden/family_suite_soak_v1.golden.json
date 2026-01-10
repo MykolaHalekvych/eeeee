@@ -1,0 +1,24 @@
+{
+    "schema":  "golden_family_suite_soak_v1",
+    "ts_utc":  "2026-01-10T23:59:10.5086782Z",
+    "repo":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+    "suite_matrix":  "manifests\\family_suite_matrix_v1.json",
+    "soak_script":  "scripts\\run_family_soak_strict_v1.ps1",
+    "suite_script":  "scripts\\run_family_test_suite_v1.ps1",
+    "soak_run_id":  "20260110T220642Z_ff35ffd4",
+    "suite_run_id_example":  "20260110T225901Z_679dcf51",
+    "assertions":  {
+                       "soak_n":  10,
+                       "soak_exit_code":  0,
+                       "soak_passed":  10,
+                       "contract_gate_failed":  0,
+                       "contract_gate_infra":  0,
+                       "customization_e2e_expected":  true
+                   },
+    "artifact_paths":  {
+                           "soak_final_report":  "args\\data\\runs\\20260110T220642Z_ff35ffd4\\final_report.json",
+                           "soak_events":  "args\\data\\runs\\20260110T220642Z_ff35ffd4\\events.jsonl",
+                           "soak_evidence_dir":  "args\\data\\runs\\20260110T220642Z_ff35ffd4\\evidence",
+                           "suite_example_final_report":  "args\\data\\runs\\20260110T225901Z_679dcf51\\final_report.json"
+                       }
+}
