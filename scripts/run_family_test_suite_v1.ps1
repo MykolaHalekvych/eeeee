@@ -1,4 +1,4 @@
-﻿
+
 param(
   [Parameter(Mandatory=$false)][string]$Repo = (Get-Location).Path,
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$RunAcceptance = "YES",
@@ -431,7 +431,64 @@ try {
 
     Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="positive_e2e"; rc=$res.rc; infra=$res.infra; ok=$ok }
   }
+  # ---------- Customization E2E ----------
+  foreach ($c in @($m.customization_e2e)) {
+    $caseId  = [string]$c.case_id
+    $reqCase = [string]$c.requires_positive_case_id
+    $reqPath = [string]$c.request_path
 
+    $baseReleaseId = ""
+    if ($releaseIdByCase.ContainsKey($reqCase)) { $baseReleaseId = [string]$releaseIdByCase[$reqCase] }
+
+    if ([string]::IsNullOrWhiteSpace($baseReleaseId)) {
+      $cases += [ordered]@{
+        case_id=$caseId; kind="customization_e2e"; requires_positive_case_id=$reqCase;
+        expected=@{ exit_code=0 };
+        actual=@{ infra=$false; rc=1; rc_raw=1; run_id=""; release_id=""; base_release_id="" };
+        ok=$false;
+        evidence=@{ stdout_path=""; stderr_path="" };
+        error=("missing_prereq_release_id: " + $reqCase)
+      }
+      Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="customization_e2e"; ok=$false; error="missing_prereq_release_id" }
+      continue
+    }
+
+    $reqAbs = $reqPath
+    if (-not [System.IO.Path]::IsPathRooted($reqAbs)) { $reqAbs = Join-Path $repoPath $reqPath }
+
+    $res = Invoke-PsFile -RepoPath $repoPath -SuiteEvidenceDir $suiteEvidence -CaseId $caseId `
+      -RelScriptPath "scripts\run_factory_customize_release_v1.ps1" `
+      -Args @("-Request",$reqAbs,"-BaseReleaseIdOverride",$baseReleaseId,"-Repo",$repoPath)
+
+    $accOk = $false
+    $runId = ""
+    $releaseId = ""
+    $ok = $false
+
+    if (-not $res.infra -and $res.rc -eq 0) {
+      try { $accOk = [bool]$res.json.acceptance_ok } catch { $accOk = $false }
+      try { $runId = [string]$res.json.run_id } catch { $runId = "" }
+      try { $releaseId = [string]$res.json.release_id } catch { $releaseId = "" }
+      if (-not [string]::IsNullOrWhiteSpace($runId) -and -not [string]::IsNullOrWhiteSpace($releaseId)) { $ok = $true }
+    }
+
+    if ($res.infra -or $res.rc -eq 2) { $infraHit = $true }
+    if ($ok) {
+      $runIdByCase[$caseId] = $runId
+      $releaseIdByCase[$caseId] = $releaseId
+    }
+
+    $cases += [ordered]@{
+      case_id=$caseId; kind="customization_e2e"; requires_positive_case_id=$reqCase;
+      expected=@{ exit_code=0 };
+      actual=@{ infra=$res.infra; rc=$res.rc; rc_raw=$res.rc_raw; acceptance_ok=$accOk; run_id=$runId; release_id=$releaseId; base_release_id=$baseReleaseId };
+      ok=$ok;
+      evidence=@{ stdout_path=$res.stdout_path; stderr_path=$res.stderr_path };
+      error=$res.error
+    }
+
+    Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="customization_e2e"; rc=$res.rc; infra=$res.infra; ok=$ok }
+  }
   # ---------- Negative ----------
   foreach ($n in @($m.negative)) {
     $id        = [string]$n.case_id
