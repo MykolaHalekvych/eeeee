@@ -113,23 +113,31 @@ function Scrub-RunDirUtf8Bom([string]$RunDir) {
   }
 }
 
-function Run-ContractGate([string]$EvidenceDir, [string]$RunDir) {
-  Ensure-Dir $EvidenceDir
-  $outPath   = Join-Path $EvidenceDir "contract_gate_soak.json"
-  $scrubPath = Join-Path $EvidenceDir "bom_scrub_soak.json"
+function Run-ContractGateStrict([string]$SuiteEvidenceDir, [string]$Label, [string]$RunDir) {
+  Ensure-Dir $SuiteEvidenceDir
 
+  $outPath = Join-Path $SuiteEvidenceDir $Label
+  $scrubPath = ($outPath -replace '\.contract_gate\.json$','.bom_scrub.json')
+  if ($scrubPath -eq $outPath) { $scrubPath = ($outPath + ".bom_scrub.json") }
+
+  # 1) BOM scrub target run_dir
   $scr = Scrub-RunDirUtf8Bom $RunDir
   Write-TextUtf8NoBom $scrubPath (($scr | ConvertTo-Json -Compress -Depth 10))
 
   if ([int]$scr.exit_code -ne 0) {
     Write-TextUtf8NoBom $outPath ""
-    return [ordered]@{ rc=2; rc_raw=2; ok=$false; infra=$true; parsed_ok=$false; json_path=$outPath; bom_scrub_json=$scrubPath; bom_scrub_changed=$scr.changed; bom_scrub_scanned=$scr.scanned }
+    return [ordered]@{
+      rc=2; rc_raw=2; ok=$false; infra=$true; parsed_ok=$false;
+      json_path=$outPath; run_dir=$RunDir;
+      bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
+    }
   }
 
+  # 2) contract_gate_v1 strict
   $outLines = @()
   $rc_raw = 2
   try {
-    Push-Location -Path $Repo
+    Push-Location -Path $repoPath
     try {
       $outLines = & py -3.11 -m args.foundry.contract_gate_v1 --run-dir $RunDir --events-parse YES --bom-strict YES 2>$null
       $rc_raw = $LASTEXITCODE
@@ -153,7 +161,8 @@ function Run-ContractGate([string]$EvidenceDir, [string]$RunDir) {
 
   return [ordered]@{
     rc=$rc; rc_raw=$rc_raw; ok=($rc -eq 0); infra=$infra; parsed_ok=$parsed_ok;
-    json_path=$outPath; bom_scrub_json=$scrubPath; bom_scrub_changed=$scr.changed; bom_scrub_scanned=$scr.scanned
+    json_path=$outPath; run_dir=$RunDir;
+    bom_scrub_json=$scrubPath; bom_scrub_scanned=$scr.scanned; bom_scrub_changed=$scr.changed
   }
 }
 
@@ -168,6 +177,8 @@ $finalJson = ""
 $iters = @()
 $infraHit = $false
 $failHit = $false
+$cgFailed = 0
+$cgInfra  = 0
 
 try {
   try { $repoPath = (Resolve-Path -Path $Repo -ErrorAction Stop).Path } catch { $repoPath = $Repo }
@@ -233,13 +244,15 @@ try {
     try { $suite = ($raw | ConvertFrom-Json -ErrorAction Stop) } catch { $parse_ok = $false }
 
     $suiteRunId = ""
+    $suiteRunDir = ""
     $suiteExit = 2
     $suiteOk = $false
 
     if ($parse_ok) {
       try { $suiteRunId = [string]$suite.suite_run_id } catch { $suiteRunId = "" }
-      if ([string]::IsNullOrWhiteSpace($suiteRunId)) {
-        try { $suiteRunId = [string]$suite.run_id } catch { $suiteRunId = "" }
+      try { $suiteRunDir = [string]$suite.suite_run_dir } catch { $suiteRunDir = "" }
+      if ([string]::IsNullOrWhiteSpace($suiteRunDir) -and -not [string]::IsNullOrWhiteSpace($suiteRunId)) {
+        $suiteRunDir = Join-Path $repoPath ("args\data\runs\" + $suiteRunId)
       }
       try { $suiteExit = Normalize-Exit $suite.exit_code } catch { $suiteExit = 2 }
       try { $suiteOk = [bool]$suite.ok } catch { $suiteOk = $false }
@@ -247,6 +260,7 @@ try {
 
     $iterInfra = $false
     $iterFail  = $false
+    $cg = $null
 
     if (-not $parse_ok) {
       $iterInfra = $true
@@ -254,6 +268,18 @@ try {
       $iterInfra = $true
     } elseif ($suiteExit -ne 0 -or (-not $suiteOk) -or $rc_raw -ne 0) {
       $iterFail = $true
+    }
+
+    # Contract gate on the REAL suite run dir (not on soak wrapper dir)
+    if (-not $iterInfra -and -not $iterFail) {
+      if ([string]::IsNullOrWhiteSpace($suiteRunDir) -or -not (Test-Path -LiteralPath $suiteRunDir -PathType Container)) {
+        $iterInfra = $true
+      } else {
+        $cgLabel = ($iterTag + ".contract_gate.json")
+        $cg = Run-ContractGateStrict -SuiteEvidenceDir $evidenceDir -Label $cgLabel -RunDir $suiteRunDir
+        if ($cg.rc -eq 2) { $cgInfra += 1; $iterInfra = $true }
+        elseif ($cg.rc -eq 1) { $cgFailed += 1; $iterFail = $true }
+      }
     }
 
     if ($iterInfra) { $infraHit = $true }
@@ -264,14 +290,18 @@ try {
       rc_raw=$rc_raw
       parse_ok=$parse_ok
       suite_run_id=$suiteRunId
+      suite_run_dir=$suiteRunDir
       suite_exit_code=$suiteExit
       suite_ok=$suiteOk
       stdout_path=$stdoutPath
       stderr_path=$stderrPath
+      contract_gate=$cg
     }
 
     Append-Event $eventsJsonl $soakRunId "iter_done" @{
       iter=$i; rc_raw=$rc_raw; parse_ok=$parse_ok; suite_run_id=$suiteRunId; suite_exit_code=$suiteExit; suite_ok=$suiteOk;
+      suite_run_dir=$suiteRunDir;
+      contract_gate_rc=$(if ($null -ne $cg) { [int]$cg.rc } else { -1 });
       stdout_path=$stdoutPath; stderr_path=$stderrPath
     }
 
@@ -282,11 +312,20 @@ try {
   }
 
   $completed = $iters.Count
-  $passed = @($iters | Where-Object { $_.parse_ok -eq $true -and $_.suite_exit_code -eq 0 -and $_.suite_ok -eq $true -and $_.rc_raw -eq 0 }).Count
+  $passed = @($iters | Where-Object {
+      $_.parse_ok -eq $true -and $_.suite_exit_code -eq 0 -and $_.suite_ok -eq $true -and $_.rc_raw -eq 0 `
+      -and ($null -ne $_.contract_gate) -and ([int]$_.contract_gate.rc -eq 0)
+    }).Count
   $failed = $completed - $passed
 
   $exitCode = $(if ($infraHit) { $RC_INFRA } elseif ($failed -gt 0) { $RC_FAIL } else { $RC_OK })
   $ok = ($exitCode -eq 0 -and $completed -eq $N)
+
+  # BOM scrub on soak wrapper run dir (proof only; does not use contract_gate_v1 schema)
+  $scr = Scrub-RunDirUtf8Bom $soakRunDir
+  $scrPath = Join-Path $evidenceDir "bom_scrub_soak_wrapper.json"
+  Write-TextUtf8NoBom $scrPath (($scr | ConvertTo-Json -Compress -Depth 10))
+  if ([int]$scr.exit_code -ne 0) { $ok = $false; $exitCode = $RC_INFRA }
 
   $final = [ordered]@{
     schema="family_soak_strict_v1"
@@ -312,20 +351,18 @@ try {
       passed=$passed
       failed=$failed
       infra=$infraHit
+      contract_gate_failed=$cgFailed
+      contract_gate_infra=$cgInfra
     }
+    bom_scrub_wrapper=@{ json_path=$scrPath; exit_code=$scr.exit_code; scanned=$scr.scanned; changed=$scr.changed }
     iterations=$iters
   }
 
-  # Contract gate on SOAK run dir (strict, with BOM scrub)
-  $cg = Run-ContractGate -EvidenceDir $evidenceDir -RunDir $soakRunDir
-  $final.contract_gate = $cg
-  if ([int]$cg.rc -ne 0) {
-    $final.ok = $false
-    $final.exit_code = [int]([Math]::Max([int]$final.exit_code, [int]$cg.rc))
-  }
-
   Write-JsonAtomic $finalJson $final
-  Append-Event $eventsJsonl $soakRunId "done" @{ ok=$final.ok; exit_code=$final.exit_code; completed=$completed; passed=$passed; failed=$failed; infra=$infraHit; contract_gate_rc=$cg.rc }
+  Append-Event $eventsJsonl $soakRunId "done" @{
+    ok=$final.ok; exit_code=$final.exit_code; completed=$completed; passed=$passed; failed=$failed; infra=$infraHit;
+    contract_gate_failed=$cgFailed; contract_gate_infra=$cgInfra; bom_scrub_exit_code=$scr.exit_code
+  }
 
   Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
   exit ([int]$final.exit_code)
