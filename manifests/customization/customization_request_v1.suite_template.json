@@ -1,0 +1,15 @@
+{
+  "schema": "customization_request_v1",
+  "version": 1,
+  "request_id": "cust_example_v1",
+  "ts_utc": "2026-01-10T00:00:00Z",
+  "mode": "OVERLAY_BUNDLE",
+  "product_id": "demo_cli_tool",
+  "base_release_id": "demo_cli_tool__v0.1.0__REPLACE_ME",
+  "overlay_dir": "args/data/overlays/cust_demo_v1",
+  "allowlist": [
+    "config.example.json",
+    "runbook.md",
+    "evidence.md"
+  ]
+}

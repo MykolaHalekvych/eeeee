@@ -1,4 +1,4 @@
-
+﻿
 param(
   [Parameter(Mandatory=$false)][string]$Repo = (Get-Location).Path,
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$RunAcceptance = "YES",
@@ -390,6 +390,7 @@ try {
   Append-Event $suiteEvents $suiteRunId "matrix_loaded" @{ path=$matrixAbs }
 
   $runIdByCase = @{}
+  $releaseIdByCase = @{}   # FIX: required for customization prereq
 
   # ---------- Positive E2E ----------
   foreach ($c in @($m.positive_e2e)) {
@@ -418,7 +419,12 @@ try {
     }
 
     if ($res.infra -or $res.rc -eq 2) { $infraHit = $true }
-    if ($ok -and -not [string]::IsNullOrWhiteSpace($runId)) { $runIdByCase[$caseId] = $runId }
+
+    # FIX: populate both maps on PASS
+    if ($ok) {
+      if (-not [string]::IsNullOrWhiteSpace($runId)) { $runIdByCase[$caseId] = $runId }
+      if (-not [string]::IsNullOrWhiteSpace($releaseId)) { $releaseIdByCase[$caseId] = $releaseId }
+    }
 
     $cases += [ordered]@{
       case_id=$caseId; kind="positive_e2e"; kit_id=$kitId; product_id=$productId;
@@ -431,6 +437,7 @@ try {
 
     Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="positive_e2e"; rc=$res.rc; infra=$res.infra; ok=$ok }
   }
+
   # ---------- Customization E2E ----------
   foreach ($c in @($m.customization_e2e)) {
     $caseId  = [string]$c.case_id
@@ -489,6 +496,7 @@ try {
 
     Append-Event $suiteEvents $suiteRunId "case_done" @{ case_id=$caseId; kind="customization_e2e"; rc=$res.rc; infra=$res.infra; ok=$ok }
   }
+
   # ---------- Negative ----------
   foreach ($n in @($m.negative)) {
     $id        = [string]$n.case_id
