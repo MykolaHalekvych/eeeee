@@ -1,0 +1,29 @@
+{
+    "schema":  "retention_policy_v1",
+    "version":  1,
+    "artifact_root":  "C:\\Users\\mukol\\ARGS_ARTIFACTS\\Engine-Foundry-v0",
+    "dist":  {
+                 "releases_dir":  "dist\\releases",
+                 "keep_last_per_product":  3,
+                 "pinned_release_ids":  [
+                                            "demo_cli_tool__v0.1.0__e1943ba9a8",
+                                            "demo_cli_tool__v0.1.0__cust_cust_example_v1__6a6d71b217"
+                                        ]
+             },
+    "runs":  {
+                 "runs_dir":  "args\\data\\runs",
+                 "keep_last_pass":  40,
+                 "keep_days_fail_infra":  14,
+                 "keep_run_ids":  [
+
+                                  ]
+             },
+    "tmp":  {
+                "tmp_dir":  "args\\data\\tmp",
+                "max_age_days":  7
+            },
+    "safety":  {
+                   "require_paths_under_artifact_root":  true,
+                   "dryrun_default":  true
+               }
+}
