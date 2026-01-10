@@ -1,4 +1,4 @@
-﻿# Deterministic EOL for ENGINE artifacts
+# Deterministic EOL for ENGINE artifacts
 * text=auto
 
 # Code & manifests: LF
@@ -13,3 +13,5 @@ templates/** text eol=lf
 # PowerShell scripts: CRLF is fine on Windows
 *.ps1 text eol=crlf
 *.ps1 text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
