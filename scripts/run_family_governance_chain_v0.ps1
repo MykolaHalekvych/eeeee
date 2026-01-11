@@ -84,8 +84,8 @@ function Resolve-Abs([string]$Base, [string]$P) {
   return (Join-Path $Base $P)
 }
 
-# IMPORTANT: never return $null; always return an array (maybe empty)
-function Replace-Tokens([Parameter(Mandatory=$false)][AllowNull()][object[]]$Argv, [hashtable]$Map) {
+# IMPORTANT: return a flat string[] (never nested, never $null)
+function Replace-Tokens([AllowNull()][object[]]$Argv, [hashtable]$Map) {
   $out = @()
   if ($null -ne $Argv) {
     foreach ($a in $Argv) {
@@ -96,7 +96,7 @@ function Replace-Tokens([Parameter(Mandatory=$false)][AllowNull()][object[]]$Arg
       $out += $s
     }
   }
-  return ,$out
+  return $out
 }
 
 function Quote-WinArg([string]$s) {
@@ -110,10 +110,7 @@ function Quote-WinArg([string]$s) {
   $bsCount = 0
   for ($i = 0; $i -lt $s.Length; $i++) {
     $ch = $s[$i]
-    if ($ch -eq '\') {
-      $bsCount++
-      continue
-    }
+    if ($ch -eq '\') { $bsCount++; continue }
     if ($ch -eq '"') {
       if ($bsCount -gt 0) { [void]$sb.Append([char]'\', ($bsCount * 2) + 1) }
       else { [void]$sb.Append([char]'\', 1) }
@@ -121,41 +118,36 @@ function Quote-WinArg([string]$s) {
       $bsCount = 0
       continue
     }
-    if ($bsCount -gt 0) {
-      [void]$sb.Append([char]'\', $bsCount)
-      $bsCount = 0
-    }
+    if ($bsCount -gt 0) { [void]$sb.Append([char]'\', $bsCount); $bsCount = 0 }
     [void]$sb.Append($ch)
   }
-
-  if ($bsCount -gt 0) {
-    [void]$sb.Append([char]'\', ($bsCount * 2))
-  }
-
+  if ($bsCount -gt 0) { [void]$sb.Append([char]'\', ($bsCount * 2)) }
   [void]$sb.Append('"')
   return $sb.ToString()
+}
+
+function Split-CmdArray([AllowNull()][object[]]$Cmd) {
+  if ($null -eq $Cmd -or $Cmd.Count -lt 1) { return @("", @()) }
+  $exe = [string]$Cmd[0]
+  $argv = @()
+  for ($i = 1; $i -lt $Cmd.Count; $i++) { $argv += [string]$Cmd[$i] }
+  return @($exe, $argv)
 }
 
 function Invoke-External {
   param(
     [Parameter(Mandatory=$true)][string]$RepoPath,
     [Parameter(Mandatory=$true)][string]$Exe,
-    [Parameter(Mandatory=$false)][AllowNull()][object[]]$Argv,
+    [Parameter(Mandatory=$true)][string[]]$Argv,
     [Parameter(Mandatory=$true)][string]$StdoutPath,
     [Parameter(Mandatory=$true)][string]$StderrPath,
     [Parameter(Mandatory=$false)][int]$TimeoutMs = 120000
   )
 
-  # Normalize argv: $null => @()
-  $argv = @()
-  if ($null -ne $Argv) {
-    foreach ($a in $Argv) { $argv += [string]$a }
-  }
-
-  # Fail-fast: never allow interactive "py" hang
-  if ($argv.Count -eq 0) {
-    try { Write-TextUtf8NoBom $StdoutPath "" } catch {}
-    try { Write-TextUtf8NoBom $StderrPath "argv_empty" } catch {}
+  # Fail-fast: never allow interactive py hang
+  if ($null -eq $Argv -or $Argv.Count -eq 0) {
+    Write-TextUtf8NoBom $StdoutPath ""
+    Write-TextUtf8NoBom $StderrPath "argv_empty"
     return [ordered]@{
       infra=$true; rc=2; rc_raw=2; json=$null;
       stdout_path=$StdoutPath; stderr_path=$StderrPath;
@@ -163,15 +155,15 @@ function Invoke-External {
     }
   }
 
-  # Guard: enforce Python 3.11 selector for "py"
+  # Guard: enforce Python 3.11 selector for py
   $exeLower = ([string]$Exe).ToLowerInvariant()
-  if (($exeLower -eq "py" -or $exeLower -eq "py.exe") -and (-not ($argv | Where-Object { $_ -like "-3.11*" }))) {
-    try { Write-TextUtf8NoBom $StdoutPath "" } catch {}
-    try { Write-TextUtf8NoBom $StderrPath "py_missing_-3.11" } catch {}
+  if (($exeLower -eq "py" -or $exeLower -eq "py.exe") -and (-not ($Argv | Where-Object { $_ -like "-3.11*" }))) {
+    Write-TextUtf8NoBom $StdoutPath ""
+    Write-TextUtf8NoBom $StderrPath "py_missing_-3.11"
     return [ordered]@{
       infra=$true; rc=2; rc_raw=2; json=$null;
       stdout_path=$StdoutPath; stderr_path=$StderrPath;
-      cmd=@($Exe) + @($argv)
+      cmd=@($Exe) + @($Argv)
     }
   }
 
@@ -190,7 +182,7 @@ function Invoke-External {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
     $psi.CreateNoWindow = $true
-    $psi.Arguments = (($argv | ForEach-Object { Quote-WinArg $_ }) -join " ")
+    $psi.Arguments = (($Argv | ForEach-Object { Quote-WinArg $_ }) -join " ")
 
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
@@ -227,7 +219,7 @@ function Invoke-External {
   return [ordered]@{
     infra=$infra; rc=$rc; rc_raw=$rc_raw; json=$obj;
     stdout_path=$StdoutPath; stderr_path=$StderrPath;
-    cmd=@($Exe) + @($argv)
+    cmd=@($Exe) + @($Argv)
   }
 }
 
@@ -244,7 +236,6 @@ function Corrupt-ZipOneByte([string]$ZipPath) {
 }
 
 # ---------------- MAIN ----------------
-# Stable repo root (not dependent on caller cwd)
 $repoPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 # RepoGuard
@@ -271,7 +262,6 @@ $evidenceDir = Join-Path $runDir "evidence"
 $eventsJsonl = Join-Path $runDir "events.jsonl"
 $finalJson   = Join-Path $runDir "final_report.json"
 
-# Ensure artifacts always exist
 Ensure-Dir $runDir
 Ensure-Dir $evidenceDir
 
@@ -365,10 +355,11 @@ try {
   }
   Write-JsonAtomic $gReqPath $gReq
 
-  $gCmd = @($cfg.guardian.check_cmd)
-  if ($null -eq $gCmd -or $gCmd.Count -lt 2) { throw "guardian_check_cmd_empty" }
-  $gExe = [string]$gCmd[0]
-  $gArgs = @($gCmd | Select-Object -Skip 1)
+  $gCmdArr = @($cfg.guardian.check_cmd)
+  if ($null -eq $gCmdArr -or $gCmdArr.Count -lt 2) { throw "guardian_check_cmd_empty" }
+  $gSplit = Split-CmdArray $gCmdArr
+  $gExe = [string]$gSplit[0]
+  $gArgvTemplate = [string[]]$gSplit[1]
 
   $tok = @{
     request=$gReqPath
@@ -380,13 +371,13 @@ try {
     actor=$actor
   }
 
-  $gArgv2 = @(Replace-Tokens $gArgs $tok)
-  if ($null -eq $gArgv2 -or $gArgv2.Count -lt 1) { throw "guardian_args_empty" }
+  $gArgv = [string[]](Replace-Tokens $gArgvTemplate $tok)
+  if ($null -eq $gArgv -or $gArgv.Count -lt 1) { throw "guardian_args_empty" }
 
   $gStdout = Join-Path $evidenceDir "guardian.stdout.txt"
   $gStderr = Join-Path $evidenceDir "guardian.stderr.txt"
 
-  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Argv $gArgv2 -StdoutPath $gStdout -StderrPath $gStderr
+  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Argv $gArgv -StdoutPath $gStdout -StderrPath $gStderr
   Append-Event $eventsJsonl $runId "guardian_done" @{ rc=$gr.rc; rc_raw=$gr.rc_raw; infra=$gr.infra }
 
   $steps += [ordered]@{
@@ -413,10 +404,11 @@ try {
 
   $govOutPath = Join-Path $evidenceDir "governor_report.json"
 
-  $govCmd = @($cfg.governor.check_cmd)
-  if ($null -eq $govCmd -or $govCmd.Count -lt 2) { throw "governor_check_cmd_empty" }
-  $govExe = [string]$govCmd[0]
-  $govArgs = @($govCmd | Select-Object -Skip 1)
+  $govCmdArr = @($cfg.governor.check_cmd)
+  if ($null -eq $govCmdArr -or $govCmdArr.Count -lt 2) { throw "governor_check_cmd_empty" }
+  $govSplit = Split-CmdArray $govCmdArr
+  $govExe = [string]$govSplit[0]
+  $govArgvTemplate = [string[]]$govSplit[1]
 
   $tok2 = @{
     final_report=$targetFinal
@@ -425,13 +417,13 @@ try {
     run_id=$TargetRunId
   }
 
-  $govArgv2 = @(Replace-Tokens $govArgs $tok2)
-  if ($null -eq $govArgv2 -or $govArgv2.Count -lt 1) { throw "governor_args_empty" }
+  $govArgv = [string[]](Replace-Tokens $govArgvTemplate $tok2)
+  if ($null -eq $govArgv -or $govArgv.Count -lt 1) { throw "governor_args_empty" }
 
   $govStdout = Join-Path $evidenceDir "governor.stdout.txt"
   $govStderr = Join-Path $evidenceDir "governor.stderr.txt"
 
-  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Argv $govArgv2 -StdoutPath $govStdout -StderrPath $govStderr
+  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Argv $govArgv -StdoutPath $govStdout -StderrPath $govStderr
   Append-Event $eventsJsonl $runId "governor_done" @{ rc=$rr.rc; rc_raw=$rr.rc_raw; infra=$rr.infra }
 
   $steps += [ordered]@{
@@ -458,10 +450,11 @@ try {
 
   $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $TargetRunId + ".zip")
 
-  $vExpCmd = @($cfg.vault.export_cmd)
-  if ($null -eq $vExpCmd -or $vExpCmd.Count -lt 2) { throw "vault_export_cmd_empty" }
-  $vExpExe = [string]$vExpCmd[0]
-  $vExpArgs = @($vExpCmd | Select-Object -Skip 1)
+  $vExpCmdArr = @($cfg.vault.export_cmd)
+  if ($null -eq $vExpCmdArr -or $vExpCmdArr.Count -lt 2) { throw "vault_export_cmd_empty" }
+  $vExpSplit = Split-CmdArray $vExpCmdArr
+  $vExpExe = [string]$vExpSplit[0]
+  $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
   $tok3 = @{
     run_id=$TargetRunId
@@ -469,13 +462,13 @@ try {
     vault_config=$vaultCfg
   }
 
-  $vExpArgv2 = @(Replace-Tokens $vExpArgs $tok3)
-  if ($null -eq $vExpArgv2 -or $vExpArgv2.Count -lt 1) { throw "vault_export_args_empty" }
+  $vExpArgv = [string[]](Replace-Tokens $vExpArgvTemplate $tok3)
+  if ($null -eq $vExpArgv -or $vExpArgv.Count -lt 1) { throw "vault_export_args_empty" }
 
   $vExpStdout = Join-Path $evidenceDir "vault_export.stdout.txt"
   $vExpStderr = Join-Path $evidenceDir "vault_export.stderr.txt"
 
-  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgv2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
+  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgv -StdoutPath $vExpStdout -StderrPath $vExpStderr
   Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; zip=$zipPath }
 
   $steps += [ordered]@{
@@ -498,20 +491,21 @@ try {
     Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath }
   }
 
-  $vVerCmd = @($cfg.vault.verify_cmd)
-  if ($null -eq $vVerCmd -or $vVerCmd.Count -lt 2) { throw "vault_verify_cmd_empty" }
-  $vVerExe = [string]$vVerCmd[0]
-  $vVerArgs = @($vVerCmd | Select-Object -Skip 1)
+  $vVerCmdArr = @($cfg.vault.verify_cmd)
+  if ($null -eq $vVerCmdArr -or $vVerCmdArr.Count -lt 2) { throw "vault_verify_cmd_empty" }
+  $vVerSplit = Split-CmdArray $vVerCmdArr
+  $vVerExe = [string]$vVerSplit[0]
+  $vVerArgvTemplate = [string[]]$vVerSplit[1]
 
   $tok4 = @{ zip_path=$zipPath }
 
-  $vVerArgv2 = @(Replace-Tokens $vVerArgs $tok4)
-  if ($null -eq $vVerArgv2 -or $vVerArgv2.Count -lt 1) { throw "vault_verify_args_empty" }
+  $vVerArgv = [string[]](Replace-Tokens $vVerArgvTemplate $tok4)
+  if ($null -eq $vVerArgv -or $vVerArgv.Count -lt 1) { throw "vault_verify_args_empty" }
 
   $vVerStdout = Join-Path $evidenceDir "vault_verify.stdout.txt"
   $vVerStderr = Join-Path $evidenceDir "vault_verify.stderr.txt"
 
-  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgv2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
+  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgv -StdoutPath $vVerStdout -StderrPath $vVerStderr
   Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra }
 
   $steps += [ordered]@{
