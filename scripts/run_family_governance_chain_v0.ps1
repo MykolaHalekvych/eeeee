@@ -329,6 +329,10 @@ try {
   if (-not [string]::IsNullOrWhiteSpace($ActorOverride)) { $actor = $ActorOverride }
   if (-not [string]::IsNullOrWhiteSpace($ChannelOverride)) { $channel = $ChannelOverride }
 
+  # Common Foundry run paths (used by Guardian + Vault tokens)
+  $foundryRunsDir = Join-Path $foundryRepo "args\data\runs"
+  $foundryRunDir  = Join-Path $foundryRunsDir $TargetRunId
+
   # ---------- GUARDIAN ----------
   $gPolicy = Resolve-Abs $guardianRepo ([string]$cfg.guardian.policy_path)
   if (-not (Test-Path -LiteralPath $gPolicy -PathType Leaf)) {
@@ -339,10 +343,9 @@ try {
   $gOutDir = Join-Path $evidenceDir "guardian_out"
   Ensure-Dir $gOutDir
 
-  $targetRunDir = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId)
-  if (-not (Test-Path -LiteralPath $targetRunDir -PathType Container)) {
+  if (-not (Test-Path -LiteralPath $foundryRunDir -PathType Container)) {
     $exitCode = 2; $ok = $false; $reason = "missing_target_run_dir"
-    throw "missing_target_run_dir: $targetRunDir"
+    throw "missing_target_run_dir: $foundryRunDir"
   }
 
   $gReqPath = Join-Path $evidenceDir "guardian_request.json"
@@ -352,7 +355,7 @@ try {
     ts_utc     = UtcNowIso
     actor      = $actor
     action     = "foundry.release_export"
-    target     = [ordered]@{ type="path"; path=$targetRunDir }
+    target     = [ordered]@{ type="path"; path=$foundryRunDir }
     reason     = "foundry pre-export governance chain"
     constraints= [ordered]@{ dryrun=$true; timeout_s=30; max_items=10 }
     context    = [ordered]@{ repo="ARGS-Engine-Foundry-v0"; env="local" }
@@ -445,7 +448,14 @@ try {
   $vExpExe = [string]$vExpSplit[0]
   $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
-  $tok3 = @{ run_id=$TargetRunId; zip_path=$zipPath; vault_config=$vaultCfg }
+  # IMPORTANT: includes run_dir for {run_dir} token (Vault expects explicit source)
+  $tok3 = @{
+    run_id       = $TargetRunId
+    run_dir      = $foundryRunDir
+    runs_dir     = $foundryRunsDir
+    zip_path     = $zipPath
+    vault_config = $vaultCfg
+  }
   $vExpArgv = [string[]](Replace-Tokens $vExpArgvTemplate $tok3)
   if ($null -eq $vExpArgv -or $vExpArgv.Count -lt 1) { throw "vault_export_args_empty" }
 
@@ -460,7 +470,7 @@ try {
     rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra
     cmd=$vr.cmd
     stdout_path=$vExpStdout; stderr_path=$vExpStderr
-    vault_config=$vaultCfg; zip_path=$zipPath
+    vault_config=$vaultCfg; zip_path=$zipPath; run_dir=$foundryRunDir
   }
 
   if ([int]$vr.rc -ne 0) {
