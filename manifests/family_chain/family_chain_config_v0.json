@@ -1,0 +1,26 @@
+{
+  "schema": "family_chain_config_v0",
+  "version": 0,
+  "foundry": {
+    "repo": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+    "actor": "operator",
+    "channel": "prod",
+    "bundles_dir": "dist\\audit_bundles"
+  },
+  "guardian": {
+    "repo": "C:\\Users\\mukol\\ARGS-Guardian-v0",
+    "policy_path": "manifests\\guardian_policy_v0.json",
+    "check_cmd": [ "__SET__", "guardian_check", "{request}", "{policy}", "{out_dir}" ]
+  },
+  "governor": {
+    "repo": "C:\\Users\\mukol\\ARGS-Release-Governor-v0",
+    "policy_path": "manifests\\release_policy_v0.json",
+    "check_cmd": [ "__SET__", "governor_check", "{final_report}", "{policy}", "{out_path}" ]
+  },
+  "vault": {
+    "repo": "C:\\Users\\mukol\\ARGS-Evidence-Vault-v0",
+    "vault_config_path": "args\\data\\vault\\vault_config.json",
+    "export_cmd": [ "__SET__", "vault_export", "{run_id}", "{zip_path}" ],
+    "verify_cmd": [ "__SET__", "vault_verify", "{zip_path}" ]
+  }
+}
