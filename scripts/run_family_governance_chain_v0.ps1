@@ -99,17 +99,52 @@ function Replace-Tokens([Parameter(Mandatory=$false)][AllowNull()][object[]]$Arg
   return ,$out
 }
 
+function Quote-WinArg([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -eq "") { return '""' }
+  if ($s -notmatch '[\s"]') { return $s }
+
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+
+  $bsCount = 0
+  for ($i = 0; $i -lt $s.Length; $i++) {
+    $ch = $s[$i]
+    if ($ch -eq '\') {
+      $bsCount++
+      continue
+    }
+    if ($ch -eq '"') {
+      if ($bsCount -gt 0) { [void]$sb.Append([char]'\', ($bsCount * 2) + 1) }
+      else { [void]$sb.Append([char]'\', 1) }
+      [void]$sb.Append('"')
+      $bsCount = 0
+      continue
+    }
+    if ($bsCount -gt 0) {
+      [void]$sb.Append([char]'\', $bsCount)
+      $bsCount = 0
+    }
+    [void]$sb.Append($ch)
+  }
+
+  if ($bsCount -gt 0) {
+    [void]$sb.Append([char]'\', ($bsCount * 2))
+  }
+
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+
 function Invoke-External {
   param(
     [Parameter(Mandatory=$true)][string]$RepoPath,
     [Parameter(Mandatory=$true)][string]$Exe,
     [Parameter(Mandatory=$false)][AllowNull()][object[]]$Argv,
     [Parameter(Mandatory=$true)][string]$StdoutPath,
-    [Parameter(Mandatory=$true)][string]$StderrPath
+    [Parameter(Mandatory=$true)][string]$StderrPath,
+    [Parameter(Mandatory=$false)][int]$TimeoutMs = 120000
   )
-
-  $outText = ""
-  $rc_raw = 2
 
   # Normalize argv: $null => @()
   $argv = @()
@@ -117,39 +152,71 @@ function Invoke-External {
     foreach ($a in $Argv) { $argv += [string]$a }
   }
 
+  # Fail-fast: never allow interactive "py" hang
+  if ($argv.Count -eq 0) {
+    try { Write-TextUtf8NoBom $StdoutPath "" } catch {}
+    try { Write-TextUtf8NoBom $StderrPath "argv_empty" } catch {}
+    return [ordered]@{
+      infra=$true; rc=2; rc_raw=2; json=$null;
+      stdout_path=$StdoutPath; stderr_path=$StderrPath;
+      cmd=@($Exe)
+    }
+  }
+
+  # Guard: enforce Python 3.11 selector for "py"
+  $exeLower = ([string]$Exe).ToLowerInvariant()
+  if (($exeLower -eq "py" -or $exeLower -eq "py.exe") -and (-not ($argv | Where-Object { $_ -like "-3.11*" }))) {
+    try { Write-TextUtf8NoBom $StdoutPath "" } catch {}
+    try { Write-TextUtf8NoBom $StderrPath "py_missing_-3.11" } catch {}
+    return [ordered]@{
+      infra=$true; rc=2; rc_raw=2; json=$null;
+      stdout_path=$StdoutPath; stderr_path=$StderrPath;
+      cmd=@($Exe) + @($argv)
+    }
+  }
+
+  $outText = ""
+  $errText = ""
+  $rc_raw = 2
+
   try {
-    Push-Location -Path $RepoPath
-    try {
-      $prevEap = $ErrorActionPreference
-      $ErrorActionPreference = 'Continue'
-      try {
-        $outLines = & $Exe @argv 2> $StderrPath
-        $rc_raw = $LASTEXITCODE
-        $outText = ($outLines | Out-String)
-      } finally {
-        $ErrorActionPreference = $prevEap
-      }
-    } finally {
-      Pop-Location
+    if (-not (Test-Path -LiteralPath $RepoPath -PathType Container)) { throw "missing_repo: $RepoPath" }
+    if ([string]::IsNullOrWhiteSpace($Exe)) { throw "missing_exe" }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.WorkingDirectory = $RepoPath
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.CreateNoWindow = $true
+    $psi.Arguments = (($argv | ForEach-Object { Quote-WinArg $_ }) -join " ")
+
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+
+    $null = $p.Start()
+    $outText = $p.StandardOutput.ReadToEnd()
+    $errText = $p.StandardError.ReadToEnd()
+
+    $exited = $p.WaitForExit($TimeoutMs)
+    if (-not $exited) {
+      try { $p.Kill() } catch {}
+      $rc_raw = 2
+      $errText = ($errText + "`nTIMEOUT_MS=" + $TimeoutMs)
+      $outText = ""
+    } else {
+      $rc_raw = $p.ExitCode
     }
   } catch {
     $rc_raw = 2
     $outText = ""
-    try { Write-TextUtf8NoBom $StderrPath (($_ | Out-String)) } catch {}
+    $errText = (($_ | Out-String))
   }
 
-  # normalize evidence encodings (stdout+stderr) to UTF-8 no BOM
+  # Evidence always present, UTF-8 no BOM
   try { Write-TextUtf8NoBom $StdoutPath $outText } catch {}
-  try {
-    if (Test-Path -LiteralPath $StderrPath) {
-      $errText = Get-Content -Raw -Encoding utf8 -Path $StderrPath
-      if ($null -eq $errText) { $errText = "" }
-      $errText = ($errText -replace "^\uFEFF","")
-      Write-TextUtf8NoBom $StderrPath $errText
-    } else {
-      Write-TextUtf8NoBom $StderrPath ""
-    }
-  } catch {}
+  try { Write-TextUtf8NoBom $StderrPath $errText } catch {}
 
   $rc = Normalize-Exit $rc_raw
   $obj = Parse-OneJsonStrict $outText
@@ -204,6 +271,7 @@ $evidenceDir = Join-Path $runDir "evidence"
 $eventsJsonl = Join-Path $runDir "events.jsonl"
 $finalJson   = Join-Path $runDir "final_report.json"
 
+# Ensure artifacts always exist
 Ensure-Dir $runDir
 Ensure-Dir $evidenceDir
 
@@ -312,13 +380,13 @@ try {
     actor=$actor
   }
 
-  $gArgs2 = @(Replace-Tokens $gArgs $tok)
-  if ($null -eq $gArgs2 -or $gArgs2.Count -lt 1) { throw "guardian_args_empty" }
+  $gArgv2 = @(Replace-Tokens $gArgs $tok)
+  if ($null -eq $gArgv2 -or $gArgv2.Count -lt 1) { throw "guardian_args_empty" }
 
   $gStdout = Join-Path $evidenceDir "guardian.stdout.txt"
   $gStderr = Join-Path $evidenceDir "guardian.stderr.txt"
 
-  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Argv $gArgs2 -StdoutPath $gStdout -StderrPath $gStderr
+  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Argv $gArgv2 -StdoutPath $gStdout -StderrPath $gStderr
   Append-Event $eventsJsonl $runId "guardian_done" @{ rc=$gr.rc; rc_raw=$gr.rc_raw; infra=$gr.infra }
 
   $steps += [ordered]@{
@@ -357,13 +425,13 @@ try {
     run_id=$TargetRunId
   }
 
-  $govArgs2 = @(Replace-Tokens $govArgs $tok2)
-  if ($null -eq $govArgs2 -or $govArgs2.Count -lt 1) { throw "governor_args_empty" }
+  $govArgv2 = @(Replace-Tokens $govArgs $tok2)
+  if ($null -eq $govArgv2 -or $govArgv2.Count -lt 1) { throw "governor_args_empty" }
 
   $govStdout = Join-Path $evidenceDir "governor.stdout.txt"
   $govStderr = Join-Path $evidenceDir "governor.stderr.txt"
 
-  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Argv $govArgs2 -StdoutPath $govStdout -StderrPath $govStderr
+  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Argv $govArgv2 -StdoutPath $govStdout -StderrPath $govStderr
   Append-Event $eventsJsonl $runId "governor_done" @{ rc=$rr.rc; rc_raw=$rr.rc_raw; infra=$rr.infra }
 
   $steps += [ordered]@{
@@ -401,13 +469,13 @@ try {
     vault_config=$vaultCfg
   }
 
-  $vExpArgs2 = @(Replace-Tokens $vExpArgs $tok3)
-  if ($null -eq $vExpArgs2 -or $vExpArgs2.Count -lt 1) { throw "vault_export_args_empty" }
+  $vExpArgv2 = @(Replace-Tokens $vExpArgs $tok3)
+  if ($null -eq $vExpArgv2 -or $vExpArgv2.Count -lt 1) { throw "vault_export_args_empty" }
 
   $vExpStdout = Join-Path $evidenceDir "vault_export.stdout.txt"
   $vExpStderr = Join-Path $evidenceDir "vault_export.stderr.txt"
 
-  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgs2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
+  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgv2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
   Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; zip=$zipPath }
 
   $steps += [ordered]@{
@@ -437,13 +505,13 @@ try {
 
   $tok4 = @{ zip_path=$zipPath }
 
-  $vVerArgs2 = @(Replace-Tokens $vVerArgs $tok4)
-  if ($null -eq $vVerArgs2 -or $vVerArgs2.Count -lt 1) { throw "vault_verify_args_empty" }
+  $vVerArgv2 = @(Replace-Tokens $vVerArgs $tok4)
+  if ($null -eq $vVerArgv2 -or $vVerArgv2.Count -lt 1) { throw "vault_verify_args_empty" }
 
   $vVerStdout = Join-Path $evidenceDir "vault_verify.stdout.txt"
   $vVerStderr = Join-Path $evidenceDir "vault_verify.stderr.txt"
 
-  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgs2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
+  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgv2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
   Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra }
 
   $steps += [ordered]@{
