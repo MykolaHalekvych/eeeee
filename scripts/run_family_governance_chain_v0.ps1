@@ -63,21 +63,12 @@ function Append-Event([string]$EventsPath, [string]$RunId, [string]$Kind, [hasht
   Append-TextUtf8NoBom $EventsPath $line
 }
 
-function Parse-OneJson([string]$Raw) {
+# STRICT: external stdout must be exactly one JSON document
+function Parse-OneJsonStrict([string]$Raw) {
   if ($null -eq $Raw) { return $null }
   $s = $Raw.Trim()
   if ($s -eq "") { return $null }
-
-  try { return ($s | ConvertFrom-Json -ErrorAction Stop) } catch {}
-
-  $lines = $s -split "`r?`n"
-  for ($i = $lines.Length - 1; $i -ge 0; $i--) {
-    $c = $lines[$i].Trim()
-    if ($c.StartsWith("{")) {
-      try { return ($c | ConvertFrom-Json -ErrorAction Stop) } catch {}
-    }
-  }
-  return $null
+  try { return ($s | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
 
 function Read-JsonUtf8Sig([string]$Path) {
@@ -93,23 +84,26 @@ function Resolve-Abs([string]$Base, [string]$P) {
   return (Join-Path $Base $P)
 }
 
-function Replace-Tokens([string[]]$Args, [hashtable]$Map) {
+# IMPORTANT: never return $null (even for empty output)
+function Replace-Tokens([AllowNull()][object[]]$Args, [hashtable]$Map) {
   $out = @()
-  foreach ($a in $Args) {
-    $s = [string]$a
-    foreach ($k in $Map.Keys) {
-      $s = $s.Replace("{"+$k+"}", [string]$Map[$k])
+  if ($null -ne $Args) {
+    foreach ($a in $Args) {
+      $s = [string]$a
+      foreach ($k in $Map.Keys) {
+        $s = $s.Replace("{"+$k+"}", [string]$Map[$k])
+      }
+      $out += $s
     }
-    $out += $s
   }
-  return $out
+  return ,$out
 }
 
 function Invoke-External {
   param(
     [Parameter(Mandatory=$true)][string]$RepoPath,
     [Parameter(Mandatory=$true)][string]$Exe,
-    [Parameter(Mandatory=$true)][string[]]$Args,
+    [Parameter(Mandatory=$false)][AllowNull()][object[]]$Args,
     [Parameter(Mandatory=$true)][string]$StdoutPath,
     [Parameter(Mandatory=$true)][string]$StderrPath
   )
@@ -117,10 +111,16 @@ function Invoke-External {
   $outText = ""
   $rc_raw = 2
 
+  # Normalize argv: $null => @()
+  $argv = @()
+  if ($null -ne $Args) {
+    foreach ($a in $Args) { $argv += [string]$a }
+  }
+
   try {
     Push-Location -Path $RepoPath
     try {
-      $outLines = & $Exe @Args 2> $StderrPath
+      $outLines = & $Exe @argv 2> $StderrPath
       $rc_raw = $LASTEXITCODE
       $outText = ($outLines | Out-String)
     } finally {
@@ -146,7 +146,7 @@ function Invoke-External {
   } catch {}
 
   $rc = Normalize-Exit $rc_raw
-  $obj = Parse-OneJson $outText
+  $obj = Parse-OneJsonStrict $outText
 
   $infra = $false
   if ($null -eq $obj) { $infra = $true; $rc = 2; $rc_raw = 2 }
@@ -154,7 +154,7 @@ function Invoke-External {
   return [ordered]@{
     infra=$infra; rc=$rc; rc_raw=$rc_raw; json=$obj;
     stdout_path=$StdoutPath; stderr_path=$StderrPath;
-    cmd=@($Exe) + @($Args)
+    cmd=@($Exe) + @($argv)
   }
 }
 
@@ -171,7 +171,26 @@ function Corrupt-ZipOneByte([string]$ZipPath) {
 }
 
 # ---------------- MAIN ----------------
-$repoPath = (Resolve-Path .).Path
+# Stable repo root (not dependent on caller cwd)
+$repoPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+# RepoGuard
+$repoGuard = Join-Path $repoPath ".args_engine_repo"
+if (-not (Test-Path -LiteralPath $repoGuard -PathType Leaf)) {
+  $finalFail = [ordered]@{
+    schema="family_governance_chain_v0"
+    ts_utc=UtcNowIso
+    ok=$false
+    exit_code=$RC_INFRA
+    repo=$repoPath
+    run_id=""
+    reason="wrong_repo"
+    error=@{ kind="exception"; message="WRONG_REPO" }
+    steps=@()
+  }
+  Write-Output ($finalFail | ConvertTo-Json -Compress -Depth 20)
+  exit $RC_INFRA
+}
 
 $runId = (UtcNowId) + "_" + (RandHex 8)
 $runDir = Join-Path $repoPath ("args\data\runs\" + $runId)
@@ -275,7 +294,7 @@ try {
   Write-JsonAtomic $gReqPath $gReq
 
   $gCmd = @($cfg.guardian.check_cmd)
-  if ($gCmd.Count -lt 2) { throw "guardian_check_cmd_empty" }
+  if ($null -eq $gCmd -or $gCmd.Count -lt 2) { throw "guardian_check_cmd_empty" }
   $gExe = [string]$gCmd[0]
   $gArgs = @($gCmd | Select-Object -Skip 1)
 
@@ -321,7 +340,7 @@ try {
   $govOutPath = Join-Path $evidenceDir "governor_report.json"
 
   $govCmd = @($cfg.governor.check_cmd)
-  if ($govCmd.Count -lt 2) { throw "governor_check_cmd_empty" }
+  if ($null -eq $govCmd -or $govCmd.Count -lt 2) { throw "governor_check_cmd_empty" }
   $govExe = [string]$govCmd[0]
   $govArgs = @($govCmd | Select-Object -Skip 1)
 
@@ -364,7 +383,7 @@ try {
   $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $TargetRunId + ".zip")
 
   $vExpCmd = @($cfg.vault.export_cmd)
-  if ($vExpCmd.Count -lt 2) { throw "vault_export_cmd_empty" }
+  if ($null -eq $vExpCmd -or $vExpCmd.Count -lt 2) { throw "vault_export_cmd_empty" }
   $vExpExe = [string]$vExpCmd[0]
   $vExpArgs = @($vExpCmd | Select-Object -Skip 1)
 
@@ -402,7 +421,7 @@ try {
   }
 
   $vVerCmd = @($cfg.vault.verify_cmd)
-  if ($vVerCmd.Count -lt 2) { throw "vault_verify_cmd_empty" }
+  if ($null -eq $vVerCmd -or $vVerCmd.Count -lt 2) { throw "vault_verify_cmd_empty" }
   $vVerExe = [string]$vVerCmd[0]
   $vVerArgs = @($vVerCmd | Select-Object -Skip 1)
 
@@ -436,6 +455,11 @@ try {
 
 } catch {
   $error_msg = $_.Exception.Message
+  try {
+    $chainErr = Join-Path $evidenceDir "chain_exception.txt"
+    Write-TextUtf8NoBom $chainErr (($_ | Out-String))
+  } catch {}
+
   if ($exitCode -eq 0) { $exitCode = 2; $ok = $false }
   if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "unhandled_exception" }
 }
