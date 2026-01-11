@@ -53,9 +53,7 @@
       "--run-id",
       "{run_id}",
       "--config",
-      "{vault_config}",
-      "{run_dir}",
-      "{zip_path}"
+      "{vault_config}"
     ],
     "verify_cmd": [
       "py",
