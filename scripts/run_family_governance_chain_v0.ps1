@@ -84,7 +84,7 @@ function Resolve-Abs([string]$Base, [string]$P) {
   return (Join-Path $Base $P)
 }
 
-# IMPORTANT: return a flat string[] (never nested, never $null)
+# IMPORTANT: return flat string[] (never nested, never $null)
 function Replace-Tokens([AllowNull()][object[]]$Argv, [hashtable]$Map) {
   $out = @()
   if ($null -ne $Argv) {
@@ -339,19 +339,38 @@ try {
   $gOutDir = Join-Path $evidenceDir "guardian_out"
   Ensure-Dir $gOutDir
 
+  # Target: schema-safe target.type="path"
+  $targetRunDir = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId)
+  if (-not (Test-Path -LiteralPath $targetRunDir -PathType Container)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_target_run_dir"
+    throw "missing_target_run_dir: $targetRunDir"
+  }
+
   $gReqPath = Join-Path $evidenceDir "guardian_request.json"
   $gReq = [ordered]@{
-    schema="guardian_request_v0"
-    request_id=$runId
-    ts_utc=UtcNowIso
-    actor=$actor
-    action="foundry.release_export"
-    target=[ordered]@{
-      type="foundry_run"
-      run_id=$TargetRunId
-      final_report=$targetFinal
+    schema     = "guardian_request_v0"
+    request_id = $runId
+    ts_utc     = UtcNowIso
+    actor      = $actor
+    action     = "foundry.release_export"
+
+    target = [ordered]@{
+      type = "path"
+      path = $targetRunDir
     }
-    constraints=[ordered]@{ channel=$channel }
+
+    reason = "foundry pre-export governance chain"
+
+    constraints = [ordered]@{
+      dryrun    = $false
+      timeout_s = 30
+      max_items = 10
+    }
+
+    context = [ordered]@{
+      repo = "ARGS-Engine-Foundry-v0"
+      env  = "local"
+    }
   }
   Write-JsonAtomic $gReqPath $gReq
 
@@ -365,10 +384,6 @@ try {
     request=$gReqPath
     policy=$gPolicy
     out_dir=$gOutDir
-    final_report=$targetFinal
-    run_id=$TargetRunId
-    channel=$channel
-    actor=$actor
   }
 
   $gArgv = [string[]](Replace-Tokens $gArgvTemplate $tok)
@@ -414,7 +429,6 @@ try {
     final_report=$targetFinal
     policy=$govPolicy
     out_path=$govOutPath
-    run_id=$TargetRunId
   }
 
   $govArgv = [string[]](Replace-Tokens $govArgvTemplate $tok2)
