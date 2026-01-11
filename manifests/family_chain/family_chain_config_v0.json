@@ -50,6 +50,8 @@
       "-m",
       "args.vault.vault_cli_v0",
       "export",
+      "--run-id",
+      "{run_id}",
       "--run-dir",
       "{run_dir}",
       "--zip-path",
