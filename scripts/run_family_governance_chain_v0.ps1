@@ -144,7 +144,6 @@ function Invoke-External {
     [Parameter(Mandatory=$false)][int]$TimeoutMs = 120000
   )
 
-  # Fail-fast: never allow interactive py hang
   if ($null -eq $Argv -or $Argv.Count -eq 0) {
     Write-TextUtf8NoBom $StdoutPath ""
     Write-TextUtf8NoBom $StderrPath "argv_empty"
@@ -206,7 +205,6 @@ function Invoke-External {
     $errText = (($_ | Out-String))
   }
 
-  # Evidence always present, UTF-8 no BOM
   try { Write-TextUtf8NoBom $StdoutPath $outText } catch {}
   try { Write-TextUtf8NoBom $StderrPath $errText } catch {}
 
@@ -233,6 +231,32 @@ function Corrupt-ZipOneByte([string]$ZipPath) {
     }
   } catch {}
   return $false
+}
+
+function Pick-ProducedZip([string]$VaultRepo, [DateTime]$AfterLocalTime, [string]$PreferId) {
+  $dirs = @(
+    (Join-Path $VaultRepo "dist"),
+    (Join-Path $VaultRepo "args\data"),
+    $VaultRepo
+  )
+
+  $cands = @()
+  foreach ($d in $dirs) {
+    if (Test-Path -LiteralPath $d -PathType Container) {
+      $cands += Get-ChildItem -LiteralPath $d -Recurse -Filter *.zip -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $AfterLocalTime }
+    }
+  }
+
+  if ($cands.Count -eq 0) { return "" }
+
+  # Prefer zips containing run_id in name
+  $pref = $cands | Where-Object { $_.Name -like "*$PreferId*" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($null -ne $pref) { return $pref.FullName }
+
+  $latest = $cands | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($null -ne $latest) { return $latest.FullName }
+  return ""
 }
 
 # ---------------- MAIN ----------------
@@ -329,7 +353,7 @@ try {
   if (-not [string]::IsNullOrWhiteSpace($ActorOverride)) { $actor = $ActorOverride }
   if (-not [string]::IsNullOrWhiteSpace($ChannelOverride)) { $channel = $ChannelOverride }
 
-  # Common Foundry run paths (used by Guardian + Vault tokens)
+  # Common Foundry run paths
   $foundryRunsDir = Join-Path $foundryRepo "args\data\runs"
   $foundryRunDir  = Join-Path $foundryRunsDir $TargetRunId
 
@@ -368,8 +392,8 @@ try {
   $gExe = [string]$gSplit[0]
   $gArgvTemplate = [string[]]$gSplit[1]
 
-  $tok = @{ request=$gReqPath; policy=$gPolicy; out_dir=$gOutDir }
-  $gArgv = [string[]](Replace-Tokens $gArgvTemplate $tok)
+  $tokG = @{ request=$gReqPath; policy=$gPolicy; out_dir=$gOutDir }
+  $gArgv = [string[]](Replace-Tokens $gArgvTemplate $tokG)
   if ($null -eq $gArgv -or $gArgv.Count -lt 1) { throw "guardian_args_empty" }
 
   $gStdout = Join-Path $evidenceDir "guardian.stdout.txt"
@@ -442,19 +466,31 @@ try {
 
   $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $TargetRunId + ".zip")
 
+  # Stage Foundry run into Vault runs store (Vault CLI v0 reads from its own repo)
+  $vaultRunsDir = Join-Path $vaultRepo "args\data\runs"
+  $vaultRunDir  = Join-Path $vaultRunsDir $TargetRunId
+  Ensure-Dir $vaultRunsDir
+
+  if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
+    Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
+  }
+  Copy-Item -Recurse -Force -LiteralPath $foundryRunDir -Destination $vaultRunDir
+
+  $stageNote = "STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
+  Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+
+  # Vault export: v0 supports ONLY --run-id and --config
   $vExpCmdArr = @($cfg.vault.export_cmd)
   if ($null -eq $vExpCmdArr -or $vExpCmdArr.Count -lt 2) { throw "vault_export_cmd_empty" }
   $vExpSplit = Split-CmdArray $vExpCmdArr
   $vExpExe = [string]$vExpSplit[0]
   $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
-  # IMPORTANT: includes run_dir for {run_dir} token (Vault expects explicit source)
   $tok3 = @{
     run_id       = $TargetRunId
-    run_dir      = $foundryRunDir
-    runs_dir     = $foundryRunsDir
-    zip_path     = $zipPath
     vault_config = $vaultCfg
+    run_dir      = $foundryRunDir
+    zip_path     = $zipPath
   }
   $vExpArgv = [string[]](Replace-Tokens $vExpArgvTemplate $tok3)
   if ($null -eq $vExpArgv -or $vExpArgv.Count -lt 1) { throw "vault_export_args_empty" }
@@ -462,15 +498,16 @@ try {
   $vExpStdout = Join-Path $evidenceDir "vault_export.stdout.txt"
   $vExpStderr = Join-Path $evidenceDir "vault_export.stderr.txt"
 
+  $tExportStart = Get-Date
   $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgv -StdoutPath $vExpStdout -StderrPath $vExpStderr
-  Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; zip=$zipPath }
+  Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra }
 
   $steps += [ordered]@{
     step="vault_export"
     rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra
     cmd=$vr.cmd
     stdout_path=$vExpStdout; stderr_path=$vExpStderr
-    vault_config=$vaultCfg; zip_path=$zipPath; run_dir=$foundryRunDir
+    vault_config=$vaultCfg; staged_run_dir=$vaultRunDir; expected_zip_path=$zipPath
   }
 
   if ([int]$vr.rc -ne 0) {
@@ -480,11 +517,37 @@ try {
     throw $reason
   }
 
+  # Determine produced zip and copy into chain evidence zipPath
+  $producedZip = ""
+  if ($null -ne $vr.json) {
+    foreach ($k in @("zip_path","zip","bundle_zip","bundle_path","archive_path","out_path","path")) {
+      if ($vr.json.PSObject.Properties.Name -contains $k) {
+        $v = [string]$vr.json.$k
+        if (-not [string]::IsNullOrWhiteSpace($v) -and ($v.ToLowerInvariant().EndsWith(".zip"))) { $producedZip = $v; break }
+      }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($producedZip)) {
+    $producedZip = Pick-ProducedZip -VaultRepo $vaultRepo -AfterLocalTime $tExportStart.AddSeconds(-2) -PreferId $TargetRunId
+  }
+  if ([string]::IsNullOrWhiteSpace($producedZip)) {
+    $exitCode = 2; $ok = $false; $reason = "vault_export_missing_zip"
+    throw "vault_export_missing_zip"
+  }
+  if (-not (Test-Path -LiteralPath $producedZip -PathType Leaf)) {
+    $exitCode = 2; $ok = $false; $reason = "vault_export_zip_not_found"
+    throw "vault_export_zip_not_found: $producedZip"
+  }
+
+  Copy-Item -Force -LiteralPath $producedZip -Destination $zipPath
+  Append-Event $eventsJsonl $runId "vault_zip_selected" @{ produced_zip=$producedZip; copied_to=$zipPath }
+
   if ($ChaosCorruptZipBeforeVerify -eq "YES") {
     $did = Corrupt-ZipOneByte $zipPath
     Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath }
   }
 
+  # Vault verify (positional zip path)
   $vVerCmdArr = @($cfg.vault.verify_cmd)
   if ($null -eq $vVerCmdArr -or $vVerCmdArr.Count -lt 2) { throw "vault_verify_cmd_empty" }
   $vVerSplit = Split-CmdArray $vVerCmdArr
