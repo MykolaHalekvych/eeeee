@@ -52,13 +52,10 @@
       "export",
       "--run-id",
       "{run_id}",
-      "--run-dir",
-      "{run_dir}",
-      "--zip-path",
-      "{zip_path}",
       "--config",
       "{vault_config}",
-      "--json"
+      "{run_dir}",
+      "{zip_path}"
     ],
     "verify_cmd": [
       "py",
@@ -66,9 +63,7 @@
       "-m",
       "args.vault.vault_cli_v0",
       "verify",
-      "--zip-path",
-      "{zip_path}",
-      "--json"
+      "{zip_path}"
     ]
   }
 }
