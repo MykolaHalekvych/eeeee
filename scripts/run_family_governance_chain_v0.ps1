@@ -84,11 +84,11 @@ function Resolve-Abs([string]$Base, [string]$P) {
   return (Join-Path $Base $P)
 }
 
-# IMPORTANT: never return $null (even for empty output)
-function Replace-Tokens([AllowNull()][object[]]$Args, [hashtable]$Map) {
+# IMPORTANT: never return $null; always return an array (maybe empty)
+function Replace-Tokens([Parameter(Mandatory=$false)][AllowNull()][object[]]$Argv, [hashtable]$Map) {
   $out = @()
-  if ($null -ne $Args) {
-    foreach ($a in $Args) {
+  if ($null -ne $Argv) {
+    foreach ($a in $Argv) {
       $s = [string]$a
       foreach ($k in $Map.Keys) {
         $s = $s.Replace("{"+$k+"}", [string]$Map[$k])
@@ -103,7 +103,7 @@ function Invoke-External {
   param(
     [Parameter(Mandatory=$true)][string]$RepoPath,
     [Parameter(Mandatory=$true)][string]$Exe,
-    [Parameter(Mandatory=$false)][AllowNull()][object[]]$Args,
+    [Parameter(Mandatory=$false)][AllowNull()][object[]]$Argv,
     [Parameter(Mandatory=$true)][string]$StdoutPath,
     [Parameter(Mandatory=$true)][string]$StderrPath
   )
@@ -113,16 +113,22 @@ function Invoke-External {
 
   # Normalize argv: $null => @()
   $argv = @()
-  if ($null -ne $Args) {
-    foreach ($a in $Args) { $argv += [string]$a }
+  if ($null -ne $Argv) {
+    foreach ($a in $Argv) { $argv += [string]$a }
   }
 
   try {
     Push-Location -Path $RepoPath
     try {
-      $outLines = & $Exe @argv 2> $StderrPath
-      $rc_raw = $LASTEXITCODE
-      $outText = ($outLines | Out-String)
+      $prevEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        $outLines = & $Exe @argv 2> $StderrPath
+        $rc_raw = $LASTEXITCODE
+        $outText = ($outLines | Out-String)
+      } finally {
+        $ErrorActionPreference = $prevEap
+      }
     } finally {
       Pop-Location
     }
@@ -198,7 +204,6 @@ $evidenceDir = Join-Path $runDir "evidence"
 $eventsJsonl = Join-Path $runDir "events.jsonl"
 $finalJson   = Join-Path $runDir "final_report.json"
 
-# Ensure artifacts always exist
 Ensure-Dir $runDir
 Ensure-Dir $evidenceDir
 
@@ -238,7 +243,6 @@ try {
   $rawCfg = Get-Content -Raw -Encoding utf8 -Path $cfgAbs
   if ($null -eq $rawCfg) { $rawCfg = "" }
   $rawCfg = ($rawCfg -replace "^\uFEFF","")
-
   if ($rawCfg -match "__SET__") {
     $exitCode = 2; $ok = $false; $reason = "config_has___SET__"
     throw "config_has___SET__"
@@ -307,12 +311,14 @@ try {
     channel=$channel
     actor=$actor
   }
-  $gArgs2 = Replace-Tokens $gArgs $tok
+
+  $gArgs2 = @(Replace-Tokens $gArgs $tok)
+  if ($null -eq $gArgs2 -or $gArgs2.Count -lt 1) { throw "guardian_args_empty" }
 
   $gStdout = Join-Path $evidenceDir "guardian.stdout.txt"
   $gStderr = Join-Path $evidenceDir "guardian.stderr.txt"
 
-  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Args $gArgs2 -StdoutPath $gStdout -StderrPath $gStderr
+  $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Argv $gArgs2 -StdoutPath $gStdout -StderrPath $gStderr
   Append-Event $eventsJsonl $runId "guardian_done" @{ rc=$gr.rc; rc_raw=$gr.rc_raw; infra=$gr.infra }
 
   $steps += [ordered]@{
@@ -350,12 +356,14 @@ try {
     out_path=$govOutPath
     run_id=$TargetRunId
   }
-  $govArgs2 = Replace-Tokens $govArgs $tok2
+
+  $govArgs2 = @(Replace-Tokens $govArgs $tok2)
+  if ($null -eq $govArgs2 -or $govArgs2.Count -lt 1) { throw "governor_args_empty" }
 
   $govStdout = Join-Path $evidenceDir "governor.stdout.txt"
   $govStderr = Join-Path $evidenceDir "governor.stderr.txt"
 
-  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Args $govArgs2 -StdoutPath $govStdout -StderrPath $govStderr
+  $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Argv $govArgs2 -StdoutPath $govStdout -StderrPath $govStderr
   Append-Event $eventsJsonl $runId "governor_done" @{ rc=$rr.rc; rc_raw=$rr.rc_raw; infra=$rr.infra }
 
   $steps += [ordered]@{
@@ -392,12 +400,14 @@ try {
     zip_path=$zipPath
     vault_config=$vaultCfg
   }
-  $vExpArgs2 = Replace-Tokens $vExpArgs $tok3
+
+  $vExpArgs2 = @(Replace-Tokens $vExpArgs $tok3)
+  if ($null -eq $vExpArgs2 -or $vExpArgs2.Count -lt 1) { throw "vault_export_args_empty" }
 
   $vExpStdout = Join-Path $evidenceDir "vault_export.stdout.txt"
   $vExpStderr = Join-Path $evidenceDir "vault_export.stderr.txt"
 
-  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Args $vExpArgs2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
+  $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgs2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
   Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; zip=$zipPath }
 
   $steps += [ordered]@{
@@ -426,12 +436,14 @@ try {
   $vVerArgs = @($vVerCmd | Select-Object -Skip 1)
 
   $tok4 = @{ zip_path=$zipPath }
-  $vVerArgs2 = Replace-Tokens $vVerArgs $tok4
+
+  $vVerArgs2 = @(Replace-Tokens $vVerArgs $tok4)
+  if ($null -eq $vVerArgs2 -or $vVerArgs2.Count -lt 1) { throw "vault_verify_args_empty" }
 
   $vVerStdout = Join-Path $evidenceDir "vault_verify.stdout.txt"
   $vVerStderr = Join-Path $evidenceDir "vault_verify.stderr.txt"
 
-  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Args $vVerArgs2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
+  $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgs2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
   Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra }
 
   $steps += [ordered]@{
