@@ -10,17 +10,63 @@
   "guardian": {
     "repo": "C:\\Users\\mukol\\ARGS-Guardian-v0",
     "policy_path": "manifests\\guardian_policy_v0.json",
-    "check_cmd": [ "__SET__", "guardian_check", "{request}", "{policy}", "{out_dir}" ]
+    "check_cmd": [
+      "py",
+      "-3.11",
+      "-m",
+      "args.guardian.guardian_check_v0",
+      "--request",
+      "{request}",
+      "--policy",
+      "{policy}",
+      "--out-dir",
+      "{out_dir}"
+    ]
   },
   "governor": {
     "repo": "C:\\Users\\mukol\\ARGS-Release-Governor-v0",
     "policy_path": "manifests\\release_policy_v0.json",
-    "check_cmd": [ "__SET__", "governor_check", "{final_report}", "{policy}", "{out_path}" ]
+    "check_cmd": [
+      "py",
+      "-3.11",
+      "-m",
+      "args.governor.release_governor_v0",
+      "check",
+      "--final-report",
+      "{final_report}",
+      "--policy",
+      "{policy}",
+      "--out",
+      "{out_path}",
+      "--json"
+    ]
   },
   "vault": {
     "repo": "C:\\Users\\mukol\\ARGS-Evidence-Vault-v0",
     "vault_config_path": "args\\data\\vault\\vault_config.json",
-    "export_cmd": [ "__SET__", "vault_export", "{run_id}", "{zip_path}" ],
-    "verify_cmd": [ "__SET__", "vault_verify", "{zip_path}" ]
+    "export_cmd": [
+      "py",
+      "-3.11",
+      "-m",
+      "args.vault.vault_cli_v0",
+      "export",
+      "--run-id",
+      "{run_id}",
+      "--zip-path",
+      "{zip_path}",
+      "--config",
+      "{vault_config}",
+      "--json"
+    ],
+    "verify_cmd": [
+      "py",
+      "-3.11",
+      "-m",
+      "args.vault.vault_cli_v0",
+      "verify",
+      "--zip-path",
+      "{zip_path}",
+      "--json"
+    ]
   }
 }
