@@ -339,7 +339,6 @@ try {
   $gOutDir = Join-Path $evidenceDir "guardian_out"
   Ensure-Dir $gOutDir
 
-  # Target: schema-safe target.type="path"
   $targetRunDir = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId)
   if (-not (Test-Path -LiteralPath $targetRunDir -PathType Container)) {
     $exitCode = 2; $ok = $false; $reason = "missing_target_run_dir"
@@ -353,24 +352,10 @@ try {
     ts_utc     = UtcNowIso
     actor      = $actor
     action     = "foundry.release_export"
-
-    target = [ordered]@{
-      type = "path"
-      path = $targetRunDir
-    }
-
-    reason = "foundry pre-export governance chain"
-
-    constraints = [ordered]@{
-      dryrun    = $false
-      timeout_s = 30
-      max_items = 10
-    }
-
-    context = [ordered]@{
-      repo = "ARGS-Engine-Foundry-v0"
-      env  = "local"
-    }
+    target     = [ordered]@{ type="path"; path=$targetRunDir }
+    reason     = "foundry pre-export governance chain"
+    constraints= [ordered]@{ dryrun=$true; timeout_s=30; max_items=10 }
+    context    = [ordered]@{ repo="ARGS-Engine-Foundry-v0"; env="local" }
   }
   Write-JsonAtomic $gReqPath $gReq
 
@@ -380,12 +365,7 @@ try {
   $gExe = [string]$gSplit[0]
   $gArgvTemplate = [string[]]$gSplit[1]
 
-  $tok = @{
-    request=$gReqPath
-    policy=$gPolicy
-    out_dir=$gOutDir
-  }
-
+  $tok = @{ request=$gReqPath; policy=$gPolicy; out_dir=$gOutDir }
   $gArgv = [string[]](Replace-Tokens $gArgvTemplate $tok)
   if ($null -eq $gArgv -or $gArgv.Count -lt 1) { throw "guardian_args_empty" }
 
@@ -406,8 +386,8 @@ try {
   if ([int]$gr.rc -ne 0) {
     $exitCode = [int]$gr.rc
     $ok = $false
-    $reason = "guardian_blocked"
-    throw "guardian_blocked"
+    $reason = ($(if ($gr.rc -eq 2) { "guardian_infra" } else { "guardian_blocked" }))
+    throw $reason
   }
 
   # ---------- GOVERNOR ----------
@@ -425,12 +405,7 @@ try {
   $govExe = [string]$govSplit[0]
   $govArgvTemplate = [string[]]$govSplit[1]
 
-  $tok2 = @{
-    final_report=$targetFinal
-    policy=$govPolicy
-    out_path=$govOutPath
-  }
-
+  $tok2 = @{ final_report=$targetFinal; policy=$govPolicy; out_path=$govOutPath }
   $govArgv = [string[]](Replace-Tokens $govArgvTemplate $tok2)
   if ($null -eq $govArgv -or $govArgv.Count -lt 1) { throw "governor_args_empty" }
 
@@ -451,8 +426,8 @@ try {
   if ([int]$rr.rc -ne 0) {
     $exitCode = [int]$rr.rc
     $ok = $false
-    $reason = "governor_blocked"
-    throw "governor_blocked"
+    $reason = ($(if ($rr.rc -eq 2) { "governor_infra" } else { "governor_blocked" }))
+    throw $reason
   }
 
   # ---------- VAULT EXPORT + VERIFY ----------
@@ -470,12 +445,7 @@ try {
   $vExpExe = [string]$vExpSplit[0]
   $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
-  $tok3 = @{
-    run_id=$TargetRunId
-    zip_path=$zipPath
-    vault_config=$vaultCfg
-  }
-
+  $tok3 = @{ run_id=$TargetRunId; zip_path=$zipPath; vault_config=$vaultCfg }
   $vExpArgv = [string[]](Replace-Tokens $vExpArgvTemplate $tok3)
   if ($null -eq $vExpArgv -or $vExpArgv.Count -lt 1) { throw "vault_export_args_empty" }
 
@@ -496,8 +466,8 @@ try {
   if ([int]$vr.rc -ne 0) {
     $exitCode = [int]$vr.rc
     $ok = $false
-    $reason = "vault_export_failed"
-    throw "vault_export_failed"
+    $reason = ($(if ($vr.rc -eq 2) { "vault_export_infra" } else { "vault_export_failed" }))
+    throw $reason
   }
 
   if ($ChaosCorruptZipBeforeVerify -eq "YES") {
@@ -512,7 +482,6 @@ try {
   $vVerArgvTemplate = [string[]]$vVerSplit[1]
 
   $tok4 = @{ zip_path=$zipPath }
-
   $vVerArgv = [string[]](Replace-Tokens $vVerArgvTemplate $tok4)
   if ($null -eq $vVerArgv -or $vVerArgv.Count -lt 1) { throw "vault_verify_args_empty" }
 
@@ -533,8 +502,8 @@ try {
   if ([int]$vv.rc -ne 0) {
     $exitCode = [int]$vv.rc
     $ok = $false
-    $reason = "vault_verify_failed"
-    throw "vault_verify_failed"
+    $reason = ($(if ($vv.rc -eq 2) { "vault_verify_infra" } else { "vault_verify_failed" }))
+    throw $reason
   }
 
   $exitCode = 0
