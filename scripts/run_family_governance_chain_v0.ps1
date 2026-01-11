@@ -49,6 +49,7 @@ function Write-JsonAtomic([string]$Path, [object]$Obj) {
   [IO.File]::WriteAllText($tmp, $json, $enc)
   Move-Item -Force -Path $tmp -Destination $Path
 }
+
 function Append-Event([string]$EventsPath, [string]$RunId, [string]$Kind, [hashtable]$Data) {
   $ev = [ordered]@{
     schema = "event_v0"
@@ -66,7 +67,9 @@ function Parse-OneJson([string]$Raw) {
   if ($null -eq $Raw) { return $null }
   $s = $Raw.Trim()
   if ($s -eq "") { return $null }
+
   try { return ($s | ConvertFrom-Json -ErrorAction Stop) } catch {}
+
   $lines = $s -split "`r?`n"
   for ($i = $lines.Length - 1; $i -ge 0; $i--) {
     $c = $lines[$i].Trim()
@@ -129,6 +132,7 @@ function Invoke-External {
     try { Write-TextUtf8NoBom $StderrPath (($_ | Out-String)) } catch {}
   }
 
+  # normalize evidence encodings (stdout+stderr) to UTF-8 no BOM
   try { Write-TextUtf8NoBom $StdoutPath $outText } catch {}
   try {
     if (Test-Path -LiteralPath $StderrPath) {
@@ -149,7 +153,8 @@ function Invoke-External {
 
   return [ordered]@{
     infra=$infra; rc=$rc; rc_raw=$rc_raw; json=$obj;
-    stdout_path=$StdoutPath; stderr_path=$StderrPath
+    stdout_path=$StdoutPath; stderr_path=$StderrPath;
+    cmd=@($Exe) + @($Args)
   }
 }
 
@@ -170,54 +175,74 @@ $repoPath = (Resolve-Path .).Path
 
 $runId = (UtcNowId) + "_" + (RandHex 8)
 $runDir = Join-Path $repoPath ("args\data\runs\" + $runId)
-$evidence = Join-Path $runDir "evidence"
-$events = Join-Path $runDir "events.jsonl"
-$finalPath = Join-Path $runDir "final_report.json"
+$evidenceDir = Join-Path $runDir "evidence"
+$eventsJsonl = Join-Path $runDir "events.jsonl"
+$finalJson   = Join-Path $runDir "final_report.json"
 
-$cases = @()
+# Ensure artifacts always exist
+Ensure-Dir $runDir
+Ensure-Dir $evidenceDir
+
+$tsStart = UtcNowIso
+
+$steps = @()
 $exitCode = 0
 $ok = $true
-$reason = ""
+$reason = "OK"
+$error_msg = ""
+
+# resolved paths (for final report)
+$cfgAbs = Resolve-Abs $repoPath $Config
+$foundryRepo = $repoPath
+$guardianRepo = ""
+$governorRepo = ""
+$vaultRepo = ""
+$targetFinal = ""
+
+Append-Event $eventsJsonl $runId "start" @{
+  target_run_id=$TargetRunId; config=$cfgAbs
+}
 
 try {
-  # Config load
-  $cfgAbs = Resolve-Abs $repoPath $Config
-  if (-not (Test-Path -LiteralPath $cfgAbs -PathType Leaf)) { throw "missing_config: $cfgAbs" }
+  # ---------- CONFIG ----------
+  if (-not (Test-Path -LiteralPath $cfgAbs -PathType Leaf)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_config"
+    throw "missing_config: $cfgAbs"
+  }
 
   $cfg = Read-JsonUtf8Sig $cfgAbs
-  if ([string]$cfg.schema -ne "family_chain_config_v0") { throw "bad_config_schema" }
+  if ([string]$cfg.schema -ne "family_chain_config_v0") {
+    $exitCode = 2; $ok = $false; $reason = "bad_config_schema"
+    throw "bad_config_schema"
+  }
 
   $rawCfg = Get-Content -Raw -Encoding utf8 -Path $cfgAbs
+  if ($null -eq $rawCfg) { $rawCfg = "" }
   $rawCfg = ($rawCfg -replace "^\uFEFF","")
-  if ($rawCfg -match "__SET__") { throw "config_has___SET__" }
 
-  # Resolve repos
+  if ($rawCfg -match "__SET__") {
+    $exitCode = 2; $ok = $false; $reason = "config_has___SET__"
+    throw "config_has___SET__"
+  }
+
   $foundryRepo  = Resolve-Abs $repoPath ([string]$cfg.foundry.repo)
-  $guardianRepo = [string]$cfg.guardian.repo
-  $governorRepo = [string]$cfg.governor.repo
-  $vaultRepo    = [string]$cfg.vault.repo
+  $guardianRepo = Resolve-Abs $repoPath ([string]$cfg.guardian.repo)
+  $governorRepo = Resolve-Abs $repoPath ([string]$cfg.governor.repo)
+  $vaultRepo    = Resolve-Abs $repoPath ([string]$cfg.vault.repo)
 
+  if (-not (Test-Path -LiteralPath $foundryRepo -PathType Container)) { throw "missing_foundry_repo: $foundryRepo" }
   if (-not (Test-Path -LiteralPath $guardianRepo -PathType Container)) { throw "missing_guardian_repo: $guardianRepo" }
   if (-not (Test-Path -LiteralPath $governorRepo -PathType Container)) { throw "missing_governor_repo: $governorRepo" }
   if (-not (Test-Path -LiteralPath $vaultRepo -PathType Container)) { throw "missing_vault_repo: $vaultRepo" }
 
-  # Chain run dir
-  Ensure-Dir $runDir
-  Ensure-Dir $evidence
-
-  Append-Event $events $runId "start" @{
-    target_run_id=$TargetRunId; config=$cfgAbs; foundry_repo=$foundryRepo;
-    guardian_repo=$guardianRepo; governor_repo=$governorRepo; vault_repo=$vaultRepo
-  }
-
-  # Target final_report
+  # ---------- TARGET ----------
   $targetFinal = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId + "\final_report.json")
   if (-not (Test-Path -LiteralPath $targetFinal -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_target_final_report"
     throw "missing_target_final_report: $targetFinal"
   }
 
-  # Actor/channel
+  # actor/channel
   $actor = [string]$cfg.foundry.actor
   $channel = [string]$cfg.foundry.channel
   if (-not [string]::IsNullOrWhiteSpace($ActorOverride)) { $actor = $ActorOverride }
@@ -225,12 +250,15 @@ try {
 
   # ---------- GUARDIAN ----------
   $gPolicy = Resolve-Abs $guardianRepo ([string]$cfg.guardian.policy_path)
-  if (-not (Test-Path -LiteralPath $gPolicy -PathType Leaf)) { throw "missing_guardian_policy: $gPolicy" }
+  if (-not (Test-Path -LiteralPath $gPolicy -PathType Leaf)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_guardian_policy"
+    throw "missing_guardian_policy: $gPolicy"
+  }
 
-  $gOut = Join-Path $evidence "guardian_out"
-  Ensure-Dir $gOut
+  $gOutDir = Join-Path $evidenceDir "guardian_out"
+  Ensure-Dir $gOutDir
 
-  $gReqPath = Join-Path $evidence "guardian_request.json"
+  $gReqPath = Join-Path $evidenceDir "guardian_request.json"
   $gReq = [ordered]@{
     schema="guardian_request_v0"
     request_id=$runId
@@ -247,29 +275,37 @@ try {
   Write-JsonAtomic $gReqPath $gReq
 
   $gCmd = @($cfg.guardian.check_cmd)
+  if ($gCmd.Count -lt 2) { throw "guardian_check_cmd_empty" }
   $gExe = [string]$gCmd[0]
   $gArgs = @($gCmd | Select-Object -Skip 1)
 
-  $map = @{
+  $tok = @{
     request=$gReqPath
     policy=$gPolicy
-    out_dir=$gOut
+    out_dir=$gOutDir
     final_report=$targetFinal
     run_id=$TargetRunId
     channel=$channel
     actor=$actor
   }
-  $gArgs2 = Replace-Tokens $gArgs $map
+  $gArgs2 = Replace-Tokens $gArgs $tok
 
-  $gStdout = Join-Path $evidence "guardian.stdout.txt"
-  $gStderr = Join-Path $evidence "guardian.stderr.txt"
+  $gStdout = Join-Path $evidenceDir "guardian.stdout.txt"
+  $gStderr = Join-Path $evidenceDir "guardian.stderr.txt"
 
   $gr = Invoke-External -RepoPath $guardianRepo -Exe $gExe -Args $gArgs2 -StdoutPath $gStdout -StderrPath $gStderr
-  Append-Event $events $runId "guardian_done" @{ rc=$gr.rc; infra=$gr.infra; rc_raw=$gr.rc_raw }
+  Append-Event $eventsJsonl $runId "guardian_done" @{ rc=$gr.rc; rc_raw=$gr.rc_raw; infra=$gr.infra }
 
-  $cases += [ordered]@{ step="guardian_check"; rc=$gr.rc; infra=$gr.infra; stdout=$gStdout; stderr=$gStderr }
-  if ($gr.rc -ne 0) {
-    $exitCode = $gr.rc
+  $steps += [ordered]@{
+    step="guardian_check"
+    rc=$gr.rc; rc_raw=$gr.rc_raw; infra=$gr.infra
+    cmd=$gr.cmd
+    stdout_path=$gStdout; stderr_path=$gStderr
+    request_json=$gReqPath; policy_path=$gPolicy; out_dir=$gOutDir
+  }
+
+  if ([int]$gr.rc -ne 0) {
+    $exitCode = [int]$gr.rc
     $ok = $false
     $reason = "guardian_blocked"
     throw "guardian_blocked"
@@ -277,31 +313,42 @@ try {
 
   # ---------- GOVERNOR ----------
   $govPolicy = Resolve-Abs $governorRepo ([string]$cfg.governor.policy_path)
-  if (-not (Test-Path -LiteralPath $govPolicy -PathType Leaf)) { throw "missing_governor_policy: $govPolicy" }
+  if (-not (Test-Path -LiteralPath $govPolicy -PathType Leaf)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_governor_policy"
+    throw "missing_governor_policy: $govPolicy"
+  }
 
-  $govOutPath = Join-Path $evidence "governor_report.json"
+  $govOutPath = Join-Path $evidenceDir "governor_report.json"
 
   $govCmd = @($cfg.governor.check_cmd)
+  if ($govCmd.Count -lt 2) { throw "governor_check_cmd_empty" }
   $govExe = [string]$govCmd[0]
   $govArgs = @($govCmd | Select-Object -Skip 1)
 
-  $map2 = @{
+  $tok2 = @{
     final_report=$targetFinal
     policy=$govPolicy
     out_path=$govOutPath
     run_id=$TargetRunId
   }
-  $govArgs2 = Replace-Tokens $govArgs $map2
+  $govArgs2 = Replace-Tokens $govArgs $tok2
 
-  $govStdout = Join-Path $evidence "governor.stdout.txt"
-  $govStderr = Join-Path $evidence "governor.stderr.txt"
+  $govStdout = Join-Path $evidenceDir "governor.stdout.txt"
+  $govStderr = Join-Path $evidenceDir "governor.stderr.txt"
 
   $rr = Invoke-External -RepoPath $governorRepo -Exe $govExe -Args $govArgs2 -StdoutPath $govStdout -StderrPath $govStderr
-  Append-Event $events $runId "governor_done" @{ rc=$rr.rc; infra=$rr.infra; rc_raw=$rr.rc_raw }
+  Append-Event $eventsJsonl $runId "governor_done" @{ rc=$rr.rc; rc_raw=$rr.rc_raw; infra=$rr.infra }
 
-  $cases += [ordered]@{ step="governor_check"; rc=$rr.rc; infra=$rr.infra; stdout=$govStdout; stderr=$govStderr; report=$govOutPath }
-  if ($rr.rc -ne 0) {
-    $exitCode = $rr.rc
+  $steps += [ordered]@{
+    step="governor_check"
+    rc=$rr.rc; rc_raw=$rr.rc_raw; infra=$rr.infra
+    cmd=$rr.cmd
+    stdout_path=$govStdout; stderr_path=$govStderr
+    final_report=$targetFinal; policy_path=$govPolicy; report_path=$govOutPath
+  }
+
+  if ([int]$rr.rc -ne 0) {
+    $exitCode = [int]$rr.rc
     $ok = $false
     $reason = "governor_blocked"
     throw "governor_blocked"
@@ -309,30 +356,41 @@ try {
 
   # ---------- VAULT EXPORT + VERIFY ----------
   $vaultCfg = Resolve-Abs $vaultRepo ([string]$cfg.vault.vault_config_path)
-  if (-not (Test-Path -LiteralPath $vaultCfg -PathType Leaf)) { throw "missing_vault_config: $vaultCfg" }
+  if (-not (Test-Path -LiteralPath $vaultCfg -PathType Leaf)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_vault_config"
+    throw "missing_vault_config: $vaultCfg"
+  }
 
-  $zipPath = Join-Path $evidence ("audit_bundle_" + $TargetRunId + ".zip")
+  $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $TargetRunId + ".zip")
 
   $vExpCmd = @($cfg.vault.export_cmd)
+  if ($vExpCmd.Count -lt 2) { throw "vault_export_cmd_empty" }
   $vExpExe = [string]$vExpCmd[0]
   $vExpArgs = @($vExpCmd | Select-Object -Skip 1)
 
-  $map3 = @{
+  $tok3 = @{
     run_id=$TargetRunId
     zip_path=$zipPath
     vault_config=$vaultCfg
   }
-  $vExpArgs2 = Replace-Tokens $vExpArgs $map3
+  $vExpArgs2 = Replace-Tokens $vExpArgs $tok3
 
-  $vExpStdout = Join-Path $evidence "vault_export.stdout.txt"
-  $vExpStderr = Join-Path $evidence "vault_export.stderr.txt"
+  $vExpStdout = Join-Path $evidenceDir "vault_export.stdout.txt"
+  $vExpStderr = Join-Path $evidenceDir "vault_export.stderr.txt"
 
   $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Args $vExpArgs2 -StdoutPath $vExpStdout -StderrPath $vExpStderr
-  Append-Event $events $runId "vault_export_done" @{ rc=$vr.rc; infra=$vr.infra; rc_raw=$vr.rc_raw; zip=$zipPath }
+  Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; zip=$zipPath }
 
-  $cases += [ordered]@{ step="vault_export"; rc=$vr.rc; infra=$vr.infra; stdout=$vExpStdout; stderr=$vExpStderr; zip=$zipPath }
-  if ($vr.rc -ne 0) {
-    $exitCode = $vr.rc
+  $steps += [ordered]@{
+    step="vault_export"
+    rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra
+    cmd=$vr.cmd
+    stdout_path=$vExpStdout; stderr_path=$vExpStderr
+    vault_config=$vaultCfg; zip_path=$zipPath
+  }
+
+  if ([int]$vr.rc -ne 0) {
+    $exitCode = [int]$vr.rc
     $ok = $false
     $reason = "vault_export_failed"
     throw "vault_export_failed"
@@ -340,25 +398,33 @@ try {
 
   if ($ChaosCorruptZipBeforeVerify -eq "YES") {
     $did = Corrupt-ZipOneByte $zipPath
-    Append-Event $events $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath }
+    Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath }
   }
 
   $vVerCmd = @($cfg.vault.verify_cmd)
+  if ($vVerCmd.Count -lt 2) { throw "vault_verify_cmd_empty" }
   $vVerExe = [string]$vVerCmd[0]
   $vVerArgs = @($vVerCmd | Select-Object -Skip 1)
 
-  $map4 = @{ zip_path=$zipPath }
-  $vVerArgs2 = Replace-Tokens $vVerArgs $map4
+  $tok4 = @{ zip_path=$zipPath }
+  $vVerArgs2 = Replace-Tokens $vVerArgs $tok4
 
-  $vVerStdout = Join-Path $evidence "vault_verify.stdout.txt"
-  $vVerStderr = Join-Path $evidence "vault_verify.stderr.txt"
+  $vVerStdout = Join-Path $evidenceDir "vault_verify.stdout.txt"
+  $vVerStderr = Join-Path $evidenceDir "vault_verify.stderr.txt"
 
   $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Args $vVerArgs2 -StdoutPath $vVerStdout -StderrPath $vVerStderr
-  Append-Event $events $runId "vault_verify_done" @{ rc=$vv.rc; infra=$vv.infra; rc_raw=$vv.rc_raw }
+  Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra }
 
-  $cases += [ordered]@{ step="vault_verify"; rc=$vv.rc; infra=$vv.infra; stdout=$vVerStdout; stderr=$vVerStderr }
-  if ($vv.rc -ne 0) {
-    $exitCode = $vv.rc
+  $steps += [ordered]@{
+    step="vault_verify"
+    rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra
+    cmd=$vv.cmd
+    stdout_path=$vVerStdout; stderr_path=$vVerStderr
+    zip_path=$zipPath
+  }
+
+  if ([int]$vv.rc -ne 0) {
+    $exitCode = [int]$vv.rc
     $ok = $false
     $reason = "vault_verify_failed"
     throw "vault_verify_failed"
@@ -369,7 +435,9 @@ try {
   $reason = "OK"
 
 } catch {
-  if ($exitCode -eq 0) { $exitCode = 2; $ok = $false; $reason = "unhandled_exception" }
+  $error_msg = $_.Exception.Message
+  if ($exitCode -eq 0) { $exitCode = 2; $ok = $false }
+  if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "unhandled_exception" }
 }
 
 $final = [ordered]@{
@@ -380,19 +448,31 @@ $final = [ordered]@{
   repo=$repoPath
   run_id=$runId
   run_dir=$runDir
-  evidence_dir=$evidence
-  events_jsonl=$events
-  final_report_json=$finalPath
-  target_run_id=$TargetRunId
-  target_final_report=(Join-Path $repoPath ("args\data\runs\" + $TargetRunId + "\final_report.json"))
-  reason=$reason
-  steps=$cases
+  evidence_dir=$evidenceDir
+  events_jsonl=$eventsJsonl
+  final_report_json=$finalJson
+  started_utc=$tsStart
+  ended_utc=UtcNowIso
+
   config_used=$Config
+  config_abs=$cfgAbs
+
+  foundry_repo=$foundryRepo
+  guardian_repo=$guardianRepo
+  governor_repo=$governorRepo
+  vault_repo=$vaultRepo
+
+  target_run_id=$TargetRunId
+  target_final_report=$targetFinal
+
+  reason=$reason
+  error=@{ kind="exception"; message=$error_msg }
+
+  steps=$steps
 }
 
-try { Write-JsonAtomic $finalPath $final } catch {}
-
-try { Append-Event $events $runId "done" @{ ok=$ok; exit_code=$exitCode; reason=$reason; target_run_id=$TargetRunId } } catch {}
+try { Write-JsonAtomic $finalJson $final } catch {}
+try { Append-Event $eventsJsonl $runId "done" @{ ok=$ok; exit_code=$exitCode; reason=$reason; target_run_id=$TargetRunId } } catch {}
 
 Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
 exit ([int]$exitCode)
