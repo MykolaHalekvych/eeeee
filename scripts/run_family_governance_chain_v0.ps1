@@ -1,10 +1,11 @@
 param(
   [Parameter(Mandatory=$true)][string]$TargetRunId,
-  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$SkipVaultStage = "NO"
   [Parameter(Mandatory=$false)][string]$Config = "manifests\family_chain\family_chain_config_v0.json",
   [Parameter(Mandatory=$false)][string]$ActorOverride = "",
   [Parameter(Mandatory=$false)][string]$ChannelOverride = "",
-  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$ChaosCorruptZipBeforeVerify = "NO"
+  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$SkipVaultStage = "NO",
+  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$ChaosCorruptZipBeforeVerify = "NO",
+  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$ForceZipDiscovery = "NO"
 )
 
 Set-StrictMode -Version Latest
@@ -212,6 +213,7 @@ function Invoke-External {
   $rc = Normalize-Exit $rc_raw
   $obj = Parse-OneJsonStrict $outText
 
+  # STRICT: non-JSON stdout is INFRA (rc=2)
   $infra = $false
   if ($null -eq $obj) { $infra = $true; $rc = 2; $rc_raw = 2 }
 
@@ -236,6 +238,7 @@ function Corrupt-ZipOneByte([string]$ZipPath) {
 
 function Pick-ProducedZip([string]$VaultRepo, [DateTime]$AfterLocalTime, [string]$PreferId) {
   $dirs = @(
+    (Join-Path $VaultRepo "args\data\vault\bundles"),
     (Join-Path $VaultRepo "dist"),
     (Join-Path $VaultRepo "args\data"),
     $VaultRepo
@@ -307,7 +310,11 @@ $vaultRepo = ""
 $targetFinal = ""
 
 Append-Event $eventsJsonl $runId "start" @{
-  target_run_id=$TargetRunId; config=$cfgAbs
+  target_run_id=$TargetRunId
+  config=$cfgAbs
+  skip_vault_stage=$SkipVaultStage
+  chaos_corrupt_zip_before_verify=$ChaosCorruptZipBeforeVerify
+  force_zip_discovery=$ForceZipDiscovery
 }
 
 try {
@@ -414,7 +421,7 @@ try {
   if ([int]$gr.rc -ne 0) {
     $exitCode = [int]$gr.rc
     $ok = $false
-    $reason = ($(if ($gr.rc -eq 2) { "guardian_infra" } else { "guardian_blocked" }))
+    $reason = $($(if ($gr.rc -eq 2) { "guardian_infra" } else { "guardian_blocked" }))
     throw $reason
   }
 
@@ -454,7 +461,7 @@ try {
   if ([int]$rr.rc -ne 0) {
     $exitCode = [int]$rr.rc
     $ok = $false
-    $reason = ($(if ($rr.rc -eq 2) { "governor_infra" } else { "governor_blocked" }))
+    $reason = $($(if ($rr.rc -eq 2) { "governor_infra" } else { "governor_blocked" }))
     throw $reason
   }
 
@@ -472,13 +479,25 @@ try {
   $vaultRunDir  = Join-Path $vaultRunsDir $TargetRunId
   Ensure-Dir $vaultRunsDir
 
-  if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
-    Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
+  if ($SkipVaultStage -eq "YES") {
+    # NEG-1 hook: guarantee staged run is absent
+    if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
+      Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
+    }
+    $stageNote = "SKIPPED_STAGE`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
+    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+    Append-Event $eventsJsonl $runId "vault_stage_skipped" @{ dst=$vaultRunDir }
   }
-  Copy-Item -Recurse -Force -LiteralPath $foundryRunDir -Destination $vaultRunDir
+  else {
+    if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
+      Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
+    }
+    Copy-Item -Recurse -Force -LiteralPath $foundryRunDir -Destination $vaultRunDir
 
-  $stageNote = "STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
-  Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+    $stageNote = "STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
+    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+    Append-Event $eventsJsonl $runId "vault_stage_done" @{ src=$foundryRunDir; dst=$vaultRunDir }
+  }
 
   # Vault export: v0 supports ONLY --run-id and --config
   $vExpCmdArr = @($cfg.vault.export_cmd)
@@ -508,29 +527,39 @@ try {
     rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra
     cmd=$vr.cmd
     stdout_path=$vExpStdout; stderr_path=$vExpStderr
-    vault_config=$vaultCfg; staged_run_dir=$vaultRunDir; expected_zip_path=$zipPath
+    vault_config=$vaultCfg
+    staged_run_dir=$vaultRunDir
+    expected_zip_path=$zipPath
+    skip_vault_stage=$SkipVaultStage
+    force_zip_discovery=$ForceZipDiscovery
   }
 
   if ([int]$vr.rc -ne 0) {
     $exitCode = [int]$vr.rc
     $ok = $false
-    $reason = ($(if ($vr.rc -eq 2) { "vault_export_infra" } else { "vault_export_failed" }))
+    $reason = $($(if ($vr.rc -eq 2) { "vault_export_infra" } else { "vault_export_failed" }))
     throw $reason
   }
 
   # Determine produced zip and copy into chain evidence zipPath
   $producedZip = ""
-  if ($null -ne $vr.json) {
+
+  if (($ForceZipDiscovery -ne "YES") -and ($null -ne $vr.json)) {
     foreach ($k in @("zip_path","zip","bundle_zip","bundle_path","archive_path","out_path","path")) {
       if ($vr.json.PSObject.Properties.Name -contains $k) {
         $v = [string]$vr.json.$k
-        if (-not [string]::IsNullOrWhiteSpace($v) -and ($v.ToLowerInvariant().EndsWith(".zip"))) { $producedZip = $v; break }
+        if (-not [string]::IsNullOrWhiteSpace($v) -and ($v.ToLowerInvariant().EndsWith(".zip"))) {
+          $producedZip = $v
+          break
+        }
       }
     }
   }
+
   if ([string]::IsNullOrWhiteSpace($producedZip)) {
     $producedZip = Pick-ProducedZip -VaultRepo $vaultRepo -AfterLocalTime $tExportStart.AddSeconds(-2) -PreferId $TargetRunId
   }
+
   if ([string]::IsNullOrWhiteSpace($producedZip)) {
     $exitCode = 2; $ok = $false; $reason = "vault_export_missing_zip"
     throw "vault_export_missing_zip"
@@ -576,15 +605,15 @@ try {
   if ([int]$vv.rc -ne 0) {
     $exitCode = [int]$vv.rc
     $ok = $false
-    $reason = ($(if ($vv.rc -eq 2) { "vault_verify_infra" } else { "vault_verify_failed" }))
+    $reason = $($(if ($vv.rc -eq 2) { "vault_verify_infra" } else { "vault_verify_failed" }))
     throw $reason
   }
 
   $exitCode = 0
   $ok = $true
   $reason = "OK"
-
-} catch {
+}
+catch {
   $error_msg = $_.Exception.Message
   try {
     $chainErr = Join-Path $evidenceDir "chain_exception.txt"
@@ -619,6 +648,10 @@ $final = [ordered]@{
 
   target_run_id=$TargetRunId
   target_final_report=$targetFinal
+
+  skip_vault_stage=$SkipVaultStage
+  chaos_corrupt_zip_before_verify=$ChaosCorruptZipBeforeVerify
+  force_zip_discovery=$ForceZipDiscovery
 
   reason=$reason
   error=@{ kind="exception"; message=$error_msg }
