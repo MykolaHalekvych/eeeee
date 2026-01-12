@@ -13,6 +13,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 # Exit codes
 $RC_OK    = 0
@@ -24,6 +25,7 @@ function UtcNowId  { return ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')) }
 function RandHex([int]$n) { -join (1..$n | ForEach-Object { '{0:x}' -f (Get-Random -Max 16) }) }
 
 function Ensure-Dir([string]$p) {
+  if ([string]::IsNullOrWhiteSpace($p)) { return }
   if (-not (Test-Path -LiteralPath $p -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $p | Out-Null
   }
@@ -49,7 +51,7 @@ function Append-TextUtf8NoBom([string]$Path, [string]$Text) {
 function Write-JsonAtomic([string]$Path, [object]$Obj) {
   Ensure-Dir (Split-Path -Parent $Path)
   $tmp = "$Path.tmp"
-  $json = ($Obj | ConvertTo-Json -Compress -Depth 80)
+  $json = ($Obj | ConvertTo-Json -Compress -Depth 90)
   $enc = New-Object System.Text.UTF8Encoding $false
   [IO.File]::WriteAllText($tmp, $json, $enc)
   Move-Item -Force -Path $tmp -Destination $Path
@@ -64,11 +66,11 @@ function Append-Event([string]$EventsPath, [string]$RunId, [string]$Kind, [hasht
     kind   = $Kind
     data   = $Data
   }
-  $line = (($ev | ConvertTo-Json -Compress -Depth 80) + "`n")
+  $line = (($ev | ConvertTo-Json -Compress -Depth 90) + "`n")
   Append-TextUtf8NoBom $EventsPath $line
 }
 
-# STRICT: external stdout must be exactly one JSON document
+# STRICT: external stdout must be exactly one JSON doc
 function Parse-OneJsonStrict([string]$Raw) {
   if ($null -eq $Raw) { return $null }
   $s = $Raw.Trim()
@@ -89,7 +91,7 @@ function Resolve-Abs([string]$Base, [string]$P) {
   return (Join-Path $Base $P)
 }
 
-# IMPORTANT: return flat string[] (never nested, never $null)
+# IMPORTANT: return flat string[]
 function Replace-Tokens([AllowNull()][object[]]$Argv, [hashtable]$Map) {
   $out = @()
   if ($null -ne $Argv) {
@@ -216,7 +218,7 @@ function Invoke-External {
   $rc = Normalize-Exit $rc_raw
   $obj = Parse-OneJsonStrict $outText
 
-  # STRICT: non-JSON stdout is INFRA (rc=2)
+  # STRICT: non-JSON stdout is INFRA
   $infra = $false
   if ($null -eq $obj) { $infra = $true; $rc = 2; $rc_raw = 2 }
 
@@ -257,7 +259,6 @@ function Pick-ProducedZip([string]$VaultRepo, [DateTime]$AfterLocalTime, [string
 
   if ($cands.Count -eq 0) { return "" }
 
-  # Prefer zips containing run_id in name
   $pref = $cands | Where-Object { $_.Name -like "*$PreferId*" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if ($null -ne $pref) { return $pref.FullName }
 
@@ -283,7 +284,7 @@ if (-not (Test-Path -LiteralPath $repoGuard -PathType Leaf)) {
     error=@{ kind="exception"; message="WRONG_REPO" }
     steps=@()
   }
-  Write-Output ($finalFail | ConvertTo-Json -Compress -Depth 20)
+  Write-Output ($finalFail | ConvertTo-Json -Compress -Depth 30)
   exit $RC_INFRA
 }
 
@@ -304,7 +305,6 @@ $ok = $true
 $reason = "OK"
 $error_msg = ""
 
-# resolved paths (for final report)
 $cfgAbs = Resolve-Abs $repoPath $Config
 $foundryRepo = $repoPath
 $guardianRepo = ""
@@ -325,7 +325,7 @@ try {
   # ---------- CONFIG ----------
   if (-not (Test-Path -LiteralPath $cfgAbs -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_config"
-    throw "missing_config: $cfgAbs"
+    throw "missing_config"
   }
 
   $cfg = Read-JsonUtf8Sig $cfgAbs
@@ -334,29 +334,21 @@ try {
     throw "bad_config_schema"
   }
 
-  $rawCfg = Get-Content -Raw -Encoding utf8 -Path $cfgAbs
-  if ($null -eq $rawCfg) { $rawCfg = "" }
-  $rawCfg = ($rawCfg -replace "^\uFEFF","")
-  if ($rawCfg -match "__SET__") {
-    $exitCode = 2; $ok = $false; $reason = "config_has___SET__"
-    throw "config_has___SET__"
-  }
-
   $foundryRepo  = Resolve-Abs $repoPath ([string]$cfg.foundry.repo)
   $guardianRepo = Resolve-Abs $repoPath ([string]$cfg.guardian.repo)
   $governorRepo = Resolve-Abs $repoPath ([string]$cfg.governor.repo)
   $vaultRepo    = Resolve-Abs $repoPath ([string]$cfg.vault.repo)
 
-  if (-not (Test-Path -LiteralPath $foundryRepo -PathType Container)) { throw "missing_foundry_repo: $foundryRepo" }
-  if (-not (Test-Path -LiteralPath $guardianRepo -PathType Container)) { throw "missing_guardian_repo: $guardianRepo" }
-  if (-not (Test-Path -LiteralPath $governorRepo -PathType Container)) { throw "missing_governor_repo: $governorRepo" }
-  if (-not (Test-Path -LiteralPath $vaultRepo -PathType Container)) { throw "missing_vault_repo: $vaultRepo" }
+  if (-not (Test-Path -LiteralPath $foundryRepo -PathType Container)) { throw "missing_foundry_repo" }
+  if (-not (Test-Path -LiteralPath $guardianRepo -PathType Container)) { throw "missing_guardian_repo" }
+  if (-not (Test-Path -LiteralPath $governorRepo -PathType Container)) { throw "missing_governor_repo" }
+  if (-not (Test-Path -LiteralPath $vaultRepo -PathType Container)) { throw "missing_vault_repo" }
 
   # ---------- TARGET ----------
   $targetFinal = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId + "\final_report.json")
   if (-not (Test-Path -LiteralPath $targetFinal -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_target_final_report"
-    throw "missing_target_final_report: $targetFinal"
+    throw "missing_target_final_report"
   }
 
   # actor/channel
@@ -365,24 +357,21 @@ try {
   if (-not [string]::IsNullOrWhiteSpace($ActorOverride)) { $actor = $ActorOverride }
   if (-not [string]::IsNullOrWhiteSpace($ChannelOverride)) { $channel = $ChannelOverride }
 
-  # Common Foundry run paths
-  $foundryRunsDir = Join-Path $foundryRepo "args\data\runs"
-  $foundryRunDir  = Join-Path $foundryRunsDir $TargetRunId
+  $foundryRunDir  = Join-Path $foundryRepo ("args\data\runs\" + $TargetRunId)
+  if (-not (Test-Path -LiteralPath $foundryRunDir -PathType Container)) {
+    $exitCode = 2; $ok = $false; $reason = "missing_target_run_dir"
+    throw "missing_target_run_dir"
+  }
 
   # ---------- GUARDIAN ----------
   $gPolicy = Resolve-Abs $guardianRepo ([string]$cfg.guardian.policy_path)
   if (-not (Test-Path -LiteralPath $gPolicy -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_guardian_policy"
-    throw "missing_guardian_policy: $gPolicy"
+    throw "missing_guardian_policy"
   }
 
   $gOutDir = Join-Path $evidenceDir "guardian_out"
   Ensure-Dir $gOutDir
-
-  if (-not (Test-Path -LiteralPath $foundryRunDir -PathType Container)) {
-    $exitCode = 2; $ok = $false; $reason = "missing_target_run_dir"
-    throw "missing_target_run_dir: $foundryRunDir"
-  }
 
   $gReqPath = Join-Path $evidenceDir "guardian_request.json"
   $gReq = [ordered]@{
@@ -425,7 +414,7 @@ try {
   if ([int]$gr.rc -ne 0) {
     $exitCode = [int]$gr.rc
     $ok = $false
-    $reason = $($(if ($gr.rc -eq 2) { "guardian_infra" } else { "guardian_blocked" }))
+    $reason = $(if ($gr.rc -eq 2) { "guardian_infra" } else { "guardian_blocked" })
     throw $reason
   }
 
@@ -433,7 +422,7 @@ try {
   $govPolicy = Resolve-Abs $governorRepo ([string]$cfg.governor.policy_path)
   if (-not (Test-Path -LiteralPath $govPolicy -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_governor_policy"
-    throw "missing_governor_policy: $govPolicy"
+    throw "missing_governor_policy"
   }
 
   $govOutPath = Join-Path $evidenceDir "governor_report.json"
@@ -465,12 +454,11 @@ try {
   if ([int]$rr.rc -ne 0) {
     $exitCode = [int]$rr.rc
     $ok = $false
-    $reason = $($(if ($rr.rc -eq 2) { "governor_infra" } else { "governor_blocked" }))
+    $reason = $(if ($rr.rc -eq 2) { "governor_infra" } else { "governor_blocked" })
     throw $reason
   }
 
-  # ---------- VAULT EXPORT + VERIFY ----------
-  # Determine which run_id Vault export should use (NEG hook).
+  # ---------- VAULT (STAGE -> INGEST -> EXPORT -> VERIFY) ----------
   $vaultExportRunId = $TargetRunId
   if (-not [string]::IsNullOrWhiteSpace($VaultExportRunIdOverride)) {
     if ($SkipVaultStage -ne "YES") {
@@ -483,50 +471,69 @@ try {
   $vaultCfg = Resolve-Abs $vaultRepo ([string]$cfg.vault.vault_config_path)
   if (-not (Test-Path -LiteralPath $vaultCfg -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_vault_config"
-    throw "missing_vault_config: $vaultCfg"
+    throw "missing_vault_config"
   }
 
+  # Stage directory (kept for negative semantics; Vault config roots may still include Foundry)
   $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $vaultExportRunId + ".zip")
 
-  # Stage Foundry run into Vault runs store (Vault CLI v0 reads from its own repo)
   $vaultRunsDir = Join-Path $vaultRepo "args\data\runs"
   $vaultRunDir  = Join-Path $vaultRunsDir $vaultExportRunId
   Ensure-Dir $vaultRunsDir
 
   if ($SkipVaultStage -eq "YES") {
-    # NEG hook: guarantee staged run is absent for vaultExportRunId
     if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
       Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
     }
-    $stageNote = "SKIPPED_STAGE`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
-    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") ("SKIPPED_STAGE`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n")
     Append-Event $eventsJsonl $runId "vault_stage_skipped" @{ dst=$vaultRunDir; vault_export_run_id=$vaultExportRunId }
   }
   else {
-    # Normal path: stage the real TargetRunId into Vault store (and vaultExportRunId equals TargetRunId here)
     if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
       Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
     }
+    # stage only when export_run_id is the real target
+    if ($vaultExportRunId -ne $TargetRunId) {
+      $exitCode = 2; $ok = $false; $reason = "vault_export_run_id_override_requires_skip_stage"
+      throw "vault_export_run_id_override_requires_skip_stage"
+    }
     Copy-Item -Recurse -Force -LiteralPath $foundryRunDir -Destination $vaultRunDir
-
-    $stageNote = "STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
-    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
+    Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") ("STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n")
     Append-Event $eventsJsonl $runId "vault_stage_done" @{ src=$foundryRunDir; dst=$vaultRunDir; vault_export_run_id=$vaultExportRunId }
   }
 
-  # Vault export: v0 supports ONLY --run-id and --config
+  # Vault ingest (refresh index so export can see newest runs)
+  $vIngExe = "py"
+  $vIngArgv = @("-3.11","-m","args.vault.vault_cli_v0","ingest","--config",$vaultCfg)
+  $vIngStdout = Join-Path $evidenceDir "vault_ingest.stdout.txt"
+  $vIngStderr = Join-Path $evidenceDir "vault_ingest.stderr.txt"
+
+  $vi = Invoke-External -RepoPath $vaultRepo -Exe $vIngExe -Argv $vIngArgv -StdoutPath $vIngStdout -StderrPath $vIngStderr
+  Append-Event $eventsJsonl $runId "vault_ingest_done" @{ rc=$vi.rc; rc_raw=$vi.rc_raw; infra=$vi.infra }
+
+  $steps += [ordered]@{
+    step="vault_ingest"
+    rc=$vi.rc; rc_raw=$vi.rc_raw; infra=$vi.infra
+    cmd=$vi.cmd
+    stdout_path=$vIngStdout; stderr_path=$vIngStderr
+    vault_config=$vaultCfg
+  }
+
+  if ([int]$vi.rc -ne 0) {
+    $exitCode = [int]$vi.rc
+    $ok = $false
+    $reason = $(if ($vi.rc -eq 2) { "vault_ingest_infra" } else { "vault_ingest_failed" })
+    throw $reason
+  }
+
+  # Vault export
   $vExpCmdArr = @($cfg.vault.export_cmd)
   if ($null -eq $vExpCmdArr -or $vExpCmdArr.Count -lt 2) { throw "vault_export_cmd_empty" }
   $vExpSplit = Split-CmdArray $vExpCmdArr
   $vExpExe = [string]$vExpSplit[0]
   $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
-  $tok3 = @{
-    run_id       = $vaultExportRunId
-    vault_config = $vaultCfg
-    run_dir      = $foundryRunDir
-    zip_path     = $zipPath
-  }
+  $tok3 = @{ run_id=$vaultExportRunId; vault_config=$vaultCfg; zip_path=$zipPath }
   $vExpArgv = [string[]](Replace-Tokens $vExpArgvTemplate $tok3)
   if ($null -eq $vExpArgv -or $vExpArgv.Count -lt 1) { throw "vault_export_args_empty" }
 
@@ -553,15 +560,15 @@ try {
   if ([int]$vr.rc -ne 0) {
     $exitCode = [int]$vr.rc
     $ok = $false
-    $reason = $($(if ($vr.rc -eq 2) { "vault_export_infra" } else { "vault_export_failed" }))
+    $reason = $(if ($vr.rc -eq 2) { "vault_export_infra" } else { "vault_export_failed" })
     throw $reason
   }
 
-  # Determine produced zip and copy into chain evidence zipPath
+  # Select produced zip
   $producedZip = ""
 
   if (($ForceZipDiscovery -ne "YES") -and ($null -ne $vr.json)) {
-    foreach ($k in @("zip_path","zip","bundle_zip","bundle_path","archive_path","out_path","path")) {
+    foreach ($k in @("bundle_path","bundle_zip","zip_path","archive_path","path","out_path")) {
       if ($vr.json.PSObject.Properties.Name -contains $k) {
         $v = [string]$vr.json.$k
         if (-not [string]::IsNullOrWhiteSpace($v) -and ($v.ToLowerInvariant().EndsWith(".zip"))) {
@@ -572,7 +579,11 @@ try {
     }
   }
 
-  if ([string]::IsNullOrWhiteSpace($producedZip)) {
+  if (-not [string]::IsNullOrWhiteSpace($producedZip)) {
+    if (-not [System.IO.Path]::IsPathRooted($producedZip)) {
+      $producedZip = Join-Path $vaultRepo $producedZip
+    }
+  } else {
     $producedZip = Pick-ProducedZip -VaultRepo $vaultRepo -AfterLocalTime $tExportStart.AddSeconds(-2) -PreferId $vaultExportRunId
   }
 
@@ -582,7 +593,7 @@ try {
   }
   if (-not (Test-Path -LiteralPath $producedZip -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "vault_export_zip_not_found"
-    throw "vault_export_zip_not_found: $producedZip"
+    throw "vault_export_zip_not_found"
   }
 
   Copy-Item -Force -LiteralPath $producedZip -Destination $zipPath
@@ -593,7 +604,7 @@ try {
     Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath; vault_export_run_id=$vaultExportRunId }
   }
 
-  # Vault verify (positional zip path)
+  # Vault verify
   $vVerCmdArr = @($cfg.vault.verify_cmd)
   if ($null -eq $vVerCmdArr -or $vVerCmdArr.Count -lt 2) { throw "vault_verify_cmd_empty" }
   $vVerSplit = Split-CmdArray $vVerCmdArr
@@ -622,7 +633,7 @@ try {
   if ([int]$vv.rc -ne 0) {
     $exitCode = [int]$vv.rc
     $ok = $false
-    $reason = $($(if ($vv.rc -eq 2) { "vault_verify_infra" } else { "vault_verify_failed" }))
+    $reason = $(if ($vv.rc -eq 2) { "vault_verify_infra" } else { "vault_verify_failed" })
     throw $reason
   }
 
@@ -632,11 +643,7 @@ try {
 }
 catch {
   $error_msg = $_.Exception.Message
-  try {
-    $chainErr = Join-Path $evidenceDir "chain_exception.txt"
-    Write-TextUtf8NoBom $chainErr (($_ | Out-String))
-  } catch {}
-
+  try { Write-TextUtf8NoBom (Join-Path $evidenceDir "chain_exception.txt") (($_ | Out-String)) } catch {}
   if ($exitCode -eq 0) { $exitCode = 2; $ok = $false }
   if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "unhandled_exception" }
 }
@@ -680,6 +687,5 @@ $final = [ordered]@{
 try { Write-JsonAtomic $finalJson $final } catch {}
 try { Append-Event $eventsJsonl $runId "done" @{ ok=$ok; exit_code=$exitCode; reason=$reason; target_run_id=$TargetRunId } } catch {}
 
-Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
+Write-Output ($final | ConvertTo-Json -Compress -Depth 90)
 exit ([int]$exitCode)
-

@@ -169,7 +169,7 @@ function Run-ChildPs1 {
     return @{ exit_code=2; json_ok=$true; obj=$null; script_path=$scriptPath }
   }
 
-  $base = @("-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",('"' + $scriptPath + '"'))
+  $base = @("-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",$scriptPath)
   $all = @()
   foreach ($b in $base) { $all += $b }
   foreach ($a in $Args) { $all += $a }
