@@ -69,25 +69,44 @@ try {
   $rc_norm = $rc
   if (($rc_norm -ne 0) -and ($rc_norm -ne 1) -and ($rc_norm -ne 2)) { $rc_norm = $RC_INFRA }
 
-  # Expectations:
-  # - chain must FAIL with rc=1 (verify should fail due to corrupted zip)
-  # - vault_verify step rc should be 1 (best-effort check if parsed)
-  $expect_chain_rc = 1
+    # Expectations:
+  # - chain must fail specifically at vault_verify due to corrupted zip
+  # - vault_export must succeed (rc=0)
+  # - vault_verify must be nonzero (rc=1 or rc=2)
+  $export_rc = $null
   $verify_rc = $null
+  $nonzero_steps = New-Object System.Collections.Generic.List[string]
+
   if ($parsed_ok) {
     foreach ($s in $chain_obj.steps) {
+      if ($s.step -eq "vault_export") { $export_rc = $s.rc }
       if ($s.step -eq "vault_verify") { $verify_rc = $s.rc }
+      if ($s.rc -ne 0) { $nonzero_steps.Add([string]$s.step) | Out-Null }
     }
   }
 
   $test_ok = $true
   $why = "OK"
-  if ($rc_norm -ne $expect_chain_rc) {
+
+  if (-not $parsed_ok) {
     $test_ok = $false
-    $why = "EXPECTED_CHAIN_RC_1_GOT_{0}" -f $rc_norm
-  } elseif ($parsed_ok -and ($null -ne $verify_rc) -and ($verify_rc -ne 1)) {
+    $why = "CHAIN_STDOUT_NOT_JSON"
+  }
+  elseif ($export_rc -ne 0) {
     $test_ok = $false
-    $why = "EXPECTED_VAULT_VERIFY_RC_1_GOT_{0}" -f $verify_rc
+    $why = "EXPECTED_VAULT_EXPORT_RC_0_GOT_{0}" -f $export_rc
+  }
+  elseif (($null -eq $verify_rc) -or (($verify_rc -ne 1) -and ($verify_rc -ne 2))) {
+    $test_ok = $false
+    $why = "EXPECTED_VAULT_VERIFY_NONZERO_GOT_{0}" -f $verify_rc
+  }
+  elseif (($rc_norm -ne 1) -and ($rc_norm -ne 2)) {
+    $test_ok = $false
+    $why = "EXPECTED_CHAIN_NONZERO_GOT_{0}" -f $rc_norm
+  }
+  elseif (($nonzero_steps.Count -ne 1) -or ($nonzero_steps[0] -ne "vault_verify")) {
+    $test_ok = $false
+    $why = "EXPECTED_ONLY_VAULT_VERIFY_TO_FAIL_GOT_{0}" -f (($nonzero_steps -join ","))
   }
 
   $exit = $(if ($test_ok) { $RC_OK } elseif ($rc_norm -eq $RC_INFRA) { $RC_INFRA } else { $RC_FAIL })
@@ -102,7 +121,7 @@ try {
     out_dir       = $out_dir
     target_run_id = $TargetRunId
     config_used   = $cfg_abs
-    expected      = [ordered]@{ chain_rc = 1; vault_verify_rc = 1 }
+    expected      = [ordered]@{ chain_rc = "NONZERO(1|2)"; vault_export_rc = 0; vault_verify_rc = "NONZERO(1|2)"; failing_step = "vault_verify" }
     observed      = [ordered]@{
       chain_rc     = $rc_norm
       chain_rc_raw = $rc
