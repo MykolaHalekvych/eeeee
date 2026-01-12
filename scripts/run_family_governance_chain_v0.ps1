@@ -1,5 +1,6 @@
 param(
   [Parameter(Mandatory=$true)][string]$TargetRunId,
+  [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$SkipVaultStage = "NO"
   [Parameter(Mandatory=$false)][string]$Config = "manifests\family_chain\family_chain_config_v0.json",
   [Parameter(Mandatory=$false)][string]$ActorOverride = "",
   [Parameter(Mandatory=$false)][string]$ChannelOverride = "",
