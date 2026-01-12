@@ -3,7 +3,10 @@ param(
   [Parameter(Mandatory=$false)][string]$Config = "manifests\family_chain\family_chain_config_v0.json",
   [Parameter(Mandatory=$false)][string]$ActorOverride = "",
   [Parameter(Mandatory=$false)][string]$ChannelOverride = "",
+
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$SkipVaultStage = "NO",
+  [Parameter(Mandatory=$false)][string]$VaultExportRunIdOverride = "",
+
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$ChaosCorruptZipBeforeVerify = "NO",
   [Parameter(Mandatory=$false)][ValidateSet("YES","NO")][string]$ForceZipDiscovery = "NO"
 )
@@ -313,6 +316,7 @@ Append-Event $eventsJsonl $runId "start" @{
   target_run_id=$TargetRunId
   config=$cfgAbs
   skip_vault_stage=$SkipVaultStage
+  vault_export_run_id_override=$VaultExportRunIdOverride
   chaos_corrupt_zip_before_verify=$ChaosCorruptZipBeforeVerify
   force_zip_discovery=$ForceZipDiscovery
 }
@@ -466,29 +470,40 @@ try {
   }
 
   # ---------- VAULT EXPORT + VERIFY ----------
+  # Determine which run_id Vault export should use (NEG hook).
+  $vaultExportRunId = $TargetRunId
+  if (-not [string]::IsNullOrWhiteSpace($VaultExportRunIdOverride)) {
+    if ($SkipVaultStage -ne "YES") {
+      $exitCode = 2; $ok = $false; $reason = "vault_export_run_id_override_requires_skip_stage"
+      throw "vault_export_run_id_override_requires_skip_stage"
+    }
+    $vaultExportRunId = $VaultExportRunIdOverride
+  }
+
   $vaultCfg = Resolve-Abs $vaultRepo ([string]$cfg.vault.vault_config_path)
   if (-not (Test-Path -LiteralPath $vaultCfg -PathType Leaf)) {
     $exitCode = 2; $ok = $false; $reason = "missing_vault_config"
     throw "missing_vault_config: $vaultCfg"
   }
 
-  $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $TargetRunId + ".zip")
+  $zipPath = Join-Path $evidenceDir ("audit_bundle_" + $vaultExportRunId + ".zip")
 
   # Stage Foundry run into Vault runs store (Vault CLI v0 reads from its own repo)
   $vaultRunsDir = Join-Path $vaultRepo "args\data\runs"
-  $vaultRunDir  = Join-Path $vaultRunsDir $TargetRunId
+  $vaultRunDir  = Join-Path $vaultRunsDir $vaultExportRunId
   Ensure-Dir $vaultRunsDir
 
   if ($SkipVaultStage -eq "YES") {
-    # NEG-1 hook: guarantee staged run is absent
+    # NEG hook: guarantee staged run is absent for vaultExportRunId
     if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
       Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
     }
     $stageNote = "SKIPPED_STAGE`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
     Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
-    Append-Event $eventsJsonl $runId "vault_stage_skipped" @{ dst=$vaultRunDir }
+    Append-Event $eventsJsonl $runId "vault_stage_skipped" @{ dst=$vaultRunDir; vault_export_run_id=$vaultExportRunId }
   }
   else {
+    # Normal path: stage the real TargetRunId into Vault store (and vaultExportRunId equals TargetRunId here)
     if (Test-Path -LiteralPath $vaultRunDir -PathType Container) {
       Remove-Item -Recurse -Force -LiteralPath $vaultRunDir
     }
@@ -496,7 +511,7 @@ try {
 
     $stageNote = "STAGED_RUN`nSRC=$foundryRunDir`nDST=$vaultRunDir`nTS=$(UtcNowIso)`n"
     Write-TextUtf8NoBom (Join-Path $evidenceDir "vault_stage.txt") $stageNote
-    Append-Event $eventsJsonl $runId "vault_stage_done" @{ src=$foundryRunDir; dst=$vaultRunDir }
+    Append-Event $eventsJsonl $runId "vault_stage_done" @{ src=$foundryRunDir; dst=$vaultRunDir; vault_export_run_id=$vaultExportRunId }
   }
 
   # Vault export: v0 supports ONLY --run-id and --config
@@ -507,7 +522,7 @@ try {
   $vExpArgvTemplate = [string[]]$vExpSplit[1]
 
   $tok3 = @{
-    run_id       = $TargetRunId
+    run_id       = $vaultExportRunId
     vault_config = $vaultCfg
     run_dir      = $foundryRunDir
     zip_path     = $zipPath
@@ -520,7 +535,7 @@ try {
 
   $tExportStart = Get-Date
   $vr = Invoke-External -RepoPath $vaultRepo -Exe $vExpExe -Argv $vExpArgv -StdoutPath $vExpStdout -StderrPath $vExpStderr
-  Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra }
+  Append-Event $eventsJsonl $runId "vault_export_done" @{ rc=$vr.rc; rc_raw=$vr.rc_raw; infra=$vr.infra; vault_export_run_id=$vaultExportRunId }
 
   $steps += [ordered]@{
     step="vault_export"
@@ -532,6 +547,7 @@ try {
     expected_zip_path=$zipPath
     skip_vault_stage=$SkipVaultStage
     force_zip_discovery=$ForceZipDiscovery
+    vault_export_run_id=$vaultExportRunId
   }
 
   if ([int]$vr.rc -ne 0) {
@@ -557,7 +573,7 @@ try {
   }
 
   if ([string]::IsNullOrWhiteSpace($producedZip)) {
-    $producedZip = Pick-ProducedZip -VaultRepo $vaultRepo -AfterLocalTime $tExportStart.AddSeconds(-2) -PreferId $TargetRunId
+    $producedZip = Pick-ProducedZip -VaultRepo $vaultRepo -AfterLocalTime $tExportStart.AddSeconds(-2) -PreferId $vaultExportRunId
   }
 
   if ([string]::IsNullOrWhiteSpace($producedZip)) {
@@ -570,11 +586,11 @@ try {
   }
 
   Copy-Item -Force -LiteralPath $producedZip -Destination $zipPath
-  Append-Event $eventsJsonl $runId "vault_zip_selected" @{ produced_zip=$producedZip; copied_to=$zipPath }
+  Append-Event $eventsJsonl $runId "vault_zip_selected" @{ produced_zip=$producedZip; copied_to=$zipPath; vault_export_run_id=$vaultExportRunId }
 
   if ($ChaosCorruptZipBeforeVerify -eq "YES") {
     $did = Corrupt-ZipOneByte $zipPath
-    Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath }
+    Append-Event $eventsJsonl $runId "chaos_zip_corrupt" @{ applied=$did; zip=$zipPath; vault_export_run_id=$vaultExportRunId }
   }
 
   # Vault verify (positional zip path)
@@ -592,7 +608,7 @@ try {
   $vVerStderr = Join-Path $evidenceDir "vault_verify.stderr.txt"
 
   $vv = Invoke-External -RepoPath $vaultRepo -Exe $vVerExe -Argv $vVerArgv -StdoutPath $vVerStdout -StderrPath $vVerStderr
-  Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra }
+  Append-Event $eventsJsonl $runId "vault_verify_done" @{ rc=$vv.rc; rc_raw=$vv.rc_raw; infra=$vv.infra; vault_export_run_id=$vaultExportRunId }
 
   $steps += [ordered]@{
     step="vault_verify"
@@ -600,6 +616,7 @@ try {
     cmd=$vv.cmd
     stdout_path=$vVerStdout; stderr_path=$vVerStderr
     zip_path=$zipPath
+    vault_export_run_id=$vaultExportRunId
   }
 
   if ([int]$vv.rc -ne 0) {
@@ -650,6 +667,7 @@ $final = [ordered]@{
   target_final_report=$targetFinal
 
   skip_vault_stage=$SkipVaultStage
+  vault_export_run_id_override=$VaultExportRunIdOverride
   chaos_corrupt_zip_before_verify=$ChaosCorruptZipBeforeVerify
   force_zip_discovery=$ForceZipDiscovery
 
@@ -664,3 +682,4 @@ try { Append-Event $eventsJsonl $runId "done" @{ ok=$ok; exit_code=$exitCode; re
 
 Write-Output ($final | ConvertTo-Json -Compress -Depth 80)
 exit ([int]$exitCode)
+
