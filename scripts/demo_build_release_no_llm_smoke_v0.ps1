@@ -1,4 +1,3 @@
-
 param(
   [Parameter(Mandatory=$false)][string]$KitId = "kit_cli_tool_v1",
   [Parameter(Mandatory=$false)][string]$ProductId = "",
@@ -61,6 +60,23 @@ function ResolveMaybe([string]$base, [string]$p) {
   if ([string]::IsNullOrWhiteSpace($p)) { return "" }
   if ([System.IO.Path]::IsPathRooted($p)) { return $p }
   return (Join-Path $base $p)
+}
+
+function FindHashesByZipShaTopLevel([string]$dir, [string]$zipShaLower) {
+  if ([string]::IsNullOrWhiteSpace($dir)) { return "" }
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return "" }
+
+  $cands = Get-ChildItem -LiteralPath $dir -File -Filter "*.json" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+
+  foreach ($c in $cands) {
+    try {
+      $o = (Get-Content -LiteralPath $c.FullName -Raw | ConvertFrom-Json -ErrorAction Stop)
+      $v = TryGet $o "zip_sha256"
+      if ($v -and ([string]$v).ToLower() -eq $zipShaLower) { return [string]$c.FullName }
+    } catch { }
+  }
+  return ""
 }
 
 try {
@@ -227,6 +243,75 @@ try {
     if (Test-Path -LiteralPath $releaseZipAbs -PathType Leaf) { $releaseZipExists = $true }
   }
 
+  # --- Attach bundle artifacts into smoke out_dir (Vault/Governor require this) ---
+  $bundle_attached = $false
+  $bundle_attach_infra = $false
+  $bundle_zip_out = ""
+  $bundle_hashes_out = ""
+  $bundle_ref_out = ""
+  $bundle_zip_sha256 = ""
+  $bundle_source_hashes = ""
+  $bundle_hashes_generated = $false
+  $bundle_attach_error = ""
+
+  if ($releaseZipExists) {
+    try {
+      $bundle_zip_sha256 = (Get-FileHash -Algorithm SHA256 -Path $releaseZipAbs).Hash.ToLower()
+      $releasesDir = Split-Path $releaseZipAbs -Parent
+
+      # Try find real hashes json with top-level zip_sha256
+      $bundle_source_hashes = FindHashesByZipShaTopLevel $releasesDir $bundle_zip_sha256
+
+      $bundle_zip_out    = Join-Path $out_dir "bundle.zip"
+      $bundle_hashes_out = Join-Path $out_dir "bundle.hashes.json"
+      $bundle_ref_out    = Join-Path $out_dir "bundle_ref.json"
+
+      Copy-Item -LiteralPath $releaseZipAbs -Destination $bundle_zip_out -Force
+
+      if (-not [string]::IsNullOrWhiteSpace($bundle_source_hashes) -and (Test-Path -LiteralPath $bundle_source_hashes -PathType Leaf)) {
+        Copy-Item -LiteralPath $bundle_source_hashes -Destination $bundle_hashes_out -Force
+        $bundle_hashes_generated = $false
+        $bundle_attach_error = "OK"
+      } else {
+        # Fallback: generate minimal hashes file (release_hashes_v0) from computed sha.
+        $h = [ordered]@{
+          schema="release_hashes_v0"
+          ts_utc=UtcNowIso
+          zip_sha256=$bundle_zip_sha256
+          generated_by="demo_build_release_no_llm_smoke_v0"
+        }
+        WriteUtf8NoBom $bundle_hashes_out (($h | ConvertTo-Json -Compress -Depth 10))
+        $bundle_hashes_generated = $true
+        $bundle_source_hashes = ""
+        $bundle_attach_error = "HASHES_GENERATED"
+      }
+
+      $ref = [ordered]@{
+        schema="bundle_ref_v0"
+        ts_utc=UtcNowIso
+        smoke_run_id=$run_id
+        out_dir=$out_dir
+        bundle_zip=$bundle_zip_out
+        bundle_hashes=$bundle_hashes_out
+        zip_sha256=$bundle_zip_sha256
+        hashes_generated=$bundle_hashes_generated
+        source_release_zip=$releaseZipAbs
+        source_release_hashes=$bundle_source_hashes
+      }
+      WriteUtf8NoBom $bundle_ref_out (($ref | ConvertTo-Json -Compress -Depth 10))
+
+      $bundle_attached = $true
+    }
+    catch {
+      $bundle_attached = $false
+      $bundle_attach_infra = $true
+      $bundle_attach_error = $_.Exception.Message
+    }
+  } else {
+    $bundle_attach_error = "SKIP_NO_RELEASE_ZIP"
+  }
+  # --- end attach ---
+
   # Dist exe check (robust)
   $distDirPrimary = Join-Path $repo ("dist\" + $ProductId)
   $exeCount = 0
@@ -240,7 +325,6 @@ try {
   }
 
   if ($exeCount -lt 1) {
-    # fallback: find newest exe under dist modified after start time
     $distRoot = Join-Path $repo "dist"
     if (Test-Path -LiteralPath $distRoot -PathType Container) {
       $cand = Get-ChildItem -LiteralPath $distRoot -Recurse -Filter *.exe -ErrorAction SilentlyContinue |
@@ -262,9 +346,10 @@ try {
   elseif (($RunAcceptance -eq "YES") -and ($accOk -is [bool]) -and (-not $accOk)) { $test_ok = $false; $why = "ACCEPTANCE_OK_FALSE" }
   elseif (($RunAcceptance -eq "YES") -and ($accOk -eq $null)) { $test_ok = $false; $why = "ACCEPTANCE_OK_MISSING" }
   elseif (-not $releaseZipExists) { $test_ok = $false; $why = "RELEASE_ZIP_MISSING_OR_NOT_FOUND" }
+  elseif (-not $bundle_attached) { $test_ok = $false; $why = ("BUNDLE_ATTACH_FAILED:" + $bundle_attach_error) }
   elseif ($exeCount -lt 1) { $test_ok = $false; $why = "NO_EXE_IN_DIST" }
 
-  $exit = $(if ($test_ok) { $RC_OK } elseif ($rc_norm -eq $RC_INFRA) { $RC_INFRA } else { $RC_FAIL })
+  $exit = $(if ($test_ok) { $RC_OK } elseif ($bundle_attach_infra -or ($rc_norm -eq $RC_INFRA)) { $RC_INFRA } else { $RC_FAIL })
 
   $out = [ordered]@{
     schema="demo_build_release_no_llm_smoke_v0"
@@ -279,7 +364,7 @@ try {
     product_id_source=$product_source
     summary=$Summary
     run_acceptance=$RunAcceptance
-    expected=[ordered]@{ rc=0; acceptance_ok=$true; release_zip_exists=$true; exe_in_dist=$true }
+    expected=[ordered]@{ rc=0; acceptance_ok=$true; release_zip_exists=$true; exe_in_dist=$true; bundle_attached=$true }
     observed=[ordered]@{
       rc=$rc_norm
       rc_raw=$rc_raw
@@ -291,6 +376,16 @@ try {
       release_zip=$releaseZip
       release_zip_abs=$releaseZipAbs
       release_zip_exists=$releaseZipExists
+
+      bundle_attached=$bundle_attached
+      bundle_zip=$bundle_zip_out
+      bundle_hashes=$bundle_hashes_out
+      bundle_ref=$bundle_ref_out
+      bundle_zip_sha256=$bundle_zip_sha256
+      bundle_source_hashes=$bundle_source_hashes
+      bundle_hashes_generated=$bundle_hashes_generated
+      bundle_attach_error=$bundle_attach_error
+
       dist_dir_primary=$distDirPrimary
       dist_dir_used=$distDirUsed
       exe_count=$exeCount
