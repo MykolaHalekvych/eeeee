@@ -1,0 +1,12 @@
+﻿{
+  "schema": "release_policy_v0",
+  "required_gates": [
+    "schema_factory_final_report_v1",
+    "acceptance_gate"
+  ],
+  "require_exit_code_zero": true,
+  "require_ok_true": true,
+  "require_release_zip": true,
+  "require_hashes_json": true,
+  "min_verify_level": "run_exe_check"
+}
