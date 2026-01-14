@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)][string]$RunId,
   [Parameter(Mandatory=$true)][string]$OutDir,
   [Parameter(Mandatory=$true)][string]$VaultRepo,     # C:\Users\mukol\ARGS-Evidence-Vault-v0
-  [Parameter(Mandatory=$true)][string]$TargetRunId,
+  [Parameter(Mandatory=$true)][string]$TargetRunId,   # directory name under args\data\smoke\...
   [Parameter(Mandatory=$false)][ValidateSet("NO","YES")][string]$ChaosCorruptZipBeforeVerify = "NO"
 )
 
@@ -43,7 +43,6 @@ function Get-JsonProp([object]$o, [string]$name) {
 
 $OutDirAbs = AbsPath $OutDir $foundryRoot
 Ensure-Dir $OutDirAbs
-
 $summaryPath = Join-Path $OutDirAbs "summary.json"
 
 $base = @{
@@ -54,7 +53,6 @@ $base = @{
   vault_repo  = $VaultRepo
   out_dir     = $OutDirAbs
   chaos_corrupt_zip_before_verify = $ChaosCorruptZipBeforeVerify
-
   ok          = $false
   exit_code   = 2
   result      = "INFRA"
@@ -75,6 +73,18 @@ function Infra([string]$msg) {
   Emit $s 2
 }
 
+function Fail([string]$reason, [hashtable]$extra) {
+  $s = $base.Clone()
+  $s.ok = $false
+  $s.exit_code = 1
+  $s.result = "FAIL"
+  $s.reason_code = $reason
+  if ($extra) {
+    foreach ($kv in $extra.GetEnumerator()) { $s[$kv.Key] = $kv.Value }
+  }
+  Emit $s 1
+}
+
 if (!(Test-Path $VaultRepo)) { Infra "VaultRepo not found: $VaultRepo" }
 
 $ingestPs1 = Join-Path $VaultRepo "scripts\vault_ingest_v0.ps1"
@@ -85,29 +95,37 @@ if (!(Test-Path $ingestPs1)) { Infra "Missing: $ingestPs1" }
 if (!(Test-Path $exportPs1)) { Infra "Missing: $exportPs1" }
 if (!(Test-Path $verifyPs1)) { Infra "Missing: $verifyPs1" }
 
-function Build-InvokeArgs([string]$ps1, [string]$targetRunId, [string]$outDir, [string]$zipPath, [string]$hashesPath) {
-  $cmdInfo = Get-Command $ps1
-  $keys = $cmdInfo.Parameters.Keys
+function Find-TargetRunDir([string]$runId) {
+  $smokeRoot = Join-Path $foundryRoot "args\data\smoke"
+  if (!(Test-Path $smokeRoot)) { return $null }
+  $cands = Get-ChildItem -Path $smokeRoot -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $runId } | `
+            Sort-Object LastWriteTime -Descending
+  if ($cands -and $cands.Count -ge 1) { return $cands[0].FullName }
+  return $null
+}
 
-  $invoke = @{}
+function Find-BundleZip([string]$dir) {
+  if (!(Test-Path $dir)) { return $null }
+  $z = Get-ChildItem -Path $dir -File -Filter "*.zip" -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+  if ($z) { return $z.FullName }
+  $z2 = Get-ChildItem -Path $dir -File -Filter "*.zip" -Recurse -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+  if ($z2) { return $z2.FullName }
+  return $null
+}
 
-  function MapArg([string[]]$names, [object]$val) {
-    foreach ($n in $names) {
-      if ($keys -contains $n) { $invoke[$n] = $val; return $true }
-    }
-    return $false
+function Find-HashesJsonWithZipSha([string]$dir) {
+  if (!(Test-Path $dir)) { return $null }
+  $cands = Get-ChildItem -Path $dir -File -Filter "*.json" -ErrorAction SilentlyContinue
+  foreach ($c in $cands) {
+    $o = Parse-JsonLast $c.FullName
+    if ($null -ne (Get-JsonProp $o "zip_sha256")) { return $c.FullName }
   }
-
-  # target run id
-  MapArg @("TargetRunId","TargetId","Target","RunId","SourceRunId") $targetRunId | Out-Null
-  # out dir
-  MapArg @("OutDir","Out","OutRoot","OutPath") $outDir | Out-Null
-
-  # optional zip/hashes
-  if ($zipPath)   { MapArg @("Zip","ZipPath","Bundle","BundlePath","ExportZip","ZipFile") $zipPath | Out-Null }
-  if ($hashesPath){ MapArg @("Hashes","HashesPath","HashPath","HashesJsonPath","HashesFile") $hashesPath | Out-Null }
-
-  return $invoke
+  $cands2 = Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue
+  foreach ($c in $cands2) {
+    $o = Parse-JsonLast $c.FullName
+    if ($null -ne (Get-JsonProp $o "zip_sha256")) { return $c.FullName }
+  }
+  return $null
 }
 
 function Run-Step([string]$name, [string]$ps1, [hashtable]$invoke) {
@@ -143,72 +161,137 @@ function Run-Step([string]$name, [string]$ps1, [hashtable]$invoke) {
   }
 }
 
-# 1) ingest
-$ing = Run-Step "ingest" $ingestPs1 (Build-InvokeArgs $ingestPs1 $TargetRunId $OutDirAbs $null $null)
-# short-circuit on INFRA
+# Resolve target run dir -> locate source bundle zip + hashes
+$targetDirAbs = Find-TargetRunDir $TargetRunId
+if (-not $targetDirAbs) { Infra "TargetRunId dir not found under args\data\smoke: $TargetRunId" }
+
+$srcZipAbs = Find-BundleZip $targetDirAbs
+if (-not $srcZipAbs) { Infra "No .zip found under target run dir: $targetDirAbs" }
+
+$srcHashesAbs = Find-HashesJsonWithZipSha $targetDirAbs
+if (-not $srcHashesAbs) { Infra "No hashes json with zip_sha256 found under target run dir: $targetDirAbs" }
+
+# Step out dirs (avoid summary.json collisions)
+$stepIngestOut = Join-Path $OutDirAbs "step_ingest"
+$stepExportOut = Join-Path $OutDirAbs "step_export"
+$stepVerifyOut = Join-Path $OutDirAbs "step_verify"
+Ensure-Dir $stepIngestOut
+Ensure-Dir $stepExportOut
+Ensure-Dir $stepVerifyOut
+
+# 1) ingest (explicit ZipPath/HashesPath)
+$ing = Run-Step "ingest" $ingestPs1 @{
+  OutDir     = $stepIngestOut
+  ZipPath    = $srcZipAbs
+  HashesPath = $srcHashesAbs
+}
+
 if ($ing.rc -eq 2) {
   $s = $base.Clone(); $s.exit_code=2; $s.result="INFRA"; $s.ok=$false
+  $s.target_run_dir = $targetDirAbs
+  $s.source_zip_path = $srcZipAbs
+  $s.source_hashes_path = $srcHashesAbs
   $s.ingest_rc=$ing.rc; $s.ingest_stdout=$ing.stdout; $s.ingest_stderr=$ing.stderr
   Emit $s 2
 }
+if ($ing.rc -eq 1) {
+  $reason = Get-JsonProp $ing.parsed "reason_code"
+  if (-not $reason) { $reason = "DENY_INGEST" }
+  Fail $reason @{
+    target_run_dir = $targetDirAbs
+    source_zip_path = $srcZipAbs
+    source_hashes_path = $srcHashesAbs
+    ingest_rc=$ing.rc; ingest_stdout=$ing.stdout; ingest_stderr=$ing.stderr
+  }
+}
 
-# 2) export
-$exp = Run-Step "export" $exportPs1 (Build-InvokeArgs $exportPs1 $TargetRunId $OutDirAbs $null $null)
+$vaultId = Get-JsonProp $ing.parsed "vault_id"
+if (-not $vaultId) {
+  Infra "vault_ingest_v0 did not return vault_id (see ingest stdout): $($ing.stdout)"
+}
+
+# 2) export (explicit VaultId)
+$exp = Run-Step "export" $exportPs1 @{
+  OutDir  = $stepExportOut
+  VaultId = $vaultId
+}
+
 if ($exp.rc -eq 2) {
   $s = $base.Clone(); $s.exit_code=2; $s.result="INFRA"; $s.ok=$false
-  $s.ingest_rc=$ing.rc; $s.export_rc=$exp.rc
-  $s.ingest_stdout=$ing.stdout; $s.export_stdout=$exp.stdout
-  $s.ingest_stderr=$ing.stderr; $s.export_stderr=$exp.stderr
+  $s.vault_id = $vaultId
+  $s.export_rc=$exp.rc; $s.export_stdout=$exp.stdout; $s.export_stderr=$exp.stderr
+  $s.ingest_rc=$ing.rc; $s.ingest_stdout=$ing.stdout; $s.ingest_stderr=$ing.stderr
   Emit $s 2
 }
+if ($exp.rc -eq 1) {
+  $reason = Get-JsonProp $exp.parsed "reason_code"
+  if (-not $reason) { $reason = "DENY_EXPORT" }
+  Fail $reason @{
+    vault_id=$vaultId
+    export_rc=$exp.rc; export_stdout=$exp.stdout; export_stderr=$exp.stderr
+    ingest_rc=$ing.rc; ingest_stdout=$ing.stdout; ingest_stderr=$ing.stderr
+  }
+}
 
-# Try discover zip/hashes paths (from export JSON or filesystem)
-$zipPath = $null
-$hashesPath = $null
-foreach ($k in @("zip_path","bundle_path","export_zip","zip","bundle")) {
-  $v = Get-JsonProp $exp.parsed $k
-  if ($v) { $zipPath = [string]$v; break }
-}
-foreach ($k in @("hashes_path","hashes","hash_path")) {
-  $v = Get-JsonProp $exp.parsed $k
-  if ($v) { $hashesPath = [string]$v; break }
-}
+# Get exported zip/hashes paths
+$zipPath = Get-JsonProp $exp.parsed "exported_zip"
+$hashesPath = Get-JsonProp $exp.parsed "exported_hashes"
 
 if (-not $zipPath) {
-  $z = Get-ChildItem -File $OutDirAbs -Filter "*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  $z = Get-ChildItem -Path $stepExportOut -File -Filter "*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if ($z) { $zipPath = $z.FullName }
 }
 if (-not $hashesPath) {
-  $h = Get-ChildItem -File $OutDirAbs -Filter "*.hashes.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($h) { $hashesPath = $h.FullName }
+  $h = Find-HashesJsonWithZipSha $stepExportOut
+  if ($h) { $hashesPath = $h }
 }
 
-$zipToVerify = $zipPath
+if (-not $zipPath -or -not (Test-Path $zipPath)) { Infra "Export step did not produce zip to verify (exported_zip missing): step_export=$stepExportOut" }
+if (-not $hashesPath -or -not (Test-Path $hashesPath)) { Infra "Export step did not produce hashes to verify (exported_hashes missing): step_export=$stepExportOut" }
 
-if ($ChaosCorruptZipBeforeVerify -eq "YES" -and $zipPath -and (Test-Path $zipPath)) {
+$zipToVerify = $zipPath
+if ($ChaosCorruptZipBeforeVerify -eq "YES") {
   $corrupt = Join-Path $OutDirAbs ("CORRUPT_" + (Split-Path $zipPath -Leaf))
   Copy-Item $zipPath $corrupt -Force
   Add-Content -Path $corrupt -Value ([byte[]](0x00)) -Encoding Byte
   $zipToVerify = $corrupt
 }
 
-# 3) verify
-$ver = Run-Step "verify" $verifyPs1 (Build-InvokeArgs $verifyPs1 $TargetRunId $OutDirAbs $zipToVerify $hashesPath)
-
-# compute overall rc: INFRA wins, then FAIL
-$overall = 0
-foreach ($r in @($ing.rc,$exp.rc,$ver.rc)) {
-  if ($r -eq 2) { $overall = 2; break }
-  elseif ($r -eq 1) { $overall = 1 }
+# 3) verify (explicit ZipPath/HashesPath)
+$ver = Run-Step "verify" $verifyPs1 @{
+  OutDir     = $stepVerifyOut
+  ZipPath    = $zipToVerify
+  HashesPath = $hashesPath
 }
 
+# Overall
+$overall = 0
+if ($ver.rc -eq 2) { $overall = 2 }
+elseif ($ver.rc -eq 1) { $overall = 1 }
+
 $s = $base.Clone()
+$s.target_run_dir = $targetDirAbs
+$s.source_zip_path = $srcZipAbs
+$s.source_hashes_path = $srcHashesAbs
+$s.vault_id = $vaultId
+
 $s.ingest_rc=$ing.rc; $s.export_rc=$exp.rc; $s.verify_rc=$ver.rc
 $s.ingest_stdout=$ing.stdout; $s.export_stdout=$exp.stdout; $s.verify_stdout=$ver.stdout
 $s.ingest_stderr=$ing.stderr; $s.export_stderr=$exp.stderr; $s.verify_stderr=$ver.stderr
+
+$s.step_ingest_out = $stepIngestOut
+$s.step_export_out = $stepExportOut
+$s.step_verify_out = $stepVerifyOut
+
 $s.export_zip_path = $zipPath
 $s.verify_zip_path = $zipToVerify
 $s.hashes_path = $hashesPath
+
+if ($overall -eq 1) {
+  $reason = Get-JsonProp $ver.parsed "reason_code"
+  if (-not $reason) { $reason = "DENY_VERIFY" }
+  $s.reason_code = $reason
+}
 
 $s.exit_code = $overall
 $s.ok = ($overall -eq 0)
