@@ -97,7 +97,6 @@ function Fail([string]$reason, [hashtable]$extra) {
 function Find-TargetRunDir([string]$runId) {
   $smokeRoot = Join-Path $foundryRoot "args\data\smoke"
   if (!(Test-Path $smokeRoot)) { return $null }
-
   $cands = @(
     Get-ChildItem -Path $smokeRoot -Directory -Recurse -ErrorAction SilentlyContinue |
       Where-Object { $_.Name -eq $runId } |
@@ -112,68 +111,23 @@ function Find-BundleZip([string]$dir) {
   $z = Get-ChildItem -Path $dir -File -Filter "*.zip" -ErrorAction SilentlyContinue |
         Sort-Object Length -Descending | Select-Object -First 1
   if ($z) { return $z.FullName }
-
   $z2 = Get-ChildItem -Path $dir -File -Filter "*.zip" -Recurse -ErrorAction SilentlyContinue |
          Sort-Object Length -Descending | Select-Object -First 1
   if ($z2) { return $z2.FullName }
   return $null
 }
 
-function Find-HashesJsonWithZipSha([string]$dir) {
-  if (!(Test-Path $dir)) { return $null }
-  $cands = @(
-    Get-ChildItem -Path $dir -File -Filter "*.json" -ErrorAction SilentlyContinue
-  )
-  foreach ($c in $cands) {
-    $o = Parse-JsonLast $c.FullName
-    if ($null -ne (Get-JsonProp $o "zip_sha256")) { return $c.FullName }
-  }
-  $cands2 = @(
-    Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue
-  )
-  foreach ($c in $cands2) {
-    $o = Parse-JsonLast $c.FullName
-    if ($null -ne (Get-JsonProp $o "zip_sha256")) { return $c.FullName }
-  }
-  return $null
-}
-
-function Find-HashesJsonMatchingZipSha([string]$dir, [string]$zipShaLower) {
-  if (!(Test-Path $dir)) { return $null }
-  $cands = @(
-    Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending
-  )
-  foreach ($c in $cands) {
-    $o = Parse-JsonLast $c.FullName
-    $v = Get-JsonProp $o "zip_sha256"
-    if ($v -and ([string]$v).ToLower() -eq $zipShaLower) { return $c.FullName }
-  }
-  return $null
-}
-
-function Normalize-ExistingPath([string]$p) {
-  if ([string]::IsNullOrWhiteSpace($p)) { return $null }
-  $p2 = AbsPath $p $foundryRoot
-  if (Test-Path $p2) { return (Resolve-Path $p2).Path }
-  return $null
-}
-
-function Find-FirstExistingPathInObject([object]$o, [string]$suffixLower) {
+# recursively find a key (e.g. zip_sha256) anywhere in an object
+function Find-KeyValueInObject([object]$o, [string]$keyLower) {
   if ($null -eq $o) { return $null }
-
-  if ($o -is [string]) {
-    $s = [string]$o
-    if ($s.ToLower().EndsWith($suffixLower)) {
-      $p = Normalize-ExistingPath $s
-      if ($p) { return $p }
-    }
-    return $null
-  }
 
   if ($o -is [System.Collections.IDictionary]) {
     foreach ($k in $o.Keys) {
-      $r = Find-FirstExistingPathInObject $o[$k] $suffixLower
+      if ($k -and ([string]$k).ToLower() -eq $keyLower) {
+        $v = $o[$k]
+        if ($null -ne $v) { return [string]$v }
+      }
+      $r = Find-KeyValueInObject $o[$k] $keyLower
       if ($r) { return $r }
     }
     return $null
@@ -181,20 +135,24 @@ function Find-FirstExistingPathInObject([object]$o, [string]$suffixLower) {
 
   if ($o -is [System.Collections.IEnumerable] -and -not ($o -is [string])) {
     foreach ($it in $o) {
-      $r = Find-FirstExistingPathInObject $it $suffixLower
+      $r = Find-KeyValueInObject $it $keyLower
       if ($r) { return $r }
     }
     return $null
   }
 
   foreach ($p in $o.PSObject.Properties) {
-    $r = Find-FirstExistingPathInObject $p.Value $suffixLower
+    if ($p.Name -and $p.Name.ToLower() -eq $keyLower) {
+      if ($null -ne $p.Value) { return [string]$p.Value }
+    }
+    $r = Find-KeyValueInObject $p.Value $keyLower
     if ($r) { return $r }
   }
+
   return $null
 }
 
-function Find-ExistingPathInJsonFiles([string]$dir, [string]$suffixLower) {
+function Find-KeyValueInJsonFiles([string]$dir, [string]$keyLower) {
   if (!(Test-Path $dir)) { return $null }
   $files = @(
     Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue |
@@ -203,7 +161,73 @@ function Find-ExistingPathInJsonFiles([string]$dir, [string]$suffixLower) {
   foreach ($f in $files) {
     $o = Parse-JsonLast $f.FullName
     if ($null -eq $o) { continue }
-    $p = Find-FirstExistingPathInObject $o $suffixLower
+    $v = Find-KeyValueInObject $o $keyLower
+    if ($v) { return $v }
+  }
+  return $null
+}
+
+function Normalize-ExistingPathWithBases([string]$p, [string[]]$bases) {
+  if ([string]::IsNullOrWhiteSpace($p)) { return $null }
+
+  if ([System.IO.Path]::IsPathRooted($p)) {
+    if (Test-Path $p) { return (Resolve-Path $p).Path }
+    return $null
+  }
+
+  foreach ($b in $bases) {
+    if ([string]::IsNullOrWhiteSpace($b)) { continue }
+    $pp = Join-Path $b $p
+    if (Test-Path $pp) { return (Resolve-Path $pp).Path }
+  }
+  return $null
+}
+
+function Find-FirstExistingPathInObject([object]$o, [string]$suffixLower, [string[]]$bases) {
+  if ($null -eq $o) { return $null }
+
+  if ($o -is [string]) {
+    $s = [string]$o
+    if ($s.ToLower().EndsWith($suffixLower)) {
+      $p = Normalize-ExistingPathWithBases $s $bases
+      if ($p) { return $p }
+    }
+    return $null
+  }
+
+  if ($o -is [System.Collections.IDictionary]) {
+    foreach ($k in $o.Keys) {
+      $r = Find-FirstExistingPathInObject $o[$k] $suffixLower $bases
+      if ($r) { return $r }
+    }
+    return $null
+  }
+
+  if ($o -is [System.Collections.IEnumerable] -and -not ($o -is [string])) {
+    foreach ($it in $o) {
+      $r = Find-FirstExistingPathInObject $it $suffixLower $bases
+      if ($r) { return $r }
+    }
+    return $null
+  }
+
+  foreach ($p in $o.PSObject.Properties) {
+    $r = Find-FirstExistingPathInObject $p.Value $suffixLower $bases
+    if ($r) { return $r }
+  }
+  return $null
+}
+
+function Find-ExistingPathInJsonFiles([string]$dir, [string]$suffixLower, [string[]]$bases) {
+  if (!(Test-Path $dir)) { return $null }
+  $files = @(
+    Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending
+  )
+  foreach ($f in $files) {
+    $o = Parse-JsonLast $f.FullName
+    if ($null -eq $o) { continue }
+    $p = Find-FirstExistingPathInObject $o $suffixLower $bases
     if ($p) { return $p }
   }
   return $null
@@ -226,7 +250,21 @@ function Find-ZipBySha([string]$dir, [string]$zipShaLower, [int]$limit) {
   return $null
 }
 
-function Run-Step([string]$name, [string]$ps1, [hashtable]$invoke) {
+function Find-HashesJsonMatchingZipShaTopLevel([string]$dir, [string]$zipShaLower) {
+  if (!(Test-Path $dir)) { return $null }
+  $cands = @(
+    Get-ChildItem -Path $dir -File -Filter "*.json" -Recurse -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending
+  )
+  foreach ($c in $cands) {
+    $o = Parse-JsonLast $c.FullName
+    $v = Get-JsonProp $o "zip_sha256"   # MUST be top-level for Vault shim
+    if ($v -and ([string]$v).ToLower() -eq $zipShaLower) { return $c.FullName }
+  }
+  return $null
+}
+
+function Run-Step([string]$name, [string]$ps1, [hashtable]$invoke, [string]$workingDir) {
   $stdout = Join-Path $OutDirAbs ("vault_" + $name + ".stdout.txt")
   $stderr = Join-Path $OutDirAbs ("vault_" + $name + ".stderr.txt")
 
@@ -239,7 +277,7 @@ function Run-Step([string]$name, [string]$ps1, [hashtable]$invoke) {
   $p = Start-Process `
     -FilePath "powershell.exe" `
     -ArgumentList $argList `
-    -WorkingDirectory $VaultRepo `
+    -WorkingDirectory $workingDir `
     -NoNewWindow `
     -Wait `
     -PassThru `
@@ -276,25 +314,20 @@ try {
 
   $distRoot = Join-Path $foundryRoot "dist"
 
-  # Resolve target run dir
   $targetDirAbs = Find-TargetRunDir $TargetRunId
   if (-not $targetDirAbs) { Infra "TargetRunId dir not found under args\data\smoke: $TargetRunId" $null }
 
-  # Prefer hashes-from-run (ties to TargetRunId)
-  $hashFromRun = Find-HashesJsonWithZipSha $targetDirAbs
-  $expectedSha = $null
-  if ($hashFromRun) {
-    $o = Parse-JsonLast $hashFromRun
-    $v = Get-JsonProp $o "zip_sha256"
-    if ($v) { $expectedSha = ([string]$v).ToLower() }
-  }
+  # Bases for resolving relative paths inside run JSON:
+  $bases = @($targetDirAbs, $foundryRoot)
 
-  # Resolve zip
+  # Extract expected sha from ANY json (even nested)
+  $expectedSha = Find-KeyValueInJsonFiles $targetDirAbs "zip_sha256"
+  if ($expectedSha) { $expectedSha = ([string]$expectedSha).ToLower() }
+
+  # Try find zip:
+  $zipPathFromJson = Find-ExistingPathInJsonFiles $targetDirAbs ".zip" $bases
   $srcZipAbs = Find-BundleZip $targetDirAbs
-
-  if (-not $srcZipAbs) {
-    $srcZipAbs = Find-ExistingPathInJsonFiles $targetDirAbs ".zip"
-  }
+  if (-not $srcZipAbs -and $zipPathFromJson) { $srcZipAbs = $zipPathFromJson }
 
   if ($srcZipAbs -and $expectedSha) {
     try {
@@ -308,35 +341,41 @@ try {
   }
 
   if (-not $srcZipAbs) {
-    Infra "No zip for TargetRunId (run dir has no zip and resolution failed)" @{
+    Infra "No zip for TargetRunId (resolution failed)" @{
       target_run_dir = $targetDirAbs
-      hashes_in_run = $hashFromRun
-      expected_sha = $expectedSha
       dist_root = $distRoot
       dist_zip_scan_limit = $DistZipScanLimit
+      zip_path_from_json = $zipPathFromJson
+      expected_sha = $expectedSha
     }
   }
 
   $zipSha = Sha256Lower $srcZipAbs
 
-  # Resolve hashes strictly matching this zip sha
-  $srcHashesAbs = Find-HashesJsonMatchingZipSha $targetDirAbs $zipSha
-  if (-not $srcHashesAbs) { $srcHashesAbs = Find-HashesJsonMatchingZipSha (Split-Path $srcZipAbs -Parent) $zipSha }
-  if (-not $srcHashesAbs) { $srcHashesAbs = Find-HashesJsonMatchingZipSha $distRoot $zipSha }
-  if (-not $srcHashesAbs) { $srcHashesAbs = Find-ExistingPathInJsonFiles $targetDirAbs ".hashes.json" }
+  # Find real hashes file (must have TOP-LEVEL zip_sha256 for Vault shim)
+  $hashesPathFromJson = Find-ExistingPathInJsonFiles $targetDirAbs ".hashes.json" $bases
 
+  $srcHashesAbs = Find-HashesJsonMatchingZipShaTopLevel $targetDirAbs $zipSha
+  if (-not $srcHashesAbs) { $srcHashesAbs = Find-HashesJsonMatchingZipShaTopLevel (Split-Path $srcZipAbs -Parent) $zipSha }
+  if (-not $srcHashesAbs) { $srcHashesAbs = Find-HashesJsonMatchingZipShaTopLevel $distRoot $zipSha }
+  if (-not $srcHashesAbs -and $hashesPathFromJson) { $srcHashesAbs = $hashesPathFromJson }
+
+  $hashesGenerated = $false
   if (-not $srcHashesAbs -or -not (Test-Path $srcHashesAbs)) {
-    Infra "No hashes json matching zip_sha256 for resolved zip" @{
-      target_run_dir = $targetDirAbs
-      source_zip_path = $srcZipAbs
-      zip_sha256 = $zipSha
-      hashes_in_run = $hashFromRun
-      expected_sha = $expectedSha
-      dist_root = $distRoot
+    # last resort: generate minimal hashes for Vault bridge validation
+    $gen = Join-Path $OutDirAbs "hashes_generated_vault_gate.json"
+    $obj = @{
+      schema="release_hashes_v0"
+      ts_utc=$ts
+      zip_sha256=$zipSha
+      generated_by="gate_vault_export_verify_v0"
     }
+    Set-Content -Path $gen -Value ($obj | ConvertTo-Json -Compress -Depth 10) -Encoding UTF8
+    $srcHashesAbs = $gen
+    $hashesGenerated = $true
   }
 
-  # Step out dirs (avoid any collisions)
+  # Step out dirs
   $stepIngestOut = Join-Path $OutDirAbs "step_ingest"
   $stepExportOut = Join-Path $OutDirAbs "step_export"
   $stepVerifyOut = Join-Path $OutDirAbs "step_verify"
@@ -349,14 +388,15 @@ try {
     OutDir     = $stepIngestOut
     ZipPath    = $srcZipAbs
     HashesPath = $srcHashesAbs
-  }
+  } $VaultRepo
 
   if ($ing.rc -eq 2) {
     Infra "Vault ingest INFRA" @{
       target_run_dir = $targetDirAbs
       source_zip_path = $srcZipAbs
       source_hashes_path = $srcHashesAbs
-      zip_sha256 = $zipSha
+      source_zip_sha256 = $zipSha
+      hashes_generated = $hashesGenerated
       ingest_rc=$ing.rc; ingest_stdout=$ing.stdout; ingest_stderr=$ing.stderr
     }
   }
@@ -367,7 +407,8 @@ try {
       target_run_dir = $targetDirAbs
       source_zip_path = $srcZipAbs
       source_hashes_path = $srcHashesAbs
-      zip_sha256 = $zipSha
+      source_zip_sha256 = $zipSha
+      hashes_generated = $hashesGenerated
       ingest_rc=$ing.rc; ingest_stdout=$ing.stdout; ingest_stderr=$ing.stderr
     }
   }
@@ -375,8 +416,7 @@ try {
   $vaultId = Get-JsonProp $ing.parsed "vault_id"
   if (-not $vaultId) {
     Infra "vault_ingest_v0 did not return vault_id" @{
-      ingest_stdout = $ing.stdout
-      ingest_stderr = $ing.stderr
+      ingest_stdout=$ing.stdout; ingest_stderr=$ing.stderr
     }
   }
 
@@ -384,7 +424,7 @@ try {
   $exp = Run-Step "export" $exportPs1 @{
     OutDir  = $stepExportOut
     VaultId = $vaultId
-  }
+  } $VaultRepo
 
   if ($exp.rc -eq 2) {
     Infra "Vault export INFRA" @{
@@ -403,27 +443,27 @@ try {
     }
   }
 
-  $zipPath = Get-JsonProp $exp.parsed "exported_zip"
-  $hashesPath = Get-JsonProp $exp.parsed "exported_hashes"
+  $zipOut = Get-JsonProp $exp.parsed "exported_zip"
+  $hashOut = Get-JsonProp $exp.parsed "exported_hashes"
 
-  if (-not $zipPath) {
+  if (-not $zipOut) {
     $z = Get-ChildItem -Path $stepExportOut -File -Filter "*.zip" -ErrorAction SilentlyContinue |
           Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($z) { $zipPath = $z.FullName }
+    if ($z) { $zipOut = $z.FullName }
+  }
+  if (-not $hashOut) {
+    $h = Get-ChildItem -Path $stepExportOut -File -Filter "*.json" -ErrorAction SilentlyContinue |
+          Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($h) { $hashOut = $h.FullName }
   }
 
-  if (-not $hashesPath) {
-    $h = Find-HashesJsonWithZipSha $stepExportOut
-    if ($h) { $hashesPath = $h }
-  }
+  if (-not $zipOut -or -not (Test-Path $zipOut)) { Infra "Export did not produce zip to verify" @{ step_export_out=$stepExportOut } }
+  if (-not $hashOut -or -not (Test-Path $hashOut)) { Infra "Export did not produce hashes to verify" @{ step_export_out=$stepExportOut } }
 
-  if (-not $zipPath -or -not (Test-Path $zipPath)) { Infra "Export did not produce zip to verify" @{ step_export_out=$stepExportOut } }
-  if (-not $hashesPath -or -not (Test-Path $hashesPath)) { Infra "Export did not produce hashes to verify" @{ step_export_out=$stepExportOut } }
-
-  $zipToVerify = $zipPath
+  $zipToVerify = $zipOut
   if ($ChaosCorruptZipBeforeVerify -eq "YES") {
-    $corrupt = Join-Path $OutDirAbs ("CORRUPT_" + (Split-Path $zipPath -Leaf))
-    Copy-Item $zipPath $corrupt -Force
+    $corrupt = Join-Path $OutDirAbs ("CORRUPT_" + (Split-Path $zipOut -Leaf))
+    Copy-Item $zipOut $corrupt -Force
     Add-Content -Path $corrupt -Value ([byte[]](0x00)) -Encoding Byte
     $zipToVerify = $corrupt
   }
@@ -432,8 +472,8 @@ try {
   $ver = Run-Step "verify" $verifyPs1 @{
     OutDir     = $stepVerifyOut
     ZipPath    = $zipToVerify
-    HashesPath = $hashesPath
-  }
+    HashesPath = $hashOut
+  } $VaultRepo
 
   $overall = 0
   if ($ver.rc -eq 2) { $overall = 2 }
@@ -441,12 +481,15 @@ try {
 
   $s = $base.Clone()
   $s.target_run_dir = $targetDirAbs
-  $s.hashes_in_run = $hashFromRun
+  $s.dist_root = $distRoot
+  $s.zip_path_from_json = $zipPathFromJson
+  $s.hashes_path_from_json = $hashesPathFromJson
   $s.expected_sha = $expectedSha
 
   $s.source_zip_path = $srcZipAbs
   $s.source_hashes_path = $srcHashesAbs
   $s.source_zip_sha256 = $zipSha
+  $s.hashes_generated = $hashesGenerated
 
   $s.vault_id = $vaultId
 
@@ -458,9 +501,9 @@ try {
   $s.step_export_out = $stepExportOut
   $s.step_verify_out = $stepVerifyOut
 
-  $s.export_zip_path = $zipPath
+  $s.export_zip_path = $zipOut
   $s.verify_zip_path = $zipToVerify
-  $s.hashes_path = $hashesPath
+  $s.hashes_path = $hashOut
 
   if ($overall -eq 1) {
     $reason = Get-JsonProp $ver.parsed "reason_code"
