@@ -1,0 +1,10 @@
+﻿{
+  "schema": "dqg_request_v0",
+  "version": "0",
+  "run_id": "FOUNDY_BRIDGE_PASS",
+  "ts_utc": "2026-01-01T00:00:00Z",
+  "allowlist_roots": ["args/testdata/dqg_bridge"],
+  "inputs": [
+    { "path": "args/testdata/dqg_bridge/ok_manifest.json", "kind": "manifest" }
+  ]
+}
