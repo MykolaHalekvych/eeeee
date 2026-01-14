@@ -225,3 +225,7 @@ tmp_*
 tmp_prompt.*
 /foundry/
 *.bak.*
+# runtime artifacts
+args/data/gates/
+args/data/products/
+args/data/smoke/
