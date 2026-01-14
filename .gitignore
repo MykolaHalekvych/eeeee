@@ -229,3 +229,5 @@ tmp_prompt.*
 args/data/gates/
 args/data/products/
 args/data/smoke/
+# scratch
+scripts/_scratch/
