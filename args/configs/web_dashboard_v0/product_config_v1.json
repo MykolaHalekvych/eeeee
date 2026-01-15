@@ -1,0 +1,11 @@
+﻿{
+  "schema": "product_config_v1",
+  "product_id": "web_dashboard_v0",
+  "out_root": "args/data/products/web_dashboard_v0",
+  "repos": {
+    "vault_repo": "C:/Users/mukol/ARGS-Evidence-Vault-v0",
+    "guardian_repo": "C:/Users/mukol/ARGS-Guardian-v0",
+    "governor_repo": "C:/Users/mukol/ARGS-Release-Governor-v0"
+  },
+  "defaults": { "run_acceptance": "NO" }
+}
