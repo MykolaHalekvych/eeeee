@@ -1,17 +1,17 @@
 {
   "allow_changes": [],
-  "baseline_id": "foundry_baseline_v0_0001",
+  "baseline_id": "foundry_baseline_v0_0002",
   "exclude": [
-    "args/data/**",
-    "dist/**",
-    "runs/**",
-    "out/**",
-    "legacy_fin/**",
-    "__pycache__/**",
-    ".venv/**",
-    ".pytest_cache/**",
     ".mypy_cache/**",
-    "baselines/**"
+    ".pytest_cache/**",
+    ".venv/**",
+    "__pycache__/**",
+    "args/data/**",
+    "baselines/**",
+    "dist/**",
+    "legacy_fin/**",
+    "out/**",
+    "runs/**"
   ],
   "include": [
     "args/**",
