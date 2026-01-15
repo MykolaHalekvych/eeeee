@@ -94,6 +94,10 @@ try{
   Ensure-Dir $newDir
   $newPath = Join-Path $newDir ("drift_baseline_$newId.json")
 
+  # IMPORTANT: update policy baseline_id BEFORE hashing tracked files
+  $policy.baseline_id = $newId
+  WriteJson $policyAbs $policy
+
   # file list from git ls-files (deterministic)
   Push-Location $repoAbs
   try{
@@ -106,17 +110,39 @@ try{
     Emit $false $RC_INFRA "INFRA_NO_TRACKED_FILES" @{repo=$repoAbs} $null
   }
 
+  # Exclude volatile/self-referential dirs to align baseline with drift policy
+  $excludePrefixes = @(
+    "baselines/",
+    "out/",
+    "dist/",
+    "_out/"
+  )
+
+  $paths = $paths | Where-Object {
+    $x = $_.Replace("\","/").Trim()
+    if ($x -eq "") { return $false }
+    foreach ($pref in $excludePrefixes) {
+      if ($x.StartsWith($pref)) { return $false }
+    }
+    return $true
+  }
+
+  if($paths.Count -eq 0){
+    Emit $false $RC_INFRA "INFRA_NO_TRACKED_FILES_AFTER_FILTER" @{excluded=$excludePrefixes} $null
+  }
+
   # entries require bytes (Drift Detector expects it)
   $entries = New-Object System.Collections.Generic.List[object]
   foreach($p in $paths){
-    $abs = Join-Path $repoAbs ($p -replace "/","\")
+    $pNorm = $p.Replace("\","/").Trim()
+    $abs = Join-Path $repoAbs ($pNorm -replace "/","\")
     if(-not (Test-Path -LiteralPath $abs)){ continue }
 
     $item = Get-Item -LiteralPath $abs
     $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $abs).Hash.ToLower()
 
     $entries.Add([ordered]@{
-      path   = ($p -replace "\\","/")
+      path   = $pNorm
       sha256 = $h
       bytes  = [int64]$item.Length
     })
@@ -144,17 +170,14 @@ try{
 
   WriteJson $newPath $tpl
 
-  # update policy baseline_id
-  $policy.baseline_id = $newId
-  WriteJson $policyAbs $policy
-
   Emit $true $RC_OK "OK" @{
     old_baseline_id=$oldId
     new_baseline_id=$newId
     old_baseline_path=$oldPath
     new_baseline_path=$newPath
-    tracked_files=$paths.Count
+    tracked_files_before_filter=$paths.Count
     hashed_files=$entries.Count
+    excluded_prefixes=$excludePrefixes
     policy_path=$policyAbs
   } $newDir
 }
