@@ -231,3 +231,7 @@ args/data/products/
 args/data/smoke/
 # scratch
 scripts/_scratch/
+# runtime/out artifacts
+out/
+# local backups
+*.bak_*
