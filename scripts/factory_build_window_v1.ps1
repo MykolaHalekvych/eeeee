@@ -64,6 +64,12 @@ function RunsInit {
     "--control-plane",$ControlPlanePath
   )
 
+# DRIFT_GUARD: fail-closed drift gate (Foundry)
+$__drift_gate_run = "DRIFT_PRE_" + ([DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ"))
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "gate_drift_foundry_v0.ps1") -RunId $__drift_gate_run | Out-Host
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+
   return @{
     ok=$true
     run_id=$rid
