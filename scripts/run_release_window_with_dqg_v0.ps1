@@ -66,7 +66,9 @@ try {
     $innerStdout = Join-Path $evidence "inner.stdout.txt"
     $innerStderr = Join-Path $evidence "inner.stderr.txt"
 
-    $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$InnerScript) + $InnerArgs
+    $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$InnerScript)
+if ($null -ne $InnerArgs -and $InnerArgs.Count -gt 0) { $argList += $InnerArgs }
+$argList = $argList | Where-Object { $_ -ne $null -and $_ -ne "" }
     $p = Start-Process -FilePath "powershell" -ArgumentList $argList `
       -WorkingDirectory $repo -NoNewWindow -Wait -PassThru `
       -RedirectStandardOutput $innerStdout -RedirectStandardError $innerStderr
@@ -112,6 +114,13 @@ catch {
     reason_code="DQG.INFRA.IO_ERROR"
     error=$_.Exception.Message
   }
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($OutDir)) {
+      $outAbs2 = (Resolve-Path (New-Item -ItemType Directory -Force $OutDir)).Path
+      Write-JsonFile -Path (Join-Path $outAbs2 "summary.json") -Obj $fallback
+    }
+  } catch { }
+
   ($fallback | ConvertTo-Json -Compress)
   exit 2
 }
