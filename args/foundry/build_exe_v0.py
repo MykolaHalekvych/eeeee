@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -20,10 +19,6 @@ RC_OK = 0
 RC_FAIL = 1
 RC_INFRA = 2
 
-
-# ---------------------------
-# Contract helpers
-# ---------------------------
 
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -84,7 +79,6 @@ def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, 
 
 
 def emit_json_stdout(payload: Dict[str, Any]) -> None:
-    # Contract: STDOUT = ровно 1 JSON line
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
@@ -105,7 +99,6 @@ def classify_exit_code(exc: Exception) -> int:
 
 
 class _ArgParser(argparse.ArgumentParser):
-    # NonInteractive: не печатать help/usage в stdout
     def print_help(self, file=None):  # noqa: ANN001
         raise ValueError("BAD_ARGS_HELP")
 
@@ -118,10 +111,6 @@ class _ArgParser(argparse.ArgumentParser):
     def exit(self, status: int = 0, message: Optional[str] = None):  # noqa: ARG002
         raise ValueError("BAD_ARGS_EXIT")
 
-
-# ---------------------------
-# Product manifest
-# ---------------------------
 
 @dataclass
 class Product:
@@ -137,10 +126,8 @@ def load_product(repo: Path, product_id: str) -> Product:
     if not manifest_path.exists():
         raise FileNotFoundError(f"product manifest not found: {manifest_path}")
     data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-
     if data.get("product_id") != product_id:
         raise ValueError("product_id mismatch in manifest")
-
     return Product(
         product_id=product_id,
         version=str(data.get("version", "0.0.0")),
@@ -149,10 +136,6 @@ def load_product(repo: Path, product_id: str) -> Product:
         exe_name=str(data.get("exe_name", "app.exe")),
     )
 
-
-# ---------------------------
-# Checks
-# ---------------------------
 
 def py_compile_tree(root: Path) -> Dict[str, Any]:
     import py_compile
@@ -167,17 +150,20 @@ def py_compile_tree(root: Path) -> Dict[str, Any]:
     return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
 
 
-def build_runbook(product_id: str, exe_name: str, is_server: bool) -> str:
+def build_runbook(exe_name: str, is_server: bool) -> str:
     if is_server:
         return f"""# Runbook (Release Pack v0) — Server Contract v0
 
-## Commands
+## Commands (JSON stdout)
 
 - Version:
   - `{exe_name} version`
 
 - Selftest:
   - `{exe_name} selftest`
+
+- Ping:
+  - `{exe_name} ping`
 
 - Serve:
   - `{exe_name} serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200`
@@ -204,16 +190,10 @@ def build_runbook(product_id: str, exe_name: str, is_server: bool) -> str:
 
 - Ping:
   - `{exe_name} ping`
-
-## Config
-
-`config.example.json` is provided as an example. If you later need runtime config, copy it to `config.json` and extend the app to read it.
 """
 
 
 def build_evidence_md(
-    product_id: str,
-    version: str,
     inputs: dict[str, Any],
     checks: dict[str, Any],
     toolchain: dict[str, Any],
@@ -221,16 +201,11 @@ def build_evidence_md(
     pyinstaller_res: dict[str, Any],
     postcheck: dict[str, Any],
 ) -> str:
-    # Acceptance gate expects these headings:
-    # ## Inputs / ## Toolchain / ## Preflight checks / ## Build (PyInstaller) / ## Post-build check
     def fence(s: str) -> str:
         return "```\n" + (s or "").rstrip() + "\n```\n"
 
     md: list[str] = []
     md.append("# Evidence (EXE Pack v0)\n")
-    md.append(f"- ts_utc: `{utc_ts()}`\n")
-    md.append(f"- product_id: `{product_id}`\n")
-    md.append(f"- version: `{version}`\n")
 
     md.append("\n## Inputs\n")
     md.append(fence(json.dumps(inputs, indent=2, ensure_ascii=False)))
@@ -258,10 +233,258 @@ def build_evidence_md(
     return "".join(md)
 
 
+# Fallback (embedded) Server Contract v0 app.py (to break out of cache/template pack)
+FALLBACK_WEB_DASHBOARD_APP_PY = """from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+PRODUCT_ID = "web_dashboard_v0"
+VERSION = os.environ.get("WEB_DASHBOARD_V0_VERSION", "0.1.0")
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def print_one_json(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\\n")
+    sys.stdout.flush()
+
+def summary(schema: str, ok: bool, exit_code: int, reason_code: str, **extra) -> dict:
+    return {
+        "schema": schema,
+        "ok": bool(ok),
+        "exit_code": int(exit_code),
+        "reason_code": (reason_code or "INFRA_REASON_NULL_FORBIDDEN"),
+        "ts_utc": utc_now_iso(),
+        "product_id": PRODUCT_ID,
+        "version": VERSION,
+        **extra,
+    }
+
+class _State:
+    def __init__(self) -> None:
+        self.start_ts = time.time()
+        self._ready = False
+        self._lock = threading.Lock()
+
+    def uptime_s(self) -> float:
+        return round(time.time() - self.start_ts, 3)
+
+    def set_ready(self, v: bool) -> None:
+        with self._lock:
+            self._ready = bool(v)
+
+    def is_ready(self) -> bool:
+        with self._lock:
+            return bool(self._ready)
+
+def make_handler(state: _State):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def _send_json(self, code: int, payload: dict) -> None:
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            p = urlparse(self.path)
+            path = p.path
+
+            if path == "/health":
+                self._send_json(200, {
+                    "schema": "server_contract_v0.health",
+                    "ok": True,
+                    "ts_utc": utc_now_iso(),
+                    "product_id": PRODUCT_ID,
+                    "version": VERSION,
+                    "uptime_s": state.uptime_s(),
+                })
+                return
+
+            if path == "/ready":
+                if state.is_ready():
+                    self._send_json(200, {
+                        "schema": "server_contract_v0.ready",
+                        "ok": True,
+                        "ts_utc": utc_now_iso(),
+                        "product_id": PRODUCT_ID,
+                        "version": VERSION,
+                        "uptime_s": state.uptime_s(),
+                    })
+                else:
+                    self._send_json(503, {
+                        "schema": "server_contract_v0.ready",
+                        "ok": False,
+                        "reason_code": "NOT_READY",
+                        "ts_utc": utc_now_iso(),
+                        "product_id": PRODUCT_ID,
+                        "version": VERSION,
+                        "uptime_s": state.uptime_s(),
+                    })
+                return
+
+            self._send_json(404, {
+                "schema": "server_contract_v0.http_404",
+                "ok": False,
+                "reason_code": "NOT_FOUND",
+                "ts_utc": utc_now_iso(),
+                "product_id": PRODUCT_ID,
+                "version": VERSION,
+            })
+    return Handler
+
+def cmd_version() -> int:
+    print_one_json(summary("server_contract_v0.version", True, 0, "OK"))
+    return 0
+
+def cmd_selftest() -> int:
+    tests = [{"name": "version_present", "ok": bool(VERSION)}]
+    ok = all(t["ok"] for t in tests)
+    rc = 0 if ok else 1
+    print_one_json(summary("server_contract_v0.selftest", ok, rc, "OK" if ok else "SELFTEST_FAIL", tests=tests))
+    return rc
+
+def cmd_ping() -> int:
+    print_one_json(summary("server_contract_v0.ping", True, 0, "OK"))
+    return 0
+
+def cmd_help() -> int:
+    print_one_json(summary(
+        "server_contract_v0.help", True, 0, "OK",
+        commands=["version","selftest","ping","serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200"],
+        endpoints=["GET /health","GET /ready"]
+    ))
+    return 0
+
+def _watch_stop_flag(stop_flag: str, httpd: ThreadingHTTPServer):
+    for _ in range(10000):
+        if os.path.exists(stop_flag):
+            break
+        time.sleep(0.2)
+    try:
+        httpd.shutdown()
+    except Exception:
+        pass
+
+def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
+    if not stop_flag:
+        print_one_json(summary("server_contract_v0.startup", False, 1, "BAD_ARGS_STOP_FLAG_REQUIRED"))
+        return 1
+
+    state = _State()
+    handler = make_handler(state)
+
+    try:
+        httpd = ThreadingHTTPServer((host, port), handler)
+    except Exception:
+        print_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_FAILED"))
+        return 2
+
+    def _ready_worker():
+        if ready_after_ms > 0:
+            time.sleep(ready_after_ms / 1000.0)
+        state.set_ready(True)
+
+    threading.Thread(target=_ready_worker, daemon=True).start()
+    threading.Thread(target=_watch_stop_flag, args=(stop_flag, httpd), daemon=True).start()
+
+    print_one_json(summary(
+        "server_contract_v0.startup", True, 0, "OK",
+        pid=os.getpid(), host=host, port=port,
+        urls={"health": f"http://{host}:{port}/health", "ready": f"http://{host}:{port}/ready"}
+    ))
+
+    try:
+        httpd.serve_forever(poll_interval=0.2)
+        return 0
+    except KeyboardInterrupt:
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        return 0
+    except Exception:
+        return 2
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    if not argv or "--help" in argv or "-h" in argv or "help" in argv:
+        return cmd_help()
+
+    cmd = argv[0].strip().lower()
+    if cmd == "version":
+        return cmd_version()
+    if cmd == "selftest":
+        return cmd_selftest()
+    if cmd == "ping":
+        return cmd_ping()
+    if cmd == "serve":
+        host="127.0.0.1"; port=17811; stop_flag=""; ready_after_ms=0
+        i=1
+        while i < len(argv):
+            a=argv[i]
+            if a=="--host" and i+1 < len(argv): host=argv[i+1]; i+=2; continue
+            if a=="--port" and i+1 < len(argv): port=int(argv[i+1]); i+=2; continue
+            if a=="--stop-flag" and i+1 < len(argv): stop_flag=argv[i+1]; i+=2; continue
+            if a=="--ready-after-ms" and i+1 < len(argv): ready_after_ms=int(argv[i+1]); i+=2; continue
+            print_one_json(summary("server_contract_v0.cli", False, 1, "BAD_ARGS_UNKNOWN_FLAG", flag=a))
+            return 1
+        return cmd_serve(host, port, stop_flag, ready_after_ms)
+
+    print_one_json(summary("server_contract_v0.cli", False, 1, "BAD_ARGS_UNKNOWN_COMMAND", command=cmd))
+    return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+
+def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, Any]:
+    marker = "server_contract_v0"
+    placeholder = "Placeholder dashboard entrypoint"
+
+    try:
+        current = entry_script.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason_code": "INFRA_ENTRY_READ_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+
+    needs = False
+    if product_id == "web_dashboard_v0":
+        needs = True
+    if placeholder in current:
+        needs = True
+    if marker in current and placeholder not in current:
+        return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
+    if not needs:
+        return {"ok": True, "reason_code": "OK", "action": "skip_not_target", "entrypoint": str(entry_script)}
+
+    # Overwrite from embedded fallback (non-bypass)
+    if marker not in FALLBACK_WEB_DASHBOARD_APP_PY:
+        return {"ok": False, "reason_code": "INFRA_FALLBACK_MISSING_MARKER", "entrypoint": str(entry_script)}
+
+    try:
+        entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+
+    return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
+
+
 def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     repo = Path(args.repo).resolve()
 
-    # Resolve inputs (Mode A / Mode B)
     if args.workspace is None:
         if not args.product_id:
             raise ValueError("BAD_ARGS_MISSING_PRODUCT_ID_OR_WORKSPACE")
@@ -272,7 +495,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         entry_script = (src_root / product.entrypoint).resolve()
         exe_name = product.exe_name
         config_src = src_root / "config.example.json"
-        inputs = {
+        inputs: Dict[str, Any] = {
             "mode": "product_id",
             "product_id": product_id,
             "template_root": str(src_root),
@@ -287,7 +510,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
         rel_ep = Path(args.entrypoint)
         entry_script = (ws / rel_ep).resolve()
-        entry_script.relative_to(ws)  # must be inside workspace
+        entry_script.relative_to(ws)
         exe_name = "app.exe"
         product_id = args.product_id or "workspace_build"
         version = "0.0.0"
@@ -316,6 +539,29 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         s["child_reason_code"] = safe_reason(s.get("child_reason_code"), "INFRA_CHILD_REASON_MISSING")
         steps.append(s)
         last_child_reason = s["child_reason_code"]
+
+    # STEP 00: entrypoint overlay (non-bypass)
+    so, se, ss = step_paths(out_dir, "00", "entrypoint_overlay")
+    write_text(so, "")
+    write_text(se, "")
+    overlay = ensure_entrypoint_overlay(product_id, entry_script)
+    inputs["entrypoint_overlay"] = overlay
+    s0 = {
+        "id": "00_entrypoint_overlay",
+        "ok": bool(overlay.get("ok") is True),
+        "exit_code": 0 if overlay.get("ok") is True else 1,
+        "reason_code": "OK" if overlay.get("ok") is True else "FAIL_ENTRYPOINT_OVERLAY",
+        "child_reason_code": safe_reason(str(overlay.get("reason_code")), "FAIL_ENTRYPOINT_OVERLAY"),
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "overlay": overlay,
+    }
+    write_json(ss, s0)
+    add_step(s0)
+    if not s0["ok"]:
+        raise RuntimeError(f"entrypoint overlay failed: {overlay.get('reason_code')}")
 
     # STEP 01: inputs
     so, se, ss = step_paths(out_dir, "01", "inputs")
@@ -380,7 +626,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     if not s3["ok"]:
         raise RuntimeError("FAIL_RUFF")
 
-    # STEP 04: python smoke (try --help, fallback to version)
+    # STEP 04: python smoke
     so, se, ss = step_paths(out_dir, "04", "python_smoke")
     env = os.environ.copy()
     pp = env.get("PYTHONPATH", "")
@@ -395,21 +641,8 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         chosen = "version"
         ok = smoke_ver["rc"] == 0
 
-    out_txt = []
-    out_txt.append("== smoke_help ==\n")
-    out_txt.append(smoke_help.get("stdout", ""))
-    if smoke_ver is not None:
-        out_txt.append("\n== smoke_version ==\n")
-        out_txt.append(smoke_ver.get("stdout", ""))
-    err_txt = []
-    err_txt.append("== smoke_help ==\n")
-    err_txt.append(smoke_help.get("stderr", ""))
-    if smoke_ver is not None:
-        err_txt.append("\n== smoke_version ==\n")
-        err_txt.append(smoke_ver.get("stderr", ""))
-
-    write_text(so, "".join(out_txt))
-    write_text(se, "".join(err_txt))
+    write_text(so, (smoke_help.get("stdout", "") or ""))
+    write_text(se, (smoke_help.get("stderr", "") or ""))
     smoke_obj = {
         "chosen": chosen,
         "help": smoke_help,
@@ -467,14 +700,13 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     exe_base = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
     exe_path = out_dir / exe_name
 
-    # Clean old exe if exists
     try:
         if exe_path.exists():
             exe_path.unlink()
     except Exception:
         pass
 
-    # STEP 06: PyInstaller build (FORCE CONSOLE)
+    # STEP 06: PyInstaller (FORCE --console)
     build_root = repo / "dist" / "_pyi_build"
     build_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -538,68 +770,43 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     if not exe_path.exists():
         raise FileNotFoundError(f"app.exe not found after build: {exe_path}")
 
-    # Copy config (best-effort)
+    # Copy config
     config_dst = out_dir / "config.example.json"
     if config_src.exists():
         shutil.copyfile(str(config_src), str(config_dst))
     else:
         write_text(config_dst, "{}\n")
 
-    # STEP 07: postcheck (try --help, fallback to version)
+    # STEP 07: postcheck
     so, se, ss = step_paths(out_dir, "07", "postcheck")
     post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir)
-    post_ver: Optional[Dict[str, Any]] = None
-    chosen = "help"
-    ok = post_help["rc"] == 0
-    if not ok:
-        post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir)
-        chosen = "version"
-        ok = post_ver["rc"] == 0
-
-    out_txt = []
-    out_txt.append("== post_help ==\n")
-    out_txt.append(post_help.get("stdout", ""))
-    if post_ver is not None:
-        out_txt.append("\n== post_version ==\n")
-        out_txt.append(post_ver.get("stdout", ""))
-    err_txt = []
-    err_txt.append("== post_help ==\n")
-    err_txt.append(post_help.get("stderr", ""))
-    if post_ver is not None:
-        err_txt.append("\n== post_version ==\n")
-        err_txt.append(post_ver.get("stderr", ""))
-
-    write_text(so, "".join(out_txt))
-    write_text(se, "".join(err_txt))
-    postcheck_obj = {
-        "chosen": chosen,
-        "help": post_help,
-        "version": post_ver,
-    }
+    write_text(so, post_help.get("stdout", ""))
+    write_text(se, post_help.get("stderr", ""))
+    ok_post = post_help["rc"] == 0
     s7 = {
         "id": "07_postcheck",
-        "ok": ok,
-        "exit_code": 0 if ok else 1,
-        "reason_code": "OK" if ok else "FAIL_POSTCHECK",
-        "child_reason_code": "OK" if ok else "FAIL_POSTCHECK_RC",
+        "ok": ok_post,
+        "exit_code": 0 if ok_post else 1,
+        "reason_code": "OK" if ok_post else "FAIL_POSTCHECK",
+        "child_reason_code": "OK" if ok_post else "FAIL_POSTCHECK_RC",
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
         "summary_path": str(ss),
-        "postcheck": postcheck_obj,
+        "postcheck": {"help": post_help},
     }
     write_json(ss, s7)
     add_step(s7)
     if not s7["ok"]:
         raise RuntimeError("FAIL_POSTCHECK")
 
-    # STEP 08: artifacts (runbook/evidence/hashes)
-    is_server = ("web_dashboard" in product_id) or (str(entry_script).endswith("src/app.py"))
+    # STEP 08: artifacts
+    is_server = product_id == "web_dashboard_v0"
     runbook_path = out_dir / "runbook.md"
     evidence_path = out_dir / "evidence.md"
     hashes_path = out_dir / "hashes.json"
 
-    write_text(runbook_path, build_runbook(product_id, exe_name, is_server))
+    write_text(runbook_path, build_runbook(exe_name, is_server))
 
     checks_bundle = {
         "py_compile": pc,
@@ -608,14 +815,12 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     }
 
     evidence_md = build_evidence_md(
-        product_id=product_id,
-        version=version,
         inputs=inputs,
         checks=checks_bundle,
         toolchain=toolchain,
         pyinstaller_cmd=pyinstaller_cmd,
         pyinstaller_res=pyinstaller_res,
-        postcheck=postcheck_obj,
+        postcheck={"help": post_help},
     )
     write_text(evidence_path, evidence_md)
 
@@ -632,9 +837,6 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     }
     write_text(hashes_path, json.dumps(hashes, indent=2, ensure_ascii=False) + "\n")
 
-    so, se, ss = step_paths(out_dir, "08", "artifacts")
-    write_text(so, "")
-    write_text(se, "")
     artifacts = {
         "app_exe": str(exe_path),
         "config_example": str(config_dst),
@@ -642,20 +844,6 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         "evidence": str(evidence_path),
         "hashes": str(hashes_path),
     }
-    s8 = {
-        "id": "08_artifacts",
-        "ok": True,
-        "exit_code": 0,
-        "reason_code": "OK",
-        "child_reason_code": "OK",
-        "ts_utc": utc_ts(),
-        "stdout_path": str(so),
-        "stderr_path": str(se),
-        "summary_path": str(ss),
-        "artifacts": artifacts,
-    }
-    write_json(ss, s8)
-    add_step(s8)
 
     payload = {
         "schema": SCHEMA,
@@ -688,13 +876,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         args = ap.parse_args(argv)
         payload, code, out_dir = main_inner(args)
-
-        # Contract: summary.json
         write_json(Path(payload["out_dir"]) / "summary.json", payload)
-
         emit_json_stdout(payload)
         return int(code)
-
     except KeyboardInterrupt:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out_dir = out_dir or (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
@@ -711,7 +895,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         write_json(out_dir / "summary.json", payload)
         emit_json_stdout(payload)
         return RC_INFRA
-
     except Exception as e:  # noqa: BLE001
         code = classify_exit_code(e)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

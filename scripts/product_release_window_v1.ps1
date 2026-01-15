@@ -22,20 +22,46 @@ $RC_OK    = 0
 $RC_FAIL  = 1
 $RC_INFRA = 2
 
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
 function UtcNowIso { return ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')) }
 function UtcNowId  { return ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')) }
 function RandHex([int]$n) { -join (1..$n | ForEach-Object { '{0:x}' -f (Get-Random -Max 16) }) }
 
+function Ensure-Dir([string]$p) {
+  if ([string]::IsNullOrWhiteSpace($p)) { return }
+  New-Item -ItemType Directory -Force -Path $p | Out-Null
+}
+
+function Normalize-Rc([int]$rc) {
+  if ($rc -eq 0) { return 0 }
+  if ($rc -eq 1) { return 1 }
+  if ($rc -eq 2) { return 2 }
+  return 2
+}
+
+function ReadTextAutoBom([string]$path) {
+  if (!(Test-Path -LiteralPath $path)) { throw "Missing file: $path" }
+  $sr = New-Object System.IO.StreamReader($path, [System.Text.Encoding]::UTF8, $true)
+  try { return $sr.ReadToEnd() } finally { $sr.Close() }
+}
+
 function ReadJsonFile([string]$path) {
-  if (!(Test-Path -LiteralPath $path)) { throw "Missing JSON file: $path" }
-  $raw = Get-Content -LiteralPath $path -Raw
+  $raw = ReadTextAutoBom $path
   if ([string]::IsNullOrWhiteSpace($raw)) { throw "Empty JSON file: $path" }
   return ($raw | ConvertFrom-Json)
 }
 
+function WriteTextUtf8NoBom([string]$path, [string]$text) {
+  $dir = Split-Path -Parent $path
+  Ensure-Dir $dir
+  $norm = ($text -replace "`r`n","`n")
+  [System.IO.File]::WriteAllText($path, $norm, $Utf8NoBom)
+}
+
 function WriteJsonFile([string]$path, $obj) {
   $json = ($obj | ConvertTo-Json -Depth 40 -Compress)
-  Set-Content -LiteralPath $path -Value $json -Encoding UTF8
+  WriteTextUtf8NoBom $path $json
 }
 
 $ts = UtcNowIso
@@ -44,10 +70,14 @@ if ([string]::IsNullOrWhiteSpace($runIdEff)) {
   $runIdEff = ("PROD_" + $ProductId + "_" + (UtcNowId) + "_" + (RandHex 6))
 }
 
-$repoRoot = (Get-Location).Path
+$repoRoot = (Resolve-Path -LiteralPath (Get-Location).Path).Path
 
 $manifestPath = Join-Path $repoRoot ("manifests\products\" + $ProductId + ".json")
 $configPath   = Join-Path $repoRoot ("args\configs\" + $ProductId + "\product_config_v1.json")
+
+# fallback out_dir so we ALWAYS have a place to write summary even on early INFRA
+$fallbackOutRoot = Join-Path $repoRoot "_out\product_release_window_v1"
+$fallbackRunOut  = Join-Path $fallbackOutRoot $runIdEff
 
 $summary = [ordered]@{
   schema = "product_release_window_v1"
@@ -56,14 +86,20 @@ $summary = [ordered]@{
   exit_code = $RC_INFRA
   reason_code = "INFRA_INIT"
   child_reason_code = "INFRA_INIT"
+
   repo = $repoRoot
   product_id = $ProductId
   run_id = $runIdEff
   target_run_id = $TargetRunId
   out_dir = $null
+
+  manifest_path = $manifestPath
+  config_path = $configPath
+
   child = [ordered]@{
     script = "scripts/factory_release_window_v1.ps1"
     out_dir = $null
+    exit_code_raw = $null
     exit_code = $null
     reason_code = $null
     stdout_path = $null
@@ -72,36 +108,66 @@ $summary = [ordered]@{
   }
 }
 
+function Finalize-And-Exit([int]$rc, [string]$reason) {
+  $rc = Normalize-Rc $rc
+  $summary.exit_code = $rc
+  $summary.ok = ($rc -eq 0)
+  $summary.reason_code = $reason
+  $summary.child_reason_code = $summary.child.reason_code
+
+  # Ensure out_dir exists
+  if ([string]::IsNullOrWhiteSpace([string]$summary.out_dir)) {
+    Ensure-Dir $fallbackRunOut
+    $summary.out_dir = $fallbackRunOut
+  } else {
+    Ensure-Dir $summary.out_dir
+  }
+
+  $sumPath = Join-Path $summary.out_dir "summary.json"
+  WriteJsonFile $sumPath $summary
+
+  Write-Output (($summary | ConvertTo-Json -Depth 40 -Compress))
+  exit $rc
+}
+
 try {
   $manifest = ReadJsonFile $manifestPath
   $config   = ReadJsonFile $configPath
 
-  $outRoot = $config.out_root
-  if ([string]::IsNullOrWhiteSpace($outRoot)) { $outRoot = $manifest.default_out_root }
-  if ([string]::IsNullOrWhiteSpace($outRoot)) { throw "INFRA: out_root missing" }
+  $outRoot = [string]$config.out_root
+  if ([string]::IsNullOrWhiteSpace($outRoot)) { $outRoot = [string]$manifest.default_out_root }
+  if ([string]::IsNullOrWhiteSpace($outRoot)) {
+    # still write summary (fallback) with INFRA
+    $summary.child.reason_code = "INFRA_OUT_ROOT_MISSING"
+    Finalize-And-Exit 2 "INFRA_OUT_ROOT_MISSING"
+  }
 
   $outDir = Join-Path $repoRoot $outRoot
-  if (!(Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+  Ensure-Dir $outDir
 
   $runOutDir = Join-Path $outDir $runIdEff
-  New-Item -ItemType Directory -Path $runOutDir -Force | Out-Null
+  Ensure-Dir $runOutDir
   $summary.out_dir = $runOutDir
 
   # Resolve repos (params override config)
   $vault = $VaultRepo; $guard = $GuardianRepo; $gov = $GovernorRepo
-  if ([string]::IsNullOrWhiteSpace($vault)) { $vault = $config.repos.vault_repo }
-  if ([string]::IsNullOrWhiteSpace($guard)) { $guard = $config.repos.guardian_repo }
-  if ([string]::IsNullOrWhiteSpace($gov))   { $gov   = $config.repos.governor_repo }
+  if ([string]::IsNullOrWhiteSpace($vault)) { $vault = [string]$config.repos.vault_repo }
+  if ([string]::IsNullOrWhiteSpace($guard)) { $guard = [string]$config.repos.guardian_repo }
+  if ([string]::IsNullOrWhiteSpace($gov))   { $gov   = [string]$config.repos.governor_repo }
 
   # Child step folder
   $stepDir = Join-Path $runOutDir "step_release_window"
-  New-Item -ItemType Directory -Path $stepDir -Force | Out-Null
+  Ensure-Dir $stepDir
 
   $childOutDir = Join-Path $stepDir "child_out"
-  New-Item -ItemType Directory -Path $childOutDir -Force | Out-Null
+  Ensure-Dir $childOutDir
 
-  $childStdout = Join-Path $stepDir "child.stdout.txt"
-  $childStderr = Join-Path $stepDir "child.stderr.txt"
+  $evidenceDir = Join-Path $stepDir "evidence"
+  Ensure-Dir $evidenceDir
+
+  $childStdout = Join-Path $evidenceDir "child.stdout.txt"
+  $childStderr = Join-Path $evidenceDir "child.stderr.txt"
+  $childCmd    = Join-Path $evidenceDir "child.cmdline.txt"
 
   $childScript = Join-Path $repoRoot "scripts\factory_release_window_v1.ps1"
 
@@ -109,7 +175,12 @@ try {
   $summary.child.stdout_path = $childStdout
   $summary.child.stderr_path = $childStderr
 
-  # Build child arg list (non-bypass child is the source of truth)
+  if (-not (Test-Path -LiteralPath $childScript)) {
+    $summary.child.reason_code = "INFRA_CHILD_SCRIPT_MISSING"
+    Finalize-And-Exit 2 "INFRA_CHILD_SCRIPT_MISSING"
+  }
+
+  # Build child argument list (non-bypass child is the source of truth)
   $childArgs = @(
     "-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
     "-File", $childScript,
@@ -123,50 +194,58 @@ try {
   if (![string]::IsNullOrWhiteSpace($gov)) { $childArgs += @("-GovernorRepo",$gov) }
   if (![string]::IsNullOrWhiteSpace($ScriptArgs)) { $childArgs += @("-ScriptArgs",$ScriptArgs) }
 
-  & powershell @childArgs 1> $childStdout 2> $childStderr
-  $childRc = $LASTEXITCODE
+  WriteTextUtf8NoBom $childCmd ("powershell " + ($childArgs -join " "))
 
-  $summary.child.exit_code = [int]$childRc
-  $summary.exit_code = [int]$childRc
-  $summary.ok = ($summary.exit_code -eq $RC_OK)
+  # Run child (working directory = repo root)
+  $p = Start-Process -FilePath "powershell" -ArgumentList $childArgs -WorkingDirectory $repoRoot -NoNewWindow -Wait -PassThru `
+      -RedirectStandardOutput $childStdout -RedirectStandardError $childStderr
 
+  $childRcRaw  = [int]$p.ExitCode
+  $childRcNorm = Normalize-Rc $childRcRaw
+
+  $summary.child.exit_code_raw = $childRcRaw
+  $summary.child.exit_code = $childRcNorm
+
+  # Child summary.json expected
   $childSummaryPath = Join-Path $childOutDir "summary.json"
   $summary.child.summary_path = $childSummaryPath
 
   if (!(Test-Path -LiteralPath $childSummaryPath)) {
-    $summary.exit_code = $RC_INFRA
-    $summary.ok = $false
-    $summary.reason_code = "INFRA_CHILD_NO_SUMMARY"
-    $summary.child_reason_code = "INFRA_CHILD_NO_SUMMARY"
     $summary.child.reason_code = "INFRA_CHILD_NO_SUMMARY"
-    WriteJsonFile (Join-Path $runOutDir "summary.json") $summary
-    Write-Output (($summary | ConvertTo-Json -Depth 40 -Compress))
-    exit $summary.exit_code
+    Finalize-And-Exit 2 "INFRA_CHILD_NO_SUMMARY"
   }
 
   $childSummary = ReadJsonFile $childSummaryPath
-  $childReason = $childSummary.reason_code
-  if ([string]::IsNullOrWhiteSpace($childReason)) { $childReason = "UNKNOWN_CHILD_REASON" }
+  $childReason = [string]$childSummary.reason_code
+  if ([string]::IsNullOrWhiteSpace($childReason)) {
+    $childReason = $(if ($childRcNorm -eq 1) { "FAIL_CHILD" } elseif ($childRcNorm -eq 2) { "INFRA_CHILD" } else { "OK" })
+  }
 
   $summary.child.reason_code = $childReason
   $summary.child_reason_code = $childReason
-  $summary.reason_code = $childReason
 
-  WriteJsonFile (Join-Path $runOutDir "summary.json") $summary
-  Write-Output (($summary | ConvertTo-Json -Depth 40 -Compress))
-  exit $summary.exit_code
+  # Final top-level reason_code:
+  $finalReason = $childReason
+  if ($childRcNorm -eq 0) { $finalReason = "OK" }
+
+  Finalize-And-Exit $childRcNorm $finalReason
 }
 catch {
-  $summary.exit_code = $RC_INFRA
   $summary.ok = $false
+  $summary.exit_code = $RC_INFRA
   $summary.reason_code = "INFRA_PRODUCT_WINDOW_EXCEPTION"
   $summary.child_reason_code = "INFRA_PRODUCT_WINDOW_EXCEPTION"
   $summary.error = [ordered]@{ message = $_.Exception.Message }
 
-  if ($summary.out_dir) {
-    if (!(Test-Path -LiteralPath $summary.out_dir)) { New-Item -ItemType Directory -Path $summary.out_dir -Force | Out-Null }
-    WriteJsonFile (Join-Path $summary.out_dir "summary.json") $summary
+  # Ensure out_dir exists (fallback if needed)
+  if ([string]::IsNullOrWhiteSpace([string]$summary.out_dir)) {
+    Ensure-Dir $fallbackRunOut
+    $summary.out_dir = $fallbackRunOut
+  } else {
+    Ensure-Dir $summary.out_dir
   }
+
+  WriteJsonFile (Join-Path $summary.out_dir "summary.json") $summary
   Write-Output (($summary | ConvertTo-Json -Depth 40 -Compress))
-  exit $summary.exit_code
+  exit $RC_INFRA
 }
