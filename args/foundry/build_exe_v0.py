@@ -1,4 +1,4 @@
-
+﻿
 from __future__ import annotations
 
 import argparse
@@ -373,7 +373,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         raise RuntimeError("built app.exe --help failed")
 
     # Artifacts
-    step = "artifacts"
     runbook_path = out_dir / "runbook.md"
     evidence_path = out_dir / "evidence.md"
     hashes_path = out_dir / "hashes.json"
@@ -446,3 +445,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
