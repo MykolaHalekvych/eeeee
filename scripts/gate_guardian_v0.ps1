@@ -55,8 +55,44 @@ try {
       $parsed = $null
     }
 
+    # Propagate guardian reason codes from guardian_check stdout (never null)
+    $guardian_rc = 2
+    $v_rc = Get-Variable -Name rc -ErrorAction SilentlyContinue
+    if ($v_rc) { try { $guardian_rc = [int]$v_rc.Value } catch { } } else {
+      $v_ec = Get-Variable -Name exit_code -ErrorAction SilentlyContinue
+      if ($v_ec) { try { $guardian_rc = [int]$v_ec.Value } catch { } } else {
+        $v_p = Get-Variable -Name proc -ErrorAction SilentlyContinue
+        if ($v_p -and $v_p.Value) { try { $guardian_rc = [int]$v_p.Value.ExitCode } catch { } }
+      }
+    }
+    
+    $guardian_stdout = $null
+    $v_sp = Get-Variable -Name stdoutPath -ErrorAction SilentlyContinue
+    if ($v_sp) { try { $guardian_stdout = [string]$v_sp.Value } catch { } }
+    
+    $guardian_reason_code = "INFRA_GUARDIAN"
+    if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK" }
+    elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN" }
+    
+    if ($guardian_stdout -and (Test-Path $guardian_stdout)) {
+      try {
+        $g = Get-Content -Raw $guardian_stdout | ConvertFrom-Json
+        if ($null -ne $g -and $g.reason_code) { $guardian_reason_code = $g.reason_code }
+      } catch {
+        if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK_BAD_STDOUT" }
+        elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN_BAD_STDOUT" }
+        else { $guardian_reason_code = "INFRA_GUARDIAN_BAD_STDOUT" }
+      }
+    } else {
+      if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK_NO_STDOUT" }
+      elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN_NO_STDOUT" }
+      else { $guardian_reason_code = "INFRA_GUARDIAN_NO_STDOUT" }
+    }
+    
     $summary = @{
       schema        = "gate_guardian_v0"
+      reason_code = $guardian_reason_code
+      child_reason_code = $guardian_reason_code
       ts_utc        = $ts
       ok            = ($rc -eq 0)
       exit_code     = $rc
