@@ -249,28 +249,30 @@ PRODUCT_ID = "web_dashboard_v0"
 VERSION = os.environ.get("WEB_DASHBOARD_V0_VERSION", "0.1.0")
 
 # marker used by overlay to ensure correct stdout implementation
-STDOUT_MODE = "win_writefile_or_oswrite_v1"
+STDOUT_MODE = "win_writefile_or_oswrite_v2"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 def _write_bytes(b: bytes) -> None:
-    # 1) Windows API (works even if sys.stdout is None/NullWriter)
-    try:
-        import ctypes
-        from ctypes import wintypes
-        h = ctypes.windll.kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        if h and h != -1:
-            written = wintypes.DWORD(0)
-            ctypes.windll.kernel32.WriteFile(h, b, len(b), ctypes.byref(written), None)
-            return
-    except Exception:
-        pass
-
-    # 2) POSIX-style fd write
+    # 1) fd write (works with subprocess capture_output)
     try:
         os.write(1, b)
         return
+    except Exception:
+        pass
+
+    # 2) Windows API (only if it REALLY writes)
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        if h and h != -1:
+            written = wintypes.DWORD(0)
+            ok = k.WriteFile(h, b, len(b), ctypes.byref(written), None)
+            if ok and int(written.value) > 0:
+                return
     except Exception:
         pass
 
@@ -280,6 +282,7 @@ def _write_bytes(b: bytes) -> None:
         sys.stdout.flush()
     except Exception:
         pass
+
 
 def print_one_json(obj: dict) -> None:
     b = (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\\n").encode("utf-8")
@@ -484,7 +487,7 @@ if __name__ == "__main__":
 def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, Any]:
     marker = "server_contract_v0"
     placeholder = "Placeholder dashboard entrypoint"
-    required = 'STDOUT_MODE = "win_writefile_or_oswrite_v1"'
+    required = 'STDOUT_MODE = "win_writefile_or_oswrite_v2"'
 
     try:
         current = entry_script.read_text(encoding="utf-8", errors="replace")

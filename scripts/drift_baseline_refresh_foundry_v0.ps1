@@ -94,7 +94,7 @@ try{
   Ensure-Dir $newDir
   $newPath = Join-Path $newDir ("drift_baseline_$newId.json")
 
-  # file list from git ls-files (детерминированно)
+  # file list from git ls-files (deterministic)
   Push-Location $repoAbs
   try{
     $paths = (& git ls-files) 2>$null
@@ -106,12 +106,20 @@ try{
     Emit $false $RC_INFRA "INFRA_NO_TRACKED_FILES" @{repo=$repoAbs} $null
   }
 
+  # entries require bytes (Drift Detector expects it)
   $entries = New-Object System.Collections.Generic.List[object]
   foreach($p in $paths){
     $abs = Join-Path $repoAbs ($p -replace "/","\")
     if(-not (Test-Path -LiteralPath $abs)){ continue }
+
+    $item = Get-Item -LiteralPath $abs
     $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $abs).Hash.ToLower()
-    $entries.Add([ordered]@{ path=($p -replace "\\","/"); sha256=$h })
+
+    $entries.Add([ordered]@{
+      path   = ($p -replace "\\","/")
+      sha256 = $h
+      bytes  = [int64]$item.Length
+    })
   }
 
   # load old baseline as template to keep schema stable
@@ -131,7 +139,6 @@ try{
   } elseif($tpl.PSObject.Properties.Name -contains "entries"){
     $tpl.entries = $entries
   } else {
-    # default add 'files'
     Add-Member -InputObject $tpl -NotePropertyName "files" -NotePropertyValue $entries -Force
   }
 
