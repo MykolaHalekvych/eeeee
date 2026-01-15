@@ -1,0 +1,28 @@
+{
+  "allow_changes": [],
+  "baseline_id": "foundry_baseline_v0_0002",
+  "exclude": [
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".venv/**",
+    "__pycache__/**",
+    "args/data/**",
+    "baselines/**",
+    "dist/**",
+    "legacy_fin/**",
+    "out/**",
+    "runs/**"
+  ],
+  "include": [
+    "args/**",
+    "manifests/**",
+    "packs/**",
+    "templates/**",
+    "scripts/**",
+    "control_plane.json",
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig"
+  ],
+  "schema": "drift_policy_v0"
+}
