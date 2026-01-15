@@ -1,3 +1,4 @@
+# args/foundry/build_exe_v0.py
 from __future__ import annotations
 
 import argparse
@@ -60,6 +61,52 @@ def step_paths(out_dir: Path, step_id: str, name: str) -> Tuple[Path, Path, Path
     )
 
 
+def compute_pre_out_dir(args: argparse.Namespace) -> Optional[Path]:
+    """
+    Precompute out_dir BEFORE main_inner() so exception handlers write into the SAME out_dir
+    that holds step_* artifacts.
+    """
+    try:
+        repo = Path(args.repo).resolve()
+
+        if getattr(args, "out_dir", None):
+            return Path(args.out_dir).resolve()
+
+        if getattr(args, "workspace", None):
+            pid = getattr(args, "product_id", None) or "workspace_build"
+            return (repo / "dist" / pid).resolve()
+
+        pid = getattr(args, "product_id", None)
+        if not pid:
+            return None
+        return (repo / "dist" / pid).resolve()
+    except Exception:
+        return None
+
+
+def write_exception_step(out_dir: Path, exc: Exception, code: int) -> Dict[str, Any]:
+    import traceback
+
+    so, se, ss = step_paths(out_dir, "99", "exception")
+    write_text(so, "")
+    write_text(se, traceback.format_exc())
+
+    s = {
+        "id": "99_exception",
+        "ok": False,
+        "exit_code": int(code),
+        "reason_code": "FAIL_EXCEPTION",
+        "child_reason_code": safe_reason(str(exc), "INFRA_EXCEPTION"),
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "error": {"kind": exc.__class__.__name__, "message": str(exc)},
+    }
+    write_json(ss, s)
+    return s
+
+
 def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     p = subprocess.run(
         cmd,
@@ -79,6 +126,7 @@ def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, 
 
 
 def emit_json_stdout(payload: Dict[str, Any]) -> None:
+    # Contract: exactly 1 JSON line to stdout with newline.
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
@@ -138,15 +186,27 @@ def load_product(repo: Path, product_id: str) -> Product:
 
 
 def py_compile_tree(root: Path) -> Dict[str, Any]:
+    """
+    RGLOB-safe py_compile tree: any rglob failure becomes an error record (no hidden crash).
+    """
     import py_compile
 
-    py_files = sorted(root.rglob("*.py"))
     errors: List[Dict[str, str]] = []
+    try:
+        py_files = sorted(root.rglob("*.py"))
+    except Exception as e:  # noqa: BLE001
+        return {
+            "files": [],
+            "errors": [{"file": str(root), "error": "RGLOB_ERROR:" + repr(e)}],
+            "ok": False,
+        }
+
     for f in py_files:
         try:
             py_compile.compile(str(f), doraise=True)
         except Exception as e:  # noqa: BLE001
             errors.append({"file": str(f), "error": repr(e)})
+
     return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
 
 
@@ -234,7 +294,9 @@ def build_evidence_md(
 
 
 # Fallback Server Contract v0 app.py (non-bypass)
-FALLBACK_WEB_DASHBOARD_APP_PY = """
+# IMPORTANT: must be RAW string; otherwise sequences like "\n" inside code become real newlines
+# and break the generated app.py (unterminated string literal).
+FALLBACK_WEB_DASHBOARD_APP_PY = r"""
 from __future__ import annotations
 
 import json
@@ -682,7 +744,6 @@ def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, 
     if (marker in current) and (placeholder not in current) and (required in current):
         return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
 
-    # overwrite (non-bypass)
     if (marker not in FALLBACK_WEB_DASHBOARD_APP_PY) or (required not in FALLBACK_WEB_DASHBOARD_APP_PY):
         return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
 
@@ -853,7 +914,13 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         chosen = "version"
         ok = smoke_ver["rc"] == 0
 
-    smoke_obj = {"chosen": chosen, "help": smoke_help, "version": smoke_ver, "cwd": str(src_root), "py_path": env["PYTHONPATH"]}
+    smoke_obj = {
+        "chosen": chosen,
+        "help": smoke_help,
+        "version": smoke_ver,
+        "cwd": str(src_root),
+        "py_path": env["PYTHONPATH"],
+    }
     write_text(so, (smoke_help.get("stdout", "") or ""))
     write_text(se, (smoke_help.get("stderr", "") or ""))
     s4 = {
@@ -1049,6 +1116,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
             "config.example.json": sha256_file(config_dst),
             "runbook.md": sha256_file(runbook_path),
             "evidence.md": sha256_file(evidence_path),
+            "hashes.json": sha256_file(hashes_path),
         },
     }
     write_text(hashes_path, json.dumps(hashes, indent=2, ensure_ascii=False) + "\n")
@@ -1089,33 +1157,52 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--entrypoint", default=None, help="Entrypoint relative to workspace (e.g., src/main.py)")
 
     out_dir: Optional[Path] = None
+
     try:
         args = ap.parse_args(argv)
-        payload, code, out_dir = main_inner(args)
+
+        out_dir = compute_pre_out_dir(args)
+        if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        payload, code, actual_out_dir = main_inner(args)
+        out_dir = actual_out_dir
+
         write_json(Path(payload["out_dir"]) / "summary.json", payload)
         emit_json_stdout(payload)
         return int(code)
-    except KeyboardInterrupt:
+
+    except KeyboardInterrupt as e:
+        code = RC_INFRA
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out_dir = out_dir or (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if out_dir is None:
+            out_dir = (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        _ = write_exception_step(out_dir, e, code)
+
         payload = {
             "schema": SCHEMA,
             "ts_utc": utc_ts(),
             "ok": False,
-            "exit_code": RC_INFRA,
+            "exit_code": int(code),
             "reason_code": "FAIL",
             "child_reason_code": "INFRA_KEYBOARD_INTERRUPT",
             "out_dir": str(out_dir),
         }
         write_json(out_dir / "summary.json", payload)
         emit_json_stdout(payload)
-        return RC_INFRA
+        return int(code)
+
     except Exception as e:  # noqa: BLE001
         code = classify_exit_code(e)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out_dir = out_dir or (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if out_dir is None:
+            out_dir = (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        _ = write_exception_step(out_dir, e, code)
+
         payload = {
             "schema": SCHEMA,
             "ts_utc": utc_ts(),

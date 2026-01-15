@@ -1,6 +1,6 @@
 {
     "schema":  "drift_policy_v0",
-    "baseline_id":  "foundry_baseline_v0_0013",
+    "baseline_id":  "foundry_baseline_v0_0014",
     "allow_changes":  [
 
                       ],
@@ -31,6 +31,7 @@
                     "**/*.bak_*",
                     "**/*.BAK",
                     "**/*.BAK.*",
-                    "**/*.BAK_*"
+                    "**/*.BAK_*",
+                    "args/foundry/build_exe_v0.py"
                 ]
 }
