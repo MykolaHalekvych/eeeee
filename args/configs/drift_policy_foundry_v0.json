@@ -1,20 +1,9 @@
 {
+    "schema":  "drift_policy_v0",
+    "baseline_id":  "foundry_baseline_v0_0012",
     "allow_changes":  [
 
                       ],
-    "baseline_id":  "foundry_baseline_v0_0010",
-    "exclude":  [
-                    ".mypy_cache/**",
-                    ".pytest_cache/**",
-                    ".venv/**",
-                    "__pycache__/**",
-                    "args/data/**",
-                    "baselines/**",
-                    "dist/**",
-                    "legacy_fin/**",
-                    "out/**",
-                    "runs/**"
-                ],
     "include":  [
                     "args/**",
                     "manifests/**",
@@ -26,5 +15,22 @@
                     ".gitattributes",
                     ".editorconfig"
                 ],
-    "schema":  "drift_policy_v0"
+    "exclude":  [
+                    ".mypy_cache/**",
+                    ".pytest_cache/**",
+                    ".venv/**",
+                    "__pycache__/**",
+                    "args/data/**",
+                    "baselines/**",
+                    "dist/**",
+                    "legacy_fin/**",
+                    "out/**",
+                    "runs/**",
+                    "scripts/_scratch/**",
+                    "**/*.bak",
+                    "**/*.bak_*",
+                    "**/*.BAK",
+                    "**/*.BAK.*",
+                    "**/*.BAK_*"
+                ]
 }
