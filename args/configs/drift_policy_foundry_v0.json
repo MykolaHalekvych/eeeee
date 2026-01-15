@@ -2,7 +2,7 @@
     "allow_changes":  [
 
                       ],
-    "baseline_id":  "foundry_baseline_v0_0007",
+    "baseline_id":  "foundry_baseline_v0_0010",
     "exclude":  [
                     ".mypy_cache/**",
                     ".pytest_cache/**",

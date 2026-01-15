@@ -58,6 +58,41 @@ function Emit([bool]$ok,[int]$rc,[string]$reason,$detail,[string]$outDir){
   exit $rc
 }
 
+function NormPath([string]$s){
+  if ($null -eq $s) { return "" }
+  $x = $s.ToString().Trim().Replace("\","/")
+  while($x.StartsWith("./")){ $x = $x.Substring(2) }
+  return $x
+}
+
+# glob(**,*) -> -like pattern
+function GlobToLike([string]$glob){
+  $g = NormPath $glob
+  if([string]::IsNullOrWhiteSpace($g)) { return "" }
+  $g = $g.Replace("[","`[").Replace("]","`]")
+  $g = $g.Replace("**","*")
+  return $g
+}
+
+function MatchesAny([string]$path, $patterns){
+  foreach($p in $patterns){
+    $pp = [string]$p
+    if([string]::IsNullOrWhiteSpace($pp)) { continue }
+    $like = GlobToLike $pp
+    if($like -and ($path -like $like)) { return $true }
+  }
+  return $false
+}
+
+function NextBaselineId([string]$oldId){
+  $m = [regex]::Match($oldId, "(\d+)$")
+  if(-not $m.Success){ throw "baseline_id format invalid: $oldId" }
+  $n = [int]$m.Groups[1].Value
+  $pad = $m.Groups[1].Value.Length
+  $next = ($n + 1).ToString().PadLeft($pad,'0')
+  return $oldId.Substring(0, $oldId.Length - $m.Groups[1].Value.Length) + $next
+}
+
 try{
   $repoAbs = (Resolve-Path -LiteralPath $RepoRoot).Path
   $policyAbs = (Resolve-Path -LiteralPath $PolicyPath).Path
@@ -74,112 +109,142 @@ try{
     Emit $false $RC_INFRA "INFRA_BASELINE_ID_MISSING" @{policy=$policyAbs} $null
   }
 
-  $oldPath = Join-Path $baseAbs ("$oldId\drift_baseline_$oldId.json")
-  if(-not (Test-Path -LiteralPath $oldPath)){
-    Emit $false $RC_INFRA "INFRA_BASELINE_FILE_MISSING" @{baseline_id=$oldId; baseline_path=$oldPath} $null
+  $oldBaselinePath = Join-Path $baseAbs ("$oldId\drift_baseline_$oldId.json")
+  if(-not (Test-Path -LiteralPath $oldBaselinePath)){
+    Emit $false $RC_INFRA "INFRA_BASELINE_FILE_MISSING" @{baseline_id=$oldId; baseline_path=$oldBaselinePath} $null
   }
 
-  # next id: increment last digits
-  $m = [regex]::Match($oldId, "(\d+)$")
-  if(-not $m.Success){
-    Emit $false $RC_INFRA "INFRA_BASELINE_ID_FORMAT" @{baseline_id=$oldId; expected="...0004"} $null
-  }
-  $n = [int]$m.Groups[1].Value
-  $nextN = $n + 1
-  $pad = $m.Groups[1].Value.Length
-  $nextSuffix = $nextN.ToString().PadLeft($pad,'0')
-  $newId = $oldId.Substring(0, $oldId.Length - $m.Groups[1].Value.Length) + $nextSuffix
-
+  $newId = NextBaselineId $oldId
   $newDir = Join-Path $baseAbs $newId
   Ensure-Dir $newDir
-  $newPath = Join-Path $newDir ("drift_baseline_$newId.json")
+  $newBaselinePath = Join-Path $newDir ("drift_baseline_$newId.json")
 
-  # IMPORTANT: update policy baseline_id BEFORE hashing tracked files
+  # policy include/exclude
+  $include = @()
+  if($policy.PSObject.Properties.Name -contains "include"){ $include = $policy.include }
+  $exclude = @()
+  if($policy.PSObject.Properties.Name -contains "exclude"){ $exclude = $policy.exclude }
+
+  if(($include | Measure-Object).Count -eq 0){
+    Emit $false $RC_INFRA "INFRA_POLICY_INCLUDE_EMPTY" @{policy=$policyAbs} $null
+  }
+
+  # Save old policy id for rollback
+  $oldPolicyId = [string]$policy.baseline_id
+
+  # UPDATE policy baseline_id BEFORE hashing (so policy file hash matches)
   $policy.baseline_id = $newId
   WriteJson $policyAbs $policy
 
-  # file list from git ls-files (deterministic)
-  Push-Location $repoAbs
-  try{
-    $paths = (& git ls-files) 2>$null
-    if($LASTEXITCODE -ne 0){ throw "git ls-files failed" }
-  } finally { Pop-Location }
+  try {
+    # Scan only include roots on disk (captures untracked/ignored in scope)
+    $roots = New-Object System.Collections.Generic.List[string]
+    $rootFiles = New-Object System.Collections.Generic.List[string]
 
-  $paths = $paths | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" } | Sort-Object
-  if($paths.Count -eq 0){
-    Emit $false $RC_INFRA "INFRA_NO_TRACKED_FILES" @{repo=$repoAbs} $null
-  }
+    foreach($pat in $include){
+      $p = NormPath ([string]$pat)
+      if([string]::IsNullOrWhiteSpace($p)) { continue }
 
-  # Exclude volatile/self-referential dirs to align baseline with drift policy
-  $excludePrefixes = @(
-    "baselines/",
-    "out/",
-    "dist/",
-    "_out/"
-  )
-
-  $paths = $paths | Where-Object {
-    $x = $_.Replace("\","/").Trim()
-    if ($x -eq "") { return $false }
-    foreach ($pref in $excludePrefixes) {
-      if ($x.StartsWith($pref)) { return $false }
+      if($p.Contains("/")){
+        $seg = $p.Split("/")[0]
+        if($seg -and -not ($roots.Contains($seg))){ $roots.Add($seg) }
+      } else {
+        # root file like control_plane.json, .gitignore, etc.
+        if(-not ($rootFiles.Contains($p))){ $rootFiles.Add($p) }
+      }
     }
-    return $true
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+
+    foreach($r in $roots){
+      $dirAbs = Join-Path $repoAbs ($r -replace "/","\")
+      if(Test-Path -LiteralPath $dirAbs){
+        Get-ChildItem -LiteralPath $dirAbs -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+          $candidates.Add($_)
+        }
+      }
+    }
+
+    foreach($f in $rootFiles){
+      $fAbs = Join-Path $repoAbs ($f -replace "/","\")
+      if(Test-Path -LiteralPath $fAbs){
+        $candidates.Add((Get-Item -LiteralPath $fAbs))
+      }
+    }
+
+    if($candidates.Count -eq 0){
+      throw "No candidate files found from include roots"
+    }
+
+    # Apply policy include/exclude to candidate file list
+    $entries = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach($fi in $candidates){
+      $full = [string]$fi.FullName
+      if(-not ($full.StartsWith($repoAbs))) { continue }
+
+      $rel = $full.Substring($repoAbs.Length).TrimStart("\")
+      $rel = $rel.Replace("\","/")
+      if([string]::IsNullOrWhiteSpace($rel)) { continue }
+
+      if($seen.ContainsKey($rel)) { continue }
+      $seen[$rel] = $true
+
+      if(-not (MatchesAny $rel $include)) { continue }
+      if(MatchesAny $rel $exclude) { continue }
+
+      $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLower()
+      $entries.Add([ordered]@{
+        path   = $rel
+        sha256 = $h
+        bytes  = [int64]$fi.Length
+      })
+    }
+
+    if($entries.Count -eq 0){
+      throw "No files after policy scope (include/exclude)"
+    }
+
+    # Template baseline (keep schema)
+    $tpl = ReadJson $oldBaselinePath
+    if($tpl.PSObject.Properties.Name -contains "baseline_id"){ $tpl.baseline_id = $newId }
+    if($tpl.PSObject.Properties.Name -contains "baselineId"){ $tpl.baselineId = $newId }
+    if($tpl.PSObject.Properties.Name -contains "ts_utc"){ $tpl.ts_utc = (UtcTs) }
+    if($tpl.PSObject.Properties.Name -contains "created_utc"){ $tpl.created_utc = (UtcTs) }
+
+    if($tpl.PSObject.Properties.Name -contains "files"){
+      $tpl.files = $entries
+    } elseif($tpl.PSObject.Properties.Name -contains "items"){
+      $tpl.items = $entries
+    } elseif($tpl.PSObject.Properties.Name -contains "entries"){
+      $tpl.entries = $entries
+    } else {
+      Add-Member -InputObject $tpl -NotePropertyName "files" -NotePropertyValue $entries -Force
+    }
+
+    WriteJson $newBaselinePath $tpl
+
+    Emit $true $RC_OK "OK" @{
+      old_baseline_id=$oldId
+      new_baseline_id=$newId
+      old_baseline_path=$oldBaselinePath
+      new_baseline_path=$newBaselinePath
+      scoped_files=$entries.Count
+      include=$include
+      exclude=$exclude
+      policy_path=$policyAbs
+    } $newDir
   }
-
-  if($paths.Count -eq 0){
-    Emit $false $RC_INFRA "INFRA_NO_TRACKED_FILES_AFTER_FILTER" @{excluded=$excludePrefixes} $null
+  catch {
+    # rollback policy baseline_id on failure
+    try {
+      $policy2 = ReadJson $policyAbs
+      $policy2.baseline_id = $oldPolicyId
+      WriteJson $policyAbs $policy2
+    } catch {}
+    throw
   }
-
-  # entries require bytes (Drift Detector expects it)
-  $entries = New-Object System.Collections.Generic.List[object]
-  foreach($p in $paths){
-    $pNorm = $p.Replace("\","/").Trim()
-    $abs = Join-Path $repoAbs ($pNorm -replace "/","\")
-    if(-not (Test-Path -LiteralPath $abs)){ continue }
-
-    $item = Get-Item -LiteralPath $abs
-    $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $abs).Hash.ToLower()
-
-    $entries.Add([ordered]@{
-      path   = $pNorm
-      sha256 = $h
-      bytes  = [int64]$item.Length
-    })
-  }
-
-  # load old baseline as template to keep schema stable
-  $tpl = ReadJson $oldPath
-
-  # set baseline id fields if present
-  if($tpl.PSObject.Properties.Name -contains "baseline_id"){ $tpl.baseline_id = $newId }
-  if($tpl.PSObject.Properties.Name -contains "baselineId"){ $tpl.baselineId = $newId }
-  if($tpl.PSObject.Properties.Name -contains "ts_utc"){ $tpl.ts_utc = (UtcTs) }
-  if($tpl.PSObject.Properties.Name -contains "created_utc"){ $tpl.created_utc = (UtcTs) }
-
-  # replace file list (support common names)
-  if($tpl.PSObject.Properties.Name -contains "files"){
-    $tpl.files = $entries
-  } elseif($tpl.PSObject.Properties.Name -contains "items"){
-    $tpl.items = $entries
-  } elseif($tpl.PSObject.Properties.Name -contains "entries"){
-    $tpl.entries = $entries
-  } else {
-    Add-Member -InputObject $tpl -NotePropertyName "files" -NotePropertyValue $entries -Force
-  }
-
-  WriteJson $newPath $tpl
-
-  Emit $true $RC_OK "OK" @{
-    old_baseline_id=$oldId
-    new_baseline_id=$newId
-    old_baseline_path=$oldPath
-    new_baseline_path=$newPath
-    tracked_files_before_filter=$paths.Count
-    hashed_files=$entries.Count
-    excluded_prefixes=$excludePrefixes
-    policy_path=$policyAbs
-  } $newDir
 }
 catch{
   Emit $false $RC_INFRA "INFRA_TOOL_ERROR" @{error=$_.Exception.Message} $null

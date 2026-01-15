@@ -1,0 +1,42 @@
+{
+    "schema":  "drift_baseline_refresh_foundry_v0",
+    "ok":  true,
+    "exit_code":  0,
+    "reason_code":  "OK",
+    "ts_utc":  "2026-01-15T20:59:56Z",
+    "repo_root":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+    "policy_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\args\\configs\\drift_policy_foundry_v0.json",
+    "baselines_root":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift",
+    "out_dir":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0010",
+    "details":  {
+                    "include":  [
+                                    "args/**",
+                                    "manifests/**",
+                                    "packs/**",
+                                    "templates/**",
+                                    "scripts/**",
+                                    "control_plane.json",
+                                    ".gitignore",
+                                    ".gitattributes",
+                                    ".editorconfig"
+                                ],
+                    "new_baseline_id":  "foundry_baseline_v0_0010",
+                    "new_baseline_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0010\\drift_baseline_foundry_baseline_v0_0010.json",
+                    "old_baseline_id":  "foundry_baseline_v0_0009",
+                    "scoped_files":  286,
+                    "policy_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\args\\configs\\drift_policy_foundry_v0.json",
+                    "exclude":  [
+                                    ".mypy_cache/**",
+                                    ".pytest_cache/**",
+                                    ".venv/**",
+                                    "__pycache__/**",
+                                    "args/data/**",
+                                    "baselines/**",
+                                    "dist/**",
+                                    "legacy_fin/**",
+                                    "out/**",
+                                    "runs/**"
+                                ],
+                    "old_baseline_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0009\\drift_baseline_foundry_baseline_v0_0009.json"
+                }
+}
