@@ -31,7 +31,7 @@ Set-Location -LiteralPath $repoPath
 
 $ts0 = UtcNowIso
 if ([string]::IsNullOrWhiteSpace($RunId)) { $RunId = "B07_NEG_" + (UtcNowId) }
-if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = ".\args\\data\\products\\cicd_release_pack_v0\\anti_bypass_negative_v1\$RunId" }
+if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = ".\args\\data\\products\\web_dashboard_v0\\anti_bypass_negative_v1\$RunId" }
 Ensure-Dir $OutDir
 $outDirFull = (Resolve-Path -LiteralPath $OutDir).Path
 $summaryPath = Join-Path $outDirFull "summary.json"
@@ -174,5 +174,6 @@ finally {
   Write-Output $json
   exit $finalRc
 }
+
 
 
