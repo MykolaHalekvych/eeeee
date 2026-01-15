@@ -202,8 +202,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
-
-    step = "init"
     inputs: dict[str, Any] = {}
     checks: dict[str, Any] = {}
     toolchain: dict[str, Any] = {}
@@ -212,7 +210,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     postcheck: dict[str, Any] = {}
 
     # Resolve build inputs (Mode A / Mode B)
-    step = "resolve_inputs"
     if args.workspace is None:
         if not args.product_id:
             raise ValueError("provide --product-id or --workspace")
@@ -265,7 +262,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     exe_path = out_dir / exe_name
 
     # Preflight checks
-    step = "preflight_checks"
     checks["py_compile"] = py_compile_tree(src_root)
     checks["ruff"] = run([sys.executable, "-m", "ruff", "check", str(src_root)])
 
@@ -290,7 +286,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         raise RuntimeError("python smoke failed; see evidence")
 
     # Toolchain
-    step = "toolchain"
     toolchain = {
         "python": sys.version.replace("\n", " "),
         "python_exe": sys.executable,
@@ -310,7 +305,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         pass
 
     # Build dirs
-    step = "pyinstaller_build"
     build_root = repo / "dist" / "_pyi_build"
     build_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -362,12 +356,10 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         raise FileNotFoundError(f"app.exe not found after build: {exe_path}")
 
     # Copy config
-    step = "copy_config"
     config_dst = out_dir / "config.example.json"
     shutil.copyfile(str(config_src), str(config_dst))
 
     # Postcheck
-    step = "postcheck"
     postcheck = run([str(exe_path), "--help"], cwd=out_dir)
     if postcheck["rc"] != 0:
         raise RuntimeError("built app.exe --help failed")
@@ -445,4 +437,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
