@@ -1,4 +1,4 @@
-﻿
+
 from __future__ import annotations
 
 import argparse
@@ -12,17 +12,40 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA = "build_exe_v0"
 
+RC_OK = 0
+RC_FAIL = 1
+RC_INFRA = 2
+
 
 # ---------------------------
-# Common helpers
+# Contract helpers
 # ---------------------------
 
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def safe_reason(x: Optional[str], fallback: str) -> str:
+    x = (x or "").strip()
+    return x if x else fallback
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text or "", encoding="utf-8", newline="\n")
+
+
+def write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -33,12 +56,16 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+def step_paths(out_dir: Path, step_id: str, name: str) -> Tuple[Path, Path, Path]:
+    base = f"step_{step_id}_{name}"
+    return (
+        out_dir / f"{base}.stdout.txt",
+        out_dir / f"{base}.stderr.txt",
+        out_dir / f"{base}.summary.json",
+    )
 
 
-def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> dict[str, Any]:
+def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     p = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -49,34 +76,52 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
     )
     return {
         "cmd": cmd,
+        "cwd": str(cwd) if cwd else None,
         "rc": int(p.returncode),
         "stdout": p.stdout or "",
         "stderr": p.stderr or "",
     }
 
 
-def emit_and_exit(payload: dict[str, Any], code: int) -> int:
-    payload["schema"] = payload.get("schema", SCHEMA)
-    payload["exit_code"] = int(code)
-    payload["ok"] = (int(code) == 0)
-    s = json.dumps(payload, ensure_ascii=False)
-    sys.stdout.write(s)
+def emit_json_stdout(payload: Dict[str, Any]) -> None:
+    # Contract: STDOUT = ровно 1 JSON line
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
-    return int(code)
 
 
-def py_compile_tree(root: Path) -> dict[str, Any]:
-    import py_compile
+def classify_exit_code(exc: Exception) -> int:
+    msg = str(exc)
+    infra_markers = [
+        "PyInstaller is not available",
+        "No module named",
+        "pip",
+        "ruff",
+    ]
+    if any(m in msg for m in infra_markers):
+        return RC_INFRA
+    if isinstance(exc, (FileNotFoundError, ValueError, RuntimeError)):
+        return RC_FAIL
+    return RC_INFRA
 
-    py_files = sorted(root.rglob("*.py"))
-    errors: list[dict[str, str]] = []
-    for f in py_files:
-        try:
-            py_compile.compile(str(f), doraise=True)
-        except Exception as e:  # noqa: BLE001
-            errors.append({"file": str(f), "error": repr(e)})
-    return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
 
+class _ArgParser(argparse.ArgumentParser):
+    # NonInteractive: не печатать help/usage в stdout
+    def print_help(self, file=None):  # noqa: ANN001
+        raise ValueError("BAD_ARGS_HELP")
+
+    def print_usage(self, file=None):  # noqa: ANN001
+        raise ValueError("BAD_ARGS_USAGE")
+
+    def error(self, message: str):  # noqa: ARG002
+        raise ValueError("BAD_ARGS_PARSE_ERROR")
+
+    def exit(self, status: int = 0, message: Optional[str] = None):  # noqa: ARG002
+        raise ValueError("BAD_ARGS_EXIT")
+
+
+# ---------------------------
+# Product manifest
+# ---------------------------
 
 @dataclass
 class Product:
@@ -105,7 +150,48 @@ def load_product(repo: Path, product_id: str) -> Product:
     )
 
 
-def build_runbook(exe_name: str) -> str:
+# ---------------------------
+# Checks
+# ---------------------------
+
+def py_compile_tree(root: Path) -> Dict[str, Any]:
+    import py_compile
+
+    py_files = sorted(root.rglob("*.py"))
+    errors: List[Dict[str, str]] = []
+    for f in py_files:
+        try:
+            py_compile.compile(str(f), doraise=True)
+        except Exception as e:  # noqa: BLE001
+            errors.append({"file": str(f), "error": repr(e)})
+    return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
+
+
+def build_runbook(product_id: str, exe_name: str, is_server: bool) -> str:
+    if is_server:
+        return f"""# Runbook (Release Pack v0) — Server Contract v0
+
+## Commands
+
+- Version:
+  - `{exe_name} version`
+
+- Selftest:
+  - `{exe_name} selftest`
+
+- Serve:
+  - `{exe_name} serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200`
+
+## Endpoints
+
+- Health: `GET /health`
+- Ready:  `GET /ready` (200 when ready, else 503)
+
+## Shutdown
+
+- Create stop flag file:
+  - `type nul > stop.flag`
+"""
     return f"""# Runbook (Release Pack v0)
 
 ## Run
@@ -125,7 +211,7 @@ def build_runbook(exe_name: str) -> str:
 """
 
 
-def build_evidence(
+def build_evidence_md(
     product_id: str,
     version: str,
     inputs: dict[str, Any],
@@ -135,8 +221,10 @@ def build_evidence(
     pyinstaller_res: dict[str, Any],
     postcheck: dict[str, Any],
 ) -> str:
+    # Acceptance gate expects these headings:
+    # ## Inputs / ## Toolchain / ## Preflight checks / ## Build (PyInstaller) / ## Post-build check
     def fence(s: str) -> str:
-        return "```\n" + s.rstrip() + "\n```\n"
+        return "```\n" + (s or "").rstrip() + "\n```\n"
 
     md: list[str] = []
     md.append("# Evidence (EXE Pack v0)\n")
@@ -170,49 +258,13 @@ def build_evidence(
     return "".join(md)
 
 
-def classify_exit_code(step: str, exc: Exception) -> int:
-    """
-    Project convention:
-    - 1 = FAIL (expected/semantic failure)
-    - 2 = INFRA (toolchain/unexpected)
-    """
-    # Missing tools / infra-ish
-    msg = str(exc)
-    infra_markers = [
-        "PyInstaller is not available",
-        "No module named",
-        "ruff",
-        "pip",
-    ]
-    if any(m in msg for m in infra_markers):
-        return 2
-    # Default: FAIL for product/workspace/config/entrypoint issues
-    if isinstance(exc, (FileNotFoundError, ValueError, RuntimeError)):
-        return 1
-    return 2
-
-
-def main_inner() -> Tuple[dict[str, Any], int]:
-    ap = argparse.ArgumentParser(description="Build Windows portable EXE for a product (EXE Pack v0)")
-    ap.add_argument("--repo", default=".", help="Repo root")
-    ap.add_argument("--product-id", required=False)
-    ap.add_argument("--out-dir", default=None, help="Override dist/<product_id>")
-    ap.add_argument("--workspace", default=None, help="Build directly from a workspace directory")
-    ap.add_argument("--entrypoint", default=None, help="Entrypoint relative to workspace (e.g., src/main.py)")
-    args = ap.parse_args()
-
+def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     repo = Path(args.repo).resolve()
-    inputs: dict[str, Any] = {}
-    checks: dict[str, Any] = {}
-    toolchain: dict[str, Any] = {}
-    pyinstaller_cmd: list[str] = []
-    pyinstaller_res: dict[str, Any] = {}
-    postcheck: dict[str, Any] = {}
 
-    # Resolve build inputs (Mode A / Mode B)
+    # Resolve inputs (Mode A / Mode B)
     if args.workspace is None:
         if not args.product_id:
-            raise ValueError("provide --product-id or --workspace")
+            raise ValueError("BAD_ARGS_MISSING_PRODUCT_ID_OR_WORKSPACE")
         product = load_product(repo, args.product_id)
         product_id = product.product_id
         version = product.version
@@ -220,7 +272,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         entry_script = (src_root / product.entrypoint).resolve()
         exe_name = product.exe_name
         config_src = src_root / "config.example.json"
-
         inputs = {
             "mode": "product_id",
             "product_id": product_id,
@@ -232,11 +283,11 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         if not ws.exists():
             raise FileNotFoundError(f"workspace not found: {ws}")
         if not args.entrypoint:
-            raise ValueError("--entrypoint is required when using --workspace")
+            raise ValueError("BAD_ARGS_WORKSPACE_REQUIRES_ENTRYPOINT")
 
         rel_ep = Path(args.entrypoint)
         entry_script = (ws / rel_ep).resolve()
-        entry_script.relative_to(ws)  # sanity: must be inside workspace
+        entry_script.relative_to(ws)  # must be inside workspace
         exe_name = "app.exe"
         product_id = args.product_id or "workspace_build"
         version = "0.0.0"
@@ -244,7 +295,6 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         if not config_src.exists():
             raise FileNotFoundError(f"config.example.json not found in workspace: {config_src}")
         src_root = ws
-
         inputs = {
             "mode": "workspace",
             "product_id": product_id,
@@ -258,44 +308,164 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     out_dir = Path(args.out_dir).resolve() if args.out_dir else (repo / "dist" / product_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    exe_base = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
-    exe_path = out_dir / exe_name
+    steps: List[Dict[str, Any]] = []
+    last_child_reason = "OK"
 
-    # Preflight checks
-    checks["py_compile"] = py_compile_tree(src_root)
-    checks["ruff"] = run([sys.executable, "-m", "ruff", "check", str(src_root)])
+    def add_step(s: Dict[str, Any]) -> None:
+        nonlocal last_child_reason
+        s["child_reason_code"] = safe_reason(s.get("child_reason_code"), "INFRA_CHILD_REASON_MISSING")
+        steps.append(s)
+        last_child_reason = s["child_reason_code"]
 
-    # Smoke (critical): ensure src-root importability
-    # We run with:
-    # - cwd = src_root
-    # - env PYTHONPATH includes src_root
+    # STEP 01: inputs
+    so, se, ss = step_paths(out_dir, "01", "inputs")
+    write_text(so, "")
+    write_text(se, "")
+    s1 = {
+        "id": "01_inputs",
+        "ok": True,
+        "exit_code": 0,
+        "reason_code": "OK",
+        "child_reason_code": "OK",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "inputs": inputs,
+    }
+    write_json(ss, s1)
+    add_step(s1)
+
+    # STEP 02: py_compile
+    so, se, ss = step_paths(out_dir, "02", "py_compile")
+    pc = py_compile_tree(src_root)
+    write_text(so, "")
+    write_text(se, "")
+    s2 = {
+        "id": "02_py_compile",
+        "ok": bool(pc.get("ok") is True),
+        "exit_code": 0 if pc.get("ok") is True else 1,
+        "reason_code": "OK" if pc.get("ok") is True else "FAIL_PY_COMPILE",
+        "child_reason_code": "OK" if pc.get("ok") is True else "FAIL_PY_COMPILE",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "py_compile": pc,
+    }
+    write_json(ss, s2)
+    add_step(s2)
+    if not s2["ok"]:
+        raise RuntimeError("FAIL_PY_COMPILE")
+
+    # STEP 03: ruff
+    so, se, ss = step_paths(out_dir, "03", "ruff")
+    ruff = run_cmd([sys.executable, "-m", "ruff", "check", str(src_root)])
+    write_text(so, ruff.get("stdout", ""))
+    write_text(se, ruff.get("stderr", ""))
+    s3 = {
+        "id": "03_ruff",
+        "ok": ruff["rc"] == 0,
+        "exit_code": 0 if ruff["rc"] == 0 else 1,
+        "reason_code": "OK" if ruff["rc"] == 0 else "FAIL_RUFF",
+        "child_reason_code": "OK" if ruff["rc"] == 0 else "FAIL_RUFF_RC",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "ruff": ruff,
+    }
+    write_json(ss, s3)
+    add_step(s3)
+    if not s3["ok"]:
+        raise RuntimeError("FAIL_RUFF")
+
+    # STEP 04: python smoke (try --help, fallback to version)
+    so, se, ss = step_paths(out_dir, "04", "python_smoke")
     env = os.environ.copy()
     pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(src_root) if not pp else (str(src_root) + os.pathsep + pp)
 
-    smoke_help = run([sys.executable, str(entry_script), "--help"], cwd=src_root, env=env)
-    checks["smoke"] = {"help": smoke_help, "cwd": str(src_root), "py_path": env["PYTHONPATH"]}
+    smoke_help = run_cmd([sys.executable, str(entry_script), "--help"], cwd=src_root, env=env)
+    smoke_ver: Optional[Dict[str, Any]] = None
+    chosen = "help"
+    ok = smoke_help["rc"] == 0
+    if not ok:
+        smoke_ver = run_cmd([sys.executable, str(entry_script), "version"], cwd=src_root, env=env)
+        chosen = "version"
+        ok = smoke_ver["rc"] == 0
 
-    # Write smoke evidence for fast debugging
-    write_text(out_dir / "python_smoke_help.stdout.txt", smoke_help.get("stdout", ""))
-    write_text(out_dir / "python_smoke_help.stderr.txt", smoke_help.get("stderr", ""))
+    out_txt = []
+    out_txt.append("== smoke_help ==\n")
+    out_txt.append(smoke_help.get("stdout", ""))
+    if smoke_ver is not None:
+        out_txt.append("\n== smoke_version ==\n")
+        out_txt.append(smoke_ver.get("stdout", ""))
+    err_txt = []
+    err_txt.append("== smoke_help ==\n")
+    err_txt.append(smoke_help.get("stderr", ""))
+    if smoke_ver is not None:
+        err_txt.append("\n== smoke_version ==\n")
+        err_txt.append(smoke_ver.get("stderr", ""))
 
-    if not checks["py_compile"]["ok"]:
-        raise RuntimeError("py_compile failed; see evidence")
-    if smoke_help["rc"] != 0:
-        raise RuntimeError("python smoke failed; see evidence")
+    write_text(so, "".join(out_txt))
+    write_text(se, "".join(err_txt))
+    smoke_obj = {
+        "chosen": chosen,
+        "help": smoke_help,
+        "version": smoke_ver,
+        "cwd": str(src_root),
+        "py_path": env["PYTHONPATH"],
+    }
+    s4 = {
+        "id": "04_python_smoke",
+        "ok": ok,
+        "exit_code": 0 if ok else 1,
+        "reason_code": "OK" if ok else "FAIL_PYTHON_SMOKE",
+        "child_reason_code": "OK" if ok else "FAIL_PYTHON_SMOKE_RC",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "smoke": smoke_obj,
+    }
+    write_json(ss, s4)
+    add_step(s4)
+    if not s4["ok"]:
+        raise RuntimeError("FAIL_PYTHON_SMOKE")
 
-    # Toolchain
+    # STEP 05: toolchain
+    so, se, ss = step_paths(out_dir, "05", "toolchain")
     toolchain = {
         "python": sys.version.replace("\n", " "),
         "python_exe": sys.executable,
         "platform": platform.platform(),
-        "pip": run([sys.executable, "-m", "pip", "--version"]),
-        "ruff": run([sys.executable, "-m", "ruff", "--version"]),
-        "pyinstaller": run([sys.executable, "-m", "PyInstaller", "--version"]),
+        "pip": run_cmd([sys.executable, "-m", "pip", "--version"]),
+        "ruff": run_cmd([sys.executable, "-m", "ruff", "--version"]),
+        "pyinstaller": run_cmd([sys.executable, "-m", "PyInstaller", "--version"]),
     }
-    if toolchain["pyinstaller"]["rc"] != 0:
+    write_text(so, json.dumps(toolchain, ensure_ascii=False, indent=2))
+    write_text(se, "")
+    ok_tc = toolchain["pyinstaller"]["rc"] == 0
+    s5 = {
+        "id": "05_toolchain",
+        "ok": ok_tc,
+        "exit_code": 0 if ok_tc else 2,
+        "reason_code": "OK" if ok_tc else "INFRA_PYINSTALLER_MISSING",
+        "child_reason_code": "OK" if ok_tc else "INFRA_PYINSTALLER_MISSING",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "toolchain": toolchain,
+    }
+    write_json(ss, s5)
+    add_step(s5)
+    if not s5["ok"]:
         raise RuntimeError("PyInstaller is not available. Run scripts/bootstrap_tools_v1.ps1 first.")
+
+    exe_base = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
+    exe_path = out_dir / exe_name
 
     # Clean old exe if exists
     try:
@@ -304,20 +474,18 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     except Exception:
         pass
 
-    # Build dirs
+    # STEP 06: PyInstaller build (FORCE CONSOLE)
     build_root = repo / "dist" / "_pyi_build"
     build_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     work_dir = build_root / f"{product_id}__{stamp}__work"
     spec_dir = build_root / f"{product_id}__{stamp}__spec"
 
-    # PyInstaller paths:
-    # - include src_root so imports like "src.*" work
-    # - also include entry_script.parent for direct module imports
     pyinstaller_cmd = [
         sys.executable,
         "-m",
         "PyInstaller",
+        "--console",
         "--noconfirm",
         "--clean",
         "--onefile",
@@ -336,12 +504,27 @@ def main_inner() -> Tuple[dict[str, Any], int]:
         str(entry_script),
     ]
 
-    pyinstaller_res = run(pyinstaller_cmd, cwd=src_root, env=env)
-    if pyinstaller_res["rc"] != 0:
-        # also persist pyinstaller logs quickly
-        write_text(out_dir / "pyinstaller.stdout.txt", pyinstaller_res.get("stdout", ""))
-        write_text(out_dir / "pyinstaller.stderr.txt", pyinstaller_res.get("stderr", ""))
-        raise RuntimeError("PyInstaller build failed; see evidence")
+    so, se, ss = step_paths(out_dir, "06", "pyinstaller")
+    pyinstaller_res = run_cmd(pyinstaller_cmd, cwd=src_root, env=env)
+    write_text(so, pyinstaller_res.get("stdout", ""))
+    write_text(se, pyinstaller_res.get("stderr", ""))
+    s6 = {
+        "id": "06_pyinstaller",
+        "ok": pyinstaller_res["rc"] == 0,
+        "exit_code": 0 if pyinstaller_res["rc"] == 0 else 1,
+        "reason_code": "OK" if pyinstaller_res["rc"] == 0 else "FAIL_PYINSTALLER",
+        "child_reason_code": "OK" if pyinstaller_res["rc"] == 0 else "FAIL_PYINSTALLER_RC",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "cmd": pyinstaller_cmd,
+        "pyinstaller": pyinstaller_res,
+    }
+    write_json(ss, s6)
+    add_step(s6)
+    if not s6["ok"]:
+        raise RuntimeError("FAIL_PYINSTALLER")
 
     candidate = out_dir / (exe_base + ".exe")
     if candidate.exists() and exe_path != candidate:
@@ -355,31 +538,84 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     if not exe_path.exists():
         raise FileNotFoundError(f"app.exe not found after build: {exe_path}")
 
-    # Copy config
+    # Copy config (best-effort)
     config_dst = out_dir / "config.example.json"
-    shutil.copyfile(str(config_src), str(config_dst))
+    if config_src.exists():
+        shutil.copyfile(str(config_src), str(config_dst))
+    else:
+        write_text(config_dst, "{}\n")
 
-    # Postcheck
-    postcheck = run([str(exe_path), "--help"], cwd=out_dir)
-    if postcheck["rc"] != 0:
-        raise RuntimeError("built app.exe --help failed")
+    # STEP 07: postcheck (try --help, fallback to version)
+    so, se, ss = step_paths(out_dir, "07", "postcheck")
+    post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir)
+    post_ver: Optional[Dict[str, Any]] = None
+    chosen = "help"
+    ok = post_help["rc"] == 0
+    if not ok:
+        post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir)
+        chosen = "version"
+        ok = post_ver["rc"] == 0
 
-    # Artifacts
+    out_txt = []
+    out_txt.append("== post_help ==\n")
+    out_txt.append(post_help.get("stdout", ""))
+    if post_ver is not None:
+        out_txt.append("\n== post_version ==\n")
+        out_txt.append(post_ver.get("stdout", ""))
+    err_txt = []
+    err_txt.append("== post_help ==\n")
+    err_txt.append(post_help.get("stderr", ""))
+    if post_ver is not None:
+        err_txt.append("\n== post_version ==\n")
+        err_txt.append(post_ver.get("stderr", ""))
+
+    write_text(so, "".join(out_txt))
+    write_text(se, "".join(err_txt))
+    postcheck_obj = {
+        "chosen": chosen,
+        "help": post_help,
+        "version": post_ver,
+    }
+    s7 = {
+        "id": "07_postcheck",
+        "ok": ok,
+        "exit_code": 0 if ok else 1,
+        "reason_code": "OK" if ok else "FAIL_POSTCHECK",
+        "child_reason_code": "OK" if ok else "FAIL_POSTCHECK_RC",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "postcheck": postcheck_obj,
+    }
+    write_json(ss, s7)
+    add_step(s7)
+    if not s7["ok"]:
+        raise RuntimeError("FAIL_POSTCHECK")
+
+    # STEP 08: artifacts (runbook/evidence/hashes)
+    is_server = ("web_dashboard" in product_id) or (str(entry_script).endswith("src/app.py"))
     runbook_path = out_dir / "runbook.md"
     evidence_path = out_dir / "evidence.md"
     hashes_path = out_dir / "hashes.json"
 
-    write_text(runbook_path, build_runbook(exe_name))
+    write_text(runbook_path, build_runbook(product_id, exe_name, is_server))
 
-    evidence_md = build_evidence(
+    checks_bundle = {
+        "py_compile": pc,
+        "ruff": ruff,
+        "smoke": smoke_obj,
+    }
+
+    evidence_md = build_evidence_md(
         product_id=product_id,
         version=version,
         inputs=inputs,
-        checks=checks,
+        checks=checks_bundle,
         toolchain=toolchain,
         pyinstaller_cmd=pyinstaller_cmd,
         pyinstaller_res=pyinstaller_res,
-        postcheck=postcheck,
+        postcheck=postcheck_obj,
     )
     write_text(evidence_path, evidence_md)
 
@@ -396,46 +632,105 @@ def main_inner() -> Tuple[dict[str, Any], int]:
     }
     write_text(hashes_path, json.dumps(hashes, indent=2, ensure_ascii=False) + "\n")
 
-    out = {
+    so, se, ss = step_paths(out_dir, "08", "artifacts")
+    write_text(so, "")
+    write_text(se, "")
+    artifacts = {
+        "app_exe": str(exe_path),
+        "config_example": str(config_dst),
+        "runbook": str(runbook_path),
+        "evidence": str(evidence_path),
+        "hashes": str(hashes_path),
+    }
+    s8 = {
+        "id": "08_artifacts",
+        "ok": True,
+        "exit_code": 0,
+        "reason_code": "OK",
+        "child_reason_code": "OK",
+        "ts_utc": utc_ts(),
+        "stdout_path": str(so),
+        "stderr_path": str(se),
+        "summary_path": str(ss),
+        "artifacts": artifacts,
+    }
+    write_json(ss, s8)
+    add_step(s8)
+
+    payload = {
         "schema": SCHEMA,
         "ts_utc": utc_ts(),
+        "ok": True,
+        "exit_code": RC_OK,
+        "reason_code": "OK",
+        "child_reason_code": safe_reason(last_child_reason, "OK"),
         "product_id": product_id,
         "version": version,
         "out_dir": str(out_dir),
-        "artifacts": {
-            "app_exe": str(exe_path),
-            "config_example": str(config_dst),
-            "runbook": str(runbook_path),
-            "evidence": str(evidence_path),
-            "hashes": str(hashes_path),
-            "smoke_help_stdout": str(out_dir / "python_smoke_help.stdout.txt"),
-            "smoke_help_stderr": str(out_dir / "python_smoke_help.stderr.txt"),
-        },
         "inputs": inputs,
-        "checks": checks,
+        "steps": steps,
+        "artifacts": artifacts,
     }
-    return out, 0
+    return payload, RC_OK, out_dir
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    ap = _ArgParser(description="Build Windows portable EXE for a product (EXE Pack v0)", add_help=False)
+    ap.add_argument("--repo", default=".", help="Repo root")
+    ap.add_argument("--product-id", required=False)
+    ap.add_argument("--out-dir", default=None, help="Override dist/<product_id>")
+    ap.add_argument("--workspace", default=None, help="Build directly from a workspace directory")
+    ap.add_argument("--entrypoint", default=None, help="Entrypoint relative to workspace (e.g., src/main.py)")
+
+    out_dir: Optional[Path] = None
     try:
-        payload, code = main_inner()
-        return emit_and_exit(payload, code)
-    except Exception as e:  # noqa: BLE001
-        # Best-effort minimal structured error
-        code = classify_exit_code("unhandled", e)
+        args = ap.parse_args(argv)
+        payload, code, out_dir = main_inner(args)
+
+        # Contract: summary.json
+        write_json(Path(payload["out_dir"]) / "summary.json", payload)
+
+        emit_json_stdout(payload)
+        return int(code)
+
+    except KeyboardInterrupt:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = out_dir or (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+        out_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": SCHEMA,
             "ts_utc": utc_ts(),
-            "error": {
-                "kind": e.__class__.__name__,
-                "message": str(e),
-            },
+            "ok": False,
+            "exit_code": RC_INFRA,
+            "reason_code": "FAIL",
+            "child_reason_code": "INFRA_KEYBOARD_INTERRUPT",
+            "out_dir": str(out_dir),
         }
-        return emit_and_exit(payload, code)
+        write_json(out_dir / "summary.json", payload)
+        emit_json_stdout(payload)
+        return RC_INFRA
+
+    except Exception as e:  # noqa: BLE001
+        code = classify_exit_code(e)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = out_dir or (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": SCHEMA,
+            "ts_utc": utc_ts(),
+            "ok": False,
+            "exit_code": int(code),
+            "reason_code": "FAIL",
+            "child_reason_code": safe_reason(str(e), "INFRA_EXCEPTION"),
+            "out_dir": str(out_dir),
+            "error": {"kind": e.__class__.__name__, "message": str(e)},
+        }
+        write_json(out_dir / "summary.json", payload)
+        emit_json_stdout(payload)
+        return int(code)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

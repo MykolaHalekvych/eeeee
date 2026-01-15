@@ -1,0 +1,8 @@
+[project]
+name = "fixture-repo-base"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+dependencies = [
+  "requests==2.31.0"
+]

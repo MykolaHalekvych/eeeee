@@ -1,19 +1,19 @@
-﻿{
-    "schema":  "product_manifest_v0",
-    "product_id":  "web_dashboard_v0",
-    "version":  "0.1.0",
-    "kind":  "windows_portable_exe",
-    "template_dir":  "templates/windows_cli_tool_v0",
-    "entrypoint":  "src/main.py",
-    "exe_name":  "app.exe",
-    "python_min":  "3.11",
-    "description":  "Minimal Windows CLI tool scaffold for EXE Pack v0 (PyInstaller onefile).",
-    "allowed_paths":  [
-                          "src/app.py",
-                          "src/cli.py",
-                          "src/canonical_json_v1.py",
-                          "tests/test_smoke.py",
-                          "config.example.json",
-                          ".gitignore"
-                      ]
+{
+  "schema": "product_manifest_v0",
+  "product_id": "web_dashboard_v0",
+  "version": "0.1.0",
+  "kind": "windows_portable_exe",
+  "template_dir": "templates/web_dashboard_v0",
+  "entrypoint": "src/app.py",
+  "exe_name": "app.exe",
+  "python_min": "3.11",
+  "description": "Web dashboard scaffold (Server Contract v0) for EXE Pack v0 (PyInstaller onefile).",
+  "allowed_paths": [
+    "src/app.py",
+    "src/cli.py",
+    "src/canonical_json_v1.py",
+    "tests/test_smoke.py",
+    "config.example.json",
+    ".gitignore"
+  ]
 }
