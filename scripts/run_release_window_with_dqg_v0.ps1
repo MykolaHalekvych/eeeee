@@ -53,7 +53,19 @@ try {
     $dqgReason = $s.reason_code
   }
 
-  # 2) Invoke inner ONLY if DQG PASS
+  # Placeholder guard: block obvious "<...>" args before invoking inner
+  if ($dqgRc -eq 0 -and $null -ne $InnerArgs -and $InnerArgs.Count -gt 0) {
+    $phBad = $false
+    foreach ($a in $InnerArgs) {
+      if ($a -is [string] -and ($a -match "[<>]")) { $phBad = $true }
+    }
+    if ($phBad) {
+      $dqgRc = 2
+      $dqgReason = "INFRA_PLACEHOLDER_ARGS"
+    }
+  }
+
+# 2) Invoke inner ONLY if DQG PASS
   $innerInvoked = $false
   $innerRc = $null
 

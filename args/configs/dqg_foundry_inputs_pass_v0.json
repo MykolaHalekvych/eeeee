@@ -1,0 +1,24 @@
+{
+  "schema": "dqg_request_v0",
+  "version": "0",
+  "run_id": "DQG_FOUNDRY_INPUTS_PASS",
+  "ts_utc": "2026-01-15T02:23:17Z",
+  "allowlist_roots": [
+    "args/configs/release_chain_v0",
+    "control_plane.json"
+  ],
+  "inputs": [
+    {
+      "path": "args/configs/release_chain_v0/guardian_extra_args_v0.json",
+      "kind": "dataset"
+    },
+    {
+      "path": "args/configs/release_chain_v0/governor_extra_args_v0.json",
+      "kind": "dataset"
+    },
+    {
+      "path": "control_plane.json",
+      "kind": "dataset"
+    }
+  ]
+}
