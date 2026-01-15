@@ -233,7 +233,7 @@ def build_evidence_md(
     return "".join(md)
 
 
-# Fallback (embedded) Server Contract v0 app.py (to break out of cache/template pack)
+# Fallback Server Contract v0 app.py (non-bypass)
 FALLBACK_WEB_DASHBOARD_APP_PY = """from __future__ import annotations
 
 import json
@@ -248,12 +248,42 @@ from urllib.parse import urlparse
 PRODUCT_ID = "web_dashboard_v0"
 VERSION = os.environ.get("WEB_DASHBOARD_V0_VERSION", "0.1.0")
 
+# marker used by overlay to ensure correct stdout implementation
+STDOUT_MODE = "win_writefile_or_oswrite_v1"
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+def _write_bytes(b: bytes) -> None:
+    # 1) Windows API (works even if sys.stdout is None/NullWriter)
+    try:
+        import ctypes
+        from ctypes import wintypes
+        h = ctypes.windll.kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        if h and h != -1:
+            written = wintypes.DWORD(0)
+            ctypes.windll.kernel32.WriteFile(h, b, len(b), ctypes.byref(written), None)
+            return
+    except Exception:
+        pass
+
+    # 2) POSIX-style fd write
+    try:
+        os.write(1, b)
+        return
+    except Exception:
+        pass
+
+    # 3) last resort
+    try:
+        sys.stdout.write(b.decode("utf-8", errors="replace"))
+        sys.stdout.flush()
+    except Exception:
+        pass
+
 def print_one_json(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\\n")
-    sys.stdout.flush()
+    b = (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\\n").encode("utf-8")
+    _write_bytes(b)
 
 def summary(schema: str, ok: bool, exit_code: int, reason_code: str, **extra) -> dict:
     return {
@@ -454,25 +484,22 @@ if __name__ == "__main__":
 def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, Any]:
     marker = "server_contract_v0"
     placeholder = "Placeholder dashboard entrypoint"
+    required = 'STDOUT_MODE = "win_writefile_or_oswrite_v1"'
 
     try:
         current = entry_script.read_text(encoding="utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reason_code": "INFRA_ENTRY_READ_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
 
-    needs = False
-    if product_id == "web_dashboard_v0":
-        needs = True
-    if placeholder in current:
-        needs = True
-    if marker in current and placeholder not in current:
-        return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
-    if not needs:
+    if product_id != "web_dashboard_v0":
         return {"ok": True, "reason_code": "OK", "action": "skip_not_target", "entrypoint": str(entry_script)}
 
-    # Overwrite from embedded fallback (non-bypass)
-    if marker not in FALLBACK_WEB_DASHBOARD_APP_PY:
-        return {"ok": False, "reason_code": "INFRA_FALLBACK_MISSING_MARKER", "entrypoint": str(entry_script)}
+    if (marker in current) and (placeholder not in current) and (required in current):
+        return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
+
+    # overwrite (non-bypass)
+    if (marker not in FALLBACK_WEB_DASHBOARD_APP_PY) or (required not in FALLBACK_WEB_DASHBOARD_APP_PY):
+        return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
 
     try:
         entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
@@ -641,15 +668,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         chosen = "version"
         ok = smoke_ver["rc"] == 0
 
+    smoke_obj = {"chosen": chosen, "help": smoke_help, "version": smoke_ver, "cwd": str(src_root), "py_path": env["PYTHONPATH"]}
     write_text(so, (smoke_help.get("stdout", "") or ""))
     write_text(se, (smoke_help.get("stderr", "") or ""))
-    smoke_obj = {
-        "chosen": chosen,
-        "help": smoke_help,
-        "version": smoke_ver,
-        "cwd": str(src_root),
-        "py_path": env["PYTHONPATH"],
-    }
     s4 = {
         "id": "04_python_smoke",
         "ok": ok,
@@ -777,28 +798,38 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     else:
         write_text(config_dst, "{}\n")
 
-    # STEP 07: postcheck
+    # STEP 07: postcheck (MUST have non-empty stdout for web_dashboard_v0 version)
     so, se, ss = step_paths(out_dir, "07", "postcheck")
     post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir)
-    write_text(so, post_help.get("stdout", ""))
-    write_text(se, post_help.get("stderr", ""))
-    ok_post = post_help["rc"] == 0
+    post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir)
+    write_text(so, (post_help.get("stdout", "") or "") + "\n---\n" + (post_ver.get("stdout", "") or ""))
+    write_text(se, (post_help.get("stderr", "") or "") + "\n---\n" + (post_ver.get("stderr", "") or ""))
+
+    ok_help = post_help["rc"] == 0
+    ok_ver_stdout = True
+    ver_reason = "OK"
+    if product_id == "web_dashboard_v0":
+        ok_ver_stdout = (post_ver["rc"] == 0) and (len((post_ver.get("stdout") or "").strip()) > 0)
+        if not ok_ver_stdout:
+            ver_reason = "FAIL_POSTCHECK_VERSION_STDOUT_EMPTY"
+
+    ok_post = ok_help and ok_ver_stdout
     s7 = {
         "id": "07_postcheck",
         "ok": ok_post,
         "exit_code": 0 if ok_post else 1,
         "reason_code": "OK" if ok_post else "FAIL_POSTCHECK",
-        "child_reason_code": "OK" if ok_post else "FAIL_POSTCHECK_RC",
+        "child_reason_code": "OK" if ok_post else (ver_reason if not ok_ver_stdout else "FAIL_POSTCHECK_HELP"),
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
         "summary_path": str(ss),
-        "postcheck": {"help": post_help},
+        "postcheck": {"help": post_help, "version": post_ver},
     }
     write_json(ss, s7)
     add_step(s7)
     if not s7["ok"]:
-        raise RuntimeError("FAIL_POSTCHECK")
+        raise RuntimeError(s7["child_reason_code"])
 
     # STEP 08: artifacts
     is_server = product_id == "web_dashboard_v0"
@@ -820,7 +851,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         toolchain=toolchain,
         pyinstaller_cmd=pyinstaller_cmd,
         pyinstaller_res=pyinstaller_res,
-        postcheck={"help": post_help},
+        postcheck={"help": post_help, "version": post_ver},
     )
     write_text(evidence_path, evidence_md)
 

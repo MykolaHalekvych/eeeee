@@ -1,0 +1,20 @@
+{
+    "schema":  "drift_baseline_refresh_foundry_v0",
+    "ok":  true,
+    "exit_code":  0,
+    "reason_code":  "OK",
+    "ts_utc":  "2026-01-15T04:51:17Z",
+    "repo_root":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+    "policy_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\args\\configs\\drift_policy_foundry_v0.json",
+    "baselines_root":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift",
+    "out_dir":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0005",
+    "details":  {
+                    "tracked_files":  450,
+                    "new_baseline_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0005\\drift_baseline_foundry_baseline_v0_0005.json",
+                    "old_baseline_id":  "foundry_baseline_v0_0004",
+                    "hashed_files":  450,
+                    "old_baseline_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\baselines\\drift\\foundry_baseline_v0_0004\\drift_baseline_foundry_baseline_v0_0004.json",
+                    "new_baseline_id":  "foundry_baseline_v0_0005",
+                    "policy_path":  "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\args\\configs\\drift_policy_foundry_v0.json"
+                }
+}
