@@ -1,0 +1,17 @@
+﻿{
+  "schema": "llm_job_request_v0",
+  "inputs": {
+    "task": "Generate proposals and an optional patch_payload that stays within allowed_paths_ref.",
+    "context_ref": "args/llm/fixtures/context_sample_v0.txt"
+  },
+  "allowed_paths_ref": "args/llm/fixtures/allowed_paths_sample_v0.json",
+  "prompt_ref": "args/llm/fixtures/prompt_sample_v0.txt",
+  "constraints": {
+    "max_patch_files": 5,
+    "max_total_chars": 200000,
+    "max_string_chars": 50000,
+    "forbid_network": true,
+    "forbid_execute": true
+  },
+  "run_id": "LLM_JOB_EXAMPLE_00000000T000000Z_00000000"
+}

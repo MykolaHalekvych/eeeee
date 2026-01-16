@@ -1,0 +1,2 @@
+﻿P2 LLM proposal-layer v0 (OFFLINE stub).
+This prompt is a fixture used by the proof pack.

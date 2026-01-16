@@ -1,0 +1,1 @@
+﻿Context fixture. No secrets. No network. Deterministic only.

@@ -3,7 +3,12 @@
   [string]$Python = "py -3.11",
   [string]$ControlPlane = "control_plane.json",
   [string]$Product = "cicd_release_pack_v0",
-  [string]$Factory = "local"
+  [string]$Factory = "local",
+
+  # --- Control non-bypass token (MUST be provided by Control) ---
+  [string]$ControlTokenPath = "",
+  [string]$ControlRunId = "",
+  [string]$ControlJobType = "FOUNDRY_BUILD_WINDOW_V1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,11 +69,10 @@ function RunsInit {
     "--control-plane",$ControlPlanePath
   )
 
-# DRIFT_GUARD: fail-closed drift gate (Foundry)
-$__drift_gate_run = "DRIFT_PRE_" + ([DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ"))
-powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "gate_drift_foundry_v0.ps1") -RunId $__drift_gate_run | Out-Host
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
+  # DRIFT_GUARD: fail-closed drift gate (Foundry)
+  $__drift_gate_run = "DRIFT_PRE_" + ([DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ"))
+  powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "gate_drift_foundry_v0.ps1") -RunId $__drift_gate_run | Out-Host
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   return @{
     ok=$true
@@ -168,6 +172,64 @@ $repoPath = (Resolve-Path -LiteralPath $Repo).Path
 Set-Location -LiteralPath $repoPath
 
 $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
+# ----------------------------
+# CONTROL NON-BYPASS TOKEN CHECK (DENY EARLY)
+# Must run BEFORE any drift/guards/build work.
+# ----------------------------
+
+function _ControlTokenDeny([string]$reason, [string]$detail) {
+  EmitJsonAndExit @{
+    schema="factory_build_window_m8_v1";
+    ok=$false;
+    ts_utc=$ts;
+    repo=$repoPath;
+    product=$Product;
+    factory=$Factory;
+    control_plane=$ControlPlane;
+    error=$reason;
+    detail=$detail;
+    control_token_path=$ControlTokenPath;
+    control_run_id=$ControlRunId;
+    control_job_type=$ControlJobType;
+  } 1
+}
+
+$expectedJobType = "FOUNDRY_BUILD_WINDOW_V1"
+if ([string]::IsNullOrWhiteSpace($ControlJobType)) { $ControlJobType = $expectedJobType }
+if ($ControlJobType -ne $expectedJobType) {
+  _ControlTokenDeny "CONTROL_TOKEN.JOB_TYPE_UNEXPECTED" ("expected=" + $expectedJobType + "; got=" + $ControlJobType)
+}
+
+if ([string]::IsNullOrWhiteSpace($ControlTokenPath)) {
+  _ControlTokenDeny "CONTROL_TOKEN.MISSING" "ControlTokenPath empty"
+}
+if ([string]::IsNullOrWhiteSpace($ControlRunId)) {
+  _ControlTokenDeny "CONTROL_TOKEN.RUN_ID_MISSING" "ControlRunId empty"
+}
+if (-not (Test-Path -LiteralPath $ControlTokenPath)) {
+  _ControlTokenDeny "CONTROL_TOKEN.MISSING" ("token not found: " + $ControlTokenPath)
+}
+
+$tok = $null
+try {
+  $tok = Get-Content -LiteralPath $ControlTokenPath -Raw -ErrorAction Stop | ConvertFrom-Json
+} catch {
+  _ControlTokenDeny "CONTROL_TOKEN.BAD_JSON" $_.Exception.Message
+}
+
+if ($tok.schema -ne "control_token_v0") {
+  _ControlTokenDeny "CONTROL_TOKEN.SCHEMA_MISMATCH" ("schema=" + [string]$tok.schema)
+}
+if ($tok.run_id -ne $ControlRunId) {
+  _ControlTokenDeny "CONTROL_TOKEN.RUN_ID_MISMATCH" ("token.run_id=" + [string]$tok.run_id + "; expected=" + $ControlRunId)
+}
+if ($tok.job_type -ne $ControlJobType) {
+  _ControlTokenDeny "CONTROL_TOKEN.JOB_TYPE_MISMATCH" ("token.job_type=" + [string]$tok.job_type + "; expected=" + $ControlJobType)
+}
+if (-not ([string]$tok.nonce -match '^[a-f0-9]{16,64}$')) {
+  _ControlTokenDeny "CONTROL_TOKEN.NONCE_INVALID" ("nonce=" + [string]$tok.nonce)
+}
 
 # --- Guards ---
 if (-not (Test-Path -LiteralPath ".\.args_engine_repo")) {

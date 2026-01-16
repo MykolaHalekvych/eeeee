@@ -1,0 +1,26 @@
+﻿{
+  "schema": "llm_job_result_v0",
+  "ok": true,
+  "proposals": [
+    {
+      "kind": "TEXT",
+      "text": "Example: propose a minimal change set and include an optional patch_payload."
+    }
+  ],
+  "patch_payload": {
+    "format": "patch_payload_v0",
+    "changes": [
+      {
+        "path": "args/llm/fixtures/stub_patch_target.txt",
+        "op": "write",
+        "content": "STUB_PATCH_LINE\n"
+      }
+    ]
+  },
+  "diagnostics": {
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "notes": "example"
+  },
+  "model_id": "stub_v0"
+}

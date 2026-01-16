@@ -1,0 +1,6 @@
+﻿{
+  "schema": "allowed_paths_ref_v0",
+  "allowed_paths": [
+    "args/llm/fixtures/stub_patch_target.txt"
+  ]
+}
