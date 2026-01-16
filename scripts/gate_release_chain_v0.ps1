@@ -67,27 +67,6 @@ function Build-ArgList([string]$ScriptPath, [hashtable]$ArgHash) {
   return $alist
 }
 
-function Find-RequestInTargetDir([string]$TargetRunDir) {
-  if (-not (Test-Path $TargetRunDir)) { return "" }
-
-  $candidates = @()
-
-  $p1 = Get-ChildItem $TargetRunDir -Recurse -File -Filter "job_request_v1.json" -ErrorAction SilentlyContinue
-  if ($p1) { $candidates += $p1 }
-
-  $p2 = Get-ChildItem $TargetRunDir -Recurse -File -Filter "job_request*.json" -ErrorAction SilentlyContinue
-  if ($p2) { $candidates += $p2 }
-
-  $p3 = Get-ChildItem $TargetRunDir -Recurse -File -Filter "*request*.json" -ErrorAction SilentlyContinue
-  if ($p3) { $candidates += $p3 }
-
-  if (-not $candidates -or $candidates.Count -eq 0) { return "" }
-
-  # Prefer shortest path (usually the intended top-level request artifact)
-  $best = $candidates | Sort-Object { $_.FullName.Length } | Select-Object -First 1
-  return $best.FullName
-}
-
 function Invoke-ChildGate(
   [string]$StepName,
   [string]$ScriptName,
@@ -151,6 +130,96 @@ function Invoke-ChildGate(
   }
 }
 
+function Resolve-GuardianRequestPath(
+  [string]$TargetRunDir,
+  [string]$OverridePath,
+  [string]$GuardianExtraArgsJsonPath,
+  [string]$RunId,
+  [string]$RepoRoot
+) {
+  # 1) explicit override
+  if (-not [string]::IsNullOrWhiteSpace($OverridePath)) {
+    $p = $OverridePath
+    if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $RepoRoot $p }
+    $p = To-FullPath $p
+    if (-not (Test-Path $p)) { throw "GuardianRequestPath not found: $p" }
+    return $p
+  }
+
+  # 2) prefer target-local guardian_request_v0.json
+  $local = Join-Path $TargetRunDir "guardian_request_v0.json"
+  if (Test-Path $local) { return $local }
+
+  # 3) try to generate guardian_request_v0.json using PolicyPath from GuardianExtraArgsJson
+  $extra = @{}
+  try { $extra = Load-ExtraArgs $GuardianExtraArgsJsonPath } catch { return "" }
+
+  if (-not $extra.ContainsKey("PolicyPath")) { return "" }
+  $policyArg = [string]$extra["PolicyPath"]
+  if ([string]::IsNullOrWhiteSpace($policyArg)) { return "" }
+
+  $policyFull = $policyArg
+  if (-not [System.IO.Path]::IsPathRooted($policyFull)) { $policyFull = Join-Path $RepoRoot $policyFull }
+  $policyFull = To-FullPath $policyFull
+  if (-not (Test-Path $policyFull)) { return "" }
+
+  $pobj = Read-JsonOrNull $policyFull
+  if ($null -eq $pobj) { return "" }
+
+  $actor = "operator"
+  if ($pobj.PSObject.Properties.Name -contains "allowlist_actors") {
+    if ($pobj.allowlist_actors -and $pobj.allowlist_actors.Count -gt 0) { $actor = [string]$pobj.allowlist_actors[0] }
+  }
+
+  $action = "guardian.selftest"
+  if ($pobj.PSObject.Properties.Name -contains "allowlist_actions") {
+    if ($pobj.allowlist_actions -and $pobj.allowlist_actions.Count -gt 0) { $action = [string]$pobj.allowlist_actions[0] }
+  }
+
+  $policyDir = Split-Path -Parent $policyFull
+  $exampleReqPath = Join-Path $policyDir "request.json"
+  $ex = Read-JsonOrNull $exampleReqPath
+
+  # build request (prefer example fields if present)
+  $ts = UtcNowIso
+  $reqId = ("req_" + $RunId)
+
+  $targetObj = $null
+  if ($null -ne $ex -and ($ex.PSObject.Properties.Name -contains "target")) { $targetObj = $ex.target }
+  if ($null -eq $targetObj) { $targetObj = [ordered]@{ type = "path"; path = $RepoRoot } }
+
+  $reasonObj = "foundry chain gate"
+  if ($null -ne $ex -and ($ex.PSObject.Properties.Name -contains "reason")) { $reasonObj = $ex.reason }
+
+  $constraintsObj = [ordered]@{ dryrun = $true; timeout_s = 30; max_items = 10 }
+  if ($null -ne $ex -and ($ex.PSObject.Properties.Name -contains "constraints")) { $constraintsObj = $ex.constraints }
+
+  $contextObj = [ordered]@{ repo = "ARGS-Engine-Foundry-v0"; env = "local" }
+  if ($null -ne $ex -and ($ex.PSObject.Properties.Name -contains "context")) { $contextObj = $ex.context }
+
+  $bundleRef = Read-JsonOrNull (Join-Path $TargetRunDir "bundle_ref.json")
+
+  $req = [ordered]@{
+    schema      = "guardian_request_v0"
+    request_id  = $reqId
+    ts_utc      = $ts
+    actor       = $actor
+    action      = $action
+    target      = $targetObj
+    reason      = $reasonObj
+    constraints = $constraintsObj
+    context     = $contextObj
+  }
+
+  if ($null -ne $bundleRef) {
+    if ($bundleRef.PSObject.Properties.Name -contains "bundle_zip")    { $req["bundle_zip"]    = $bundleRef.bundle_zip }
+    if ($bundleRef.PSObject.Properties.Name -contains "bundle_hashes") { $req["bundle_hashes"] = $bundleRef.bundle_hashes }
+  }
+
+  $req | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $local
+  return $local
+}
+
 $OutDirFull = To-FullPath $OutDir
 Ensure-Dir $OutDirFull
 $summaryPath = Join-Path $OutDirFull "summary.json"
@@ -160,11 +229,11 @@ $smokeRoot = Join-Path $repoRoot "args\data\smoke\build_release_no_llm_smoke_v0"
 $targetRunDir = Join-Path $smokeRoot $TargetRunId
 
 try {
-  # Resolve guardian request path (auto)
-  $resolvedGuardianRequest = $GuardianRequestPath
-  if ([string]::IsNullOrWhiteSpace($resolvedGuardianRequest)) {
-    $resolvedGuardianRequest = Find-RequestInTargetDir $targetRunDir
-  }
+  # Resolve guardian request path:
+  # - prefer explicit override
+  # - else prefer target-local guardian_request_v0.json
+  # - else try generate from PolicyPath in GuardianExtraArgsJson
+  $resolvedGuardianRequest = Resolve-GuardianRequestPath $targetRunDir $GuardianRequestPath $GuardianExtraArgsJson $RunId $repoRoot
 
   $steps = @()
 
