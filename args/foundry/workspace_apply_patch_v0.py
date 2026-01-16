@@ -26,8 +26,10 @@ def utc_ts() -> str:
 def safe_rel(p: Any) -> Path:
     if not isinstance(p, str) or not p:
         raise ValueError("path must be non-empty string")
-    if "\\" in p:
-        raise ValueError("backslashes not allowed in patch paths")
+
+    # Normalize Windows separators to canonical forward slashes.
+    p = p.replace("\\", "/")
+
     if p.startswith("/") or p.startswith("~") or ":" in p:
         raise ValueError("absolute paths not allowed")
     parts = p.split("/")
@@ -143,6 +145,7 @@ def main() -> int:
     # State carried into error reports when possible
     kit_id = ""
     allowed_paths: list[str] | None = None
+    allowed_paths_norm: set[str] | None = None
     template_source: dict = {"kind": "unknown", "path": ""}
     template_root: Path | None = None
     ws_root: Path | None = None
@@ -174,6 +177,12 @@ def main() -> int:
                 raise ValueError("job_request.allowed_paths must be an array of strings")
             allowed_paths = apaths
 
+            allowed_paths_norm = set()
+            for x in apaths:
+                y = x.replace('\\', '/')
+                if y.startswith('./'):
+                    y = y[2:]
+                allowed_paths_norm.add(y)
         append_event(events_path, run_id, "loaded_job_request", {"kit_id": kit_id, "allowed_paths": allowed_paths is not None})
 
         # Resolve template source (P4)
@@ -233,7 +242,7 @@ def main() -> int:
             rel = safe_rel(op.get("path"))
             rel_s = rel.as_posix()
 
-            if allowed_paths is not None and rel_s not in allowed_paths:
+            if allowed_paths_norm is not None and rel_s not in allowed_paths_norm:
                 blocked.append(rel_s)
                 continue
 

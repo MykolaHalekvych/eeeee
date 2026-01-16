@@ -64,6 +64,27 @@
       "requirements_default": {
         "summary": "Create a minimal dashboard scaffold (stdlib-only). Provide CLI commands: ping/selftest/version. The dashboard entrypoint is src/app.py (placeholder)."
       }
+    },
+    {
+      "kit_id": "kit_cicd_release_pack_v0",
+      "default_product_id": "cicd_release_pack_v0",
+      "workspace": "templates\\cicd_release_pack_v0",
+      "allowed_paths": [
+        "src/cli.py",
+        "src/main.py",
+        "src/canonical_json_v1.py",
+        "src/product_manifest_v1.py",
+        "src/sample_product_manifest_v1.json",
+        "tests/test_manifest_v1.py",
+        "tests/test_smoke.py",
+        "config.example.json",
+        ".gitignore",
+        "templates\\cicd_release_pack_v0",
+        "manifests\\products\\cicd_release_pack_v0.json"
+      ],
+      "requirements_default": {
+        "summary": "Extend existing CLI: keep hello/version/hash; ensure ping/selftest/manifest validate exist; stdlib-only; deterministic selftest that works inside PyInstaller EXE."
+      }
     }
   ]
 }

@@ -302,6 +302,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -319,6 +320,19 @@ STDOUT_MODE = "win_writefile_or_oswrite_v2"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _precheck_port_in_use(host: str, port: int) -> bool:
+    # Deterministic NEG bind (Windows): if port already LISTENING -> fail fast before attempting bind.
+    test_host = host
+    # connect() cannot target 0.0.0.0/::, use loopback for precheck
+    if test_host in ("0.0.0.0", "::"):
+        test_host = "127.0.0.1"
+    try:
+        with socket.create_connection((test_host, int(port)), timeout=0.25):
+            return True
+    except OSError:
+        return False
 
 
 def _win_writefile_stdout(data: bytes) -> bool:
@@ -568,6 +582,21 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
         emit_one_json(summary("server_contract_v0.startup", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="PORT_RANGE"))
         return 1
 
+    if _precheck_port_in_use(host, port):
+        emit_one_json(
+            summary(
+                "server_contract_v0.startup",
+                False,
+                2,
+                "INFRA_BIND_FAILED",
+                "INFRA_BIND_FAILED",
+                host=host,
+                port=port,
+                detail="PRECHECK_PORT_IN_USE",
+            )
+        )
+        return 2
+
     state = _State()
     handler = make_handler(state)
 
@@ -621,7 +650,6 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
     except Exception:
         pass
 
-    # Exactly one JSON line on startup
     emit_one_json(
         summary(
             "server_contract_v0.startup",
@@ -694,32 +722,12 @@ def main(argv: list[str] | None = None) -> int:
                 i += 2
                 continue
 
-            emit_one_json(
-                summary(
-                    "server_contract_v0.cli",
-                    False,
-                    1,
-                    "FAIL_BAD_ARGS",
-                    "FAIL_BAD_ARGS",
-                    detail="UNKNOWN_FLAG",
-                    flag=a,
-                )
-            )
+            emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_FLAG", flag=a))
             return 1
 
         return cmd_serve(host, port, stop_flag, ready_after_ms)
 
-    emit_one_json(
-        summary(
-            "server_contract_v0.cli",
-            False,
-            1,
-            "FAIL_BAD_ARGS",
-            "FAIL_BAD_ARGS",
-            detail="UNKNOWN_COMMAND",
-            command=cmd,
-        )
-    )
+    emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_COMMAND", command=cmd))
     return 1
 
 

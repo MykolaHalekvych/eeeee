@@ -1,46 +1,65 @@
-from __future__ import annotations
-
+﻿from pathlib import Path
 import sys
-from pathlib import Path
-
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
-    build_exe = repo / "args" / "foundry" / "build_exe_v0.py"
-    template_app = repo / "templates" / "web_dashboard_v0" / "src" / "app.py"
+    template_path = repo / "templates" / "web_dashboard_v0" / "src" / "app.py"
+    build_exe_path = repo / "args" / "foundry" / "build_exe_v0.py"
 
-    src = build_exe.read_text(encoding="utf-8").replace("\r\n", "\n")
-    app = template_app.read_text(encoding="utf-8").replace("\r\n", "\n").rstrip("\n") + "\n"
-
-    required = 'STDOUT_MODE = "win_writefile_or_oswrite_v2"'
-    if required not in app:
-        print("FAIL: required STDOUT_MODE line missing in template app.py")
+    if not template_path.exists():
+        print(f"FAIL: template not found: {template_path}")
+        return 1
+    if not build_exe_path.exists():
+        print(f"FAIL: build_exe not found: {build_exe_path}")
         return 1
 
-    key = "FALLBACK_WEB_DASHBOARD_APP_PY"
-    k = src.find(key)
-    if k < 0:
-        print("FAIL: FALLBACK_WEB_DASHBOARD_APP_PY not found")
+    tpl = template_path.read_text(encoding="utf-8")
+    if '"""' in tpl or "'''" in tpl:
+        print("FAIL: template contains triple quotes (docstrings). Remove them first.")
+        return 1
+    if not tpl.endswith("\n"):
+        tpl += "\n"
+
+    text = build_exe_path.read_text(encoding="utf-8")
+
+    start_pat = 'FALLBACK_WEB_DASHBOARD_APP_PY = r"""'
+    start_idx = text.find(start_pat)
+    if start_idx < 0:
+        print("FAIL: start marker not found in build_exe_v0.py")
         return 1
 
-    open_q = src.find('"""', k)
-    if open_q < 0:
-        print("FAIL: opening triple-quote not found")
+    start_line_end = text.find("\n", start_idx)
+    if start_line_end < 0:
+        print("FAIL: start marker line has no newline")
         return 1
+    start_line_end += 1
 
-    open_end = open_q + 3
-    close_q = src.find('"""', open_end)
-    if close_q < 0:
-        print("FAIL: closing triple-quote not found")
-        return 1
+    # Preferred: close triple quotes then blank line then def ensure_entrypoint_overlay
+    end_pat = '"""\n\n\ndef ensure_entrypoint_overlay'
+    end_idx = text.find(end_pat, start_line_end)
 
-    new_inner = "\n" + app.rstrip("\n") + "\n"
-    out = src[:open_end] + new_inner + src[close_q:]
+    if end_idx < 0:
+        # Fallback: locate def, then search backward for the last '\n"""' before it
+        def_pat = "\ndef ensure_entrypoint_overlay"
+        def_idx = text.find(def_pat, start_line_end)
+        if def_idx < 0:
+            print("FAIL: cannot locate ensure_entrypoint_overlay")
+            return 1
 
-    build_exe.write_text(out, encoding="utf-8")
+        end_idx = text.rfind('\n"""', start_line_end, def_idx)
+        if end_idx < 0:
+            print("FAIL: cannot locate closing triple quotes before ensure_entrypoint_overlay")
+            return 1
+        end_idx = end_idx + 1  # point at first quote
+
+    prefix = text[:start_line_end]
+    suffix = text[end_idx:]
+
+    new_text = prefix + tpl + suffix
+    build_exe_path.write_text(new_text, encoding="utf-8", newline="\n")
+
     print("OK: fallback synced")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

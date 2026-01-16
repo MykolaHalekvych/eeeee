@@ -59,7 +59,6 @@ function Normalize-Scalar([object]$v) {
   if ($null -eq $v) { return $null }
   if ($v -is [string]) { return $v.Trim() }
 
-  # If it is an array/list, join with |
   if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
     $items = @()
     foreach ($x in $v) {
@@ -76,16 +75,16 @@ function Normalize-Scalar([object]$v) {
 }
 
 # Make absolute paths so GuardianRepo cwd doesn't break them
-$OutDirAbs    = AbsPath $OutDir $foundryRoot
-$RequestAbs   = AbsPath $RequestPath $foundryRoot
-$PolicyAbs    = AbsPath $PolicyPath $foundryRoot
+$OutDirAbs  = AbsPath $OutDir $foundryRoot
+$RequestAbs = AbsPath $RequestPath $foundryRoot
+$PolicyAbs  = AbsPath $PolicyPath $foundryRoot
 
 Ensure-Dir $OutDirAbs
 
-$stdoutPath     = Join-Path $OutDirAbs "guardian_check.stdout.txt"
-$stderrPath     = Join-Path $OutDirAbs "guardian_check.stderr.txt"
-$summaryPath    = Join-Path $OutDirAbs "summary.json"
-$childJsonPath  = Join-Path $OutDirAbs "guardian_child_extracted.json"
+$stdoutPath    = Join-Path $OutDirAbs "guardian_check.stdout.txt"
+$stderrPath    = Join-Path $OutDirAbs "guardian_check.stderr.txt"
+$summaryPath   = Join-Path $OutDirAbs "summary.json"
+$childJsonPath = Join-Path $OutDirAbs "guardian_child_extracted.json"
 
 # Best-effort: read request schema for debugging
 $request_schema = $null
@@ -140,9 +139,16 @@ try {
 
     $child_schema = $null
     $child_reason = $null
+    $child_out_dir_val = $null
+    $child_json_path_val = $null
+
     if ($null -ne $child) {
       $child_schema = Normalize-Scalar $child.schema
       $child_reason = Normalize-Scalar $child.reason_code
+      $child_out_dir_val = Normalize-Scalar $child.out_dir
+    }
+    if ($child_json) {
+      $child_json_path_val = $childJsonPath
     }
 
     # If no child reason, fall back to base
@@ -196,8 +202,8 @@ try {
 
       parsed_ok         = $parsed_ok
       child_schema      = $child_schema
-      child_out_dir     = (if ($null -ne $child) { Normalize-Scalar $child.out_dir } else { $null })
-      child_json_path   = (if ($child_json) { $childJsonPath } else { $null })
+      child_out_dir     = $child_out_dir_val
+      child_json_path   = $child_json_path_val
 
       expected_schema   = $expected_schema
       got_schema        = $got_schema
@@ -213,15 +219,17 @@ try {
 
 } catch {
   $summary = [ordered]@{
-    schema    = "gate_guardian_v0"
-    ts_utc    = $ts
-    ok        = $false
-    exit_code = 2
-    reason_code = "INFRA_GUARDIAN|INFRA_EXCEPTION"
+    schema            = "gate_guardian_v0"
+    ts_utc            = $ts
+    ok                = $false
+    exit_code         = 2
+    reason_code       = "INFRA_GUARDIAN|INFRA_EXCEPTION"
     child_reason_code = "INFRA_EXCEPTION"
-    run_id    = $RunId
-    error     = $_.Exception.Message
-    out_dir   = $OutDirAbs
+    run_id            = $RunId
+    error             = $_.Exception.Message
+    out_dir           = $OutDirAbs
+    request_path      = $RequestAbs
+    policy_path       = $PolicyAbs
   }
   Write-JsonFile $summaryPath $summary
   Write-Json $summary
