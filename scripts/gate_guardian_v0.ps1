@@ -20,6 +20,61 @@ function AbsPath([string]$p, [string]$base) {
   return (Join-Path $base $p)
 }
 
+function Extract-FirstJsonObject([string]$text) {
+  if ($null -eq $text) { return $null }
+  $start = $text.IndexOf('{')
+  if ($start -lt 0) { return $null }
+
+  $depth = 0
+  $inString = $false
+  $escape = $false
+
+  for ($i = $start; $i -lt $text.Length; $i++) {
+    $ch = $text[$i]
+
+    if ($escape) { $escape = $false; continue }
+
+    if ($inString) {
+      if ($ch -eq '\') { $escape = $true; continue }
+      if ($ch -eq '"') { $inString = $false; continue }
+      continue
+    }
+
+    if ($ch -eq '"') { $inString = $true; continue }
+
+    if ($ch -eq '{') { $depth++; continue }
+    if ($ch -eq '}') {
+      $depth--
+      if ($depth -eq 0) {
+        return $text.Substring($start, $i - $start + 1)
+      }
+      continue
+    }
+  }
+
+  return $null
+}
+
+function Normalize-Scalar([object]$v) {
+  if ($null -eq $v) { return $null }
+  if ($v -is [string]) { return $v.Trim() }
+
+  # If it is an array/list, join with |
+  if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+    $items = @()
+    foreach ($x in $v) {
+      if ($null -ne $x) {
+        $s = ([string]$x).Trim()
+        if ($s.Length -gt 0) { $items += $s }
+      }
+    }
+    if ($items.Count -gt 0) { return ($items -join "|") }
+    return $null
+  }
+
+  return ([string]$v).Trim()
+}
+
 # Make absolute paths so GuardianRepo cwd doesn't break them
 $OutDirAbs    = AbsPath $OutDir $foundryRoot
 $RequestAbs   = AbsPath $RequestPath $foundryRoot
@@ -27,14 +82,25 @@ $PolicyAbs    = AbsPath $PolicyPath $foundryRoot
 
 Ensure-Dir $OutDirAbs
 
-$stdoutPath  = Join-Path $OutDirAbs "guardian_check.stdout.txt"
-$stderrPath  = Join-Path $OutDirAbs "guardian_check.stderr.txt"
-$summaryPath = Join-Path $OutDirAbs "summary.json"
+$stdoutPath     = Join-Path $OutDirAbs "guardian_check.stdout.txt"
+$stderrPath     = Join-Path $OutDirAbs "guardian_check.stderr.txt"
+$summaryPath    = Join-Path $OutDirAbs "summary.json"
+$childJsonPath  = Join-Path $OutDirAbs "guardian_child_extracted.json"
+
+# Best-effort: read request schema for debugging
+$request_schema = $null
+try {
+  if (Test-Path $RequestAbs) {
+    $rqRaw = Get-Content -Raw -Encoding UTF8 $RequestAbs
+    $rqObj = $rqRaw | ConvertFrom-Json
+    $request_schema = Normalize-Scalar $rqObj.schema
+  }
+} catch { }
 
 try {
   Push-Location $GuardianRepo
   try {
-    # IMPORTANT: call external process directly; capture stdout/stderr
+    # Call external process directly; capture stdout/stderr
     $out = & py -3.11 -m args.guardian.guardian_check_v0 `
       --request $RequestAbs `
       --policy $PolicyAbs `
@@ -45,64 +111,96 @@ try {
     $rc = 2
     if ($LASTEXITCODE -ne $null) { $rc = [int]$LASTEXITCODE }
 
-    $parsed = $null
+    # Parse child JSON from stdout (robust: extract first JSON object)
+    $child = $null
+    $child_json = $null
+    $parsed_ok = $false
+
     try {
-      $txt = (Get-Content -Raw -Encoding UTF8 $stdoutPath).Trim()
-      if ($txt.Length -gt 0) { $parsed = ($txt | ConvertFrom-Json) }
-      if ($null -ne $parsed.exit_code) { $rc = [int]$parsed.exit_code }
+      $raw = Get-Content -Raw -Encoding UTF8 $stdoutPath
+      $child_json = Extract-FirstJsonObject $raw
+      if ($child_json) {
+        $child_json | Set-Content -Encoding UTF8 $childJsonPath
+        $child = $child_json | ConvertFrom-Json
+        $parsed_ok = $true
+      }
     } catch {
-      # keep rc from $LASTEXITCODE
-      $parsed = $null
+      $child = $null
+      $parsed_ok = $false
     }
 
-    # Propagate guardian reason codes from guardian_check stdout (never null)
-    $guardian_rc = 2
-    $v_rc = Get-Variable -Name rc -ErrorAction SilentlyContinue
-    if ($v_rc) { try { $guardian_rc = [int]$v_rc.Value } catch { } } else {
-      $v_ec = Get-Variable -Name exit_code -ErrorAction SilentlyContinue
-      if ($v_ec) { try { $guardian_rc = [int]$v_ec.Value } catch { } } else {
-        $v_p = Get-Variable -Name proc -ErrorAction SilentlyContinue
-        if ($v_p -and $v_p.Value) { try { $guardian_rc = [int]$v_p.Value.ExitCode } catch { } }
+    # If child provides exit_code, trust it
+    if ($null -ne $child -and $null -ne $child.exit_code) {
+      try { $rc = [int]$child.exit_code } catch { }
+    }
+
+    $base_reason = "INFRA_GUARDIAN"
+    if ($rc -eq 0) { $base_reason = "ALLOW_OK" }
+    elseif ($rc -eq 1) { $base_reason = "DENY_GUARDIAN" }
+
+    $child_schema = $null
+    $child_reason = $null
+    if ($null -ne $child) {
+      $child_schema = Normalize-Scalar $child.schema
+      $child_reason = Normalize-Scalar $child.reason_code
+    }
+
+    # If no child reason, fall back to base
+    if (-not $child_reason -or $child_reason.Length -eq 0) {
+      $child_reason = $base_reason
+    }
+
+    # Compose wrapper reason_code (avoid duplicates)
+    $reason_code = $base_reason
+    if ($child_reason -and $child_reason.Length -gt 0) {
+      if ($child_reason -eq $base_reason -or $child_reason.StartsWith($base_reason + "|")) {
+        $reason_code = $child_reason
+      } else {
+        $reason_code = $base_reason + "|" + $child_reason
       }
     }
-    
-    $guardian_stdout = $null
-    $v_sp = Get-Variable -Name stdoutPath -ErrorAction SilentlyContinue
-    if ($v_sp) { try { $guardian_stdout = [string]$v_sp.Value } catch { } }
-    
-    $guardian_reason_code = "INFRA_GUARDIAN"
-    if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK" }
-    elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN" }
-    
-    if ($guardian_stdout -and (Test-Path $guardian_stdout)) {
-      try {
-        $g = Get-Content -Raw $guardian_stdout | ConvertFrom-Json
-        if ($null -ne $g -and $g.reason_code) { $guardian_reason_code = $g.reason_code }
-      } catch {
-        if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK_BAD_STDOUT" }
-        elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN_BAD_STDOUT" }
-        else { $guardian_reason_code = "INFRA_GUARDIAN_BAD_STDOUT" }
+
+    # Optional expected/got fields, if child exposes them
+    $expected_schema = $null
+    $got_schema = $null
+    if ($null -ne $child) {
+      foreach ($n in @("expected_schema","expected_request_schema")) {
+        if ($child.PSObject.Properties.Name -contains $n) {
+          $expected_schema = Normalize-Scalar $child.$n
+        }
       }
-    } else {
-      if ($guardian_rc -eq 0) { $guardian_reason_code = "ALLOW_OK_NO_STDOUT" }
-      elseif ($guardian_rc -eq 1) { $guardian_reason_code = "DENY_GUARDIAN_NO_STDOUT" }
-      else { $guardian_reason_code = "INFRA_GUARDIAN_NO_STDOUT" }
+      foreach ($n in @("got_schema","got_request_schema")) {
+        if ($child.PSObject.Properties.Name -contains $n) {
+          $got_schema = Normalize-Scalar $child.$n
+        }
+      }
     }
-    
-    $summary = @{
-      schema        = "gate_guardian_v0"
-      reason_code = $guardian_reason_code
-      child_reason_code = $guardian_reason_code
-      ts_utc        = $ts
-      ok            = ($rc -eq 0)
-      exit_code     = $rc
-      run_id        = $RunId
-      guardian_repo = $GuardianRepo
-      request_path  = $RequestAbs
-      policy_path   = $PolicyAbs
-      out_dir       = $OutDirAbs
-      stdout_path   = $stdoutPath
-      stderr_path   = $stderrPath
+
+    $summary = [ordered]@{
+      schema            = "gate_guardian_v0"
+      ts_utc            = $ts
+      ok                = ($rc -eq 0)
+      exit_code         = $rc
+      reason_code       = $reason_code
+      child_reason_code = $child_reason
+
+      run_id            = $RunId
+      guardian_repo     = $GuardianRepo
+      request_path      = $RequestAbs
+      request_schema    = $request_schema
+      policy_path       = $PolicyAbs
+
+      out_dir           = $OutDirAbs
+      stdout_path       = $stdoutPath
+      stderr_path       = $stderrPath
+
+      parsed_ok         = $parsed_ok
+      child_schema      = $child_schema
+      child_out_dir     = (if ($null -ne $child) { Normalize-Scalar $child.out_dir } else { $null })
+      child_json_path   = (if ($child_json) { $childJsonPath } else { $null })
+
+      expected_schema   = $expected_schema
+      got_schema        = $got_schema
     }
 
     Write-JsonFile $summaryPath $summary
@@ -114,11 +212,13 @@ try {
   }
 
 } catch {
-  $summary = @{
+  $summary = [ordered]@{
     schema    = "gate_guardian_v0"
     ts_utc    = $ts
     ok        = $false
     exit_code = 2
+    reason_code = "INFRA_GUARDIAN|INFRA_EXCEPTION"
+    child_reason_code = "INFRA_EXCEPTION"
     run_id    = $RunId
     error     = $_.Exception.Message
     out_dir   = $OutDirAbs

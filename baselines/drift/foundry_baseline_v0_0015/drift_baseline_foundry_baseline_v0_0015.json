@@ -1,6 +1,6 @@
 {
     "baseline_id":  "foundry_baseline_v0_0015",
-    "created_utc":  "2026-01-15T22:39:42Z",
+    "created_utc":  "2026-01-16T00:07:10Z",
     "entries":  [
                     {
                         "path":  ".gitattributes",
@@ -619,8 +619,8 @@
                     },
                     {
                         "path":  "scripts/gate_guardian_v0.ps1",
-                        "sha256":  "9c6e78e53175ed429268e84fac504c74fba778c6d6cd6dcae7ec50f20b307924",
-                        "bytes":  4433
+                        "sha256":  "6f93e00d88a027a300df4de3d6797019db1a5728e4ae0ed2ce613ecebb7f9ad6",
+                        "bytes":  6603
                     },
                     {
                         "path":  "scripts/gate_release_chain_v0.ps1",
@@ -1034,8 +1034,8 @@
                     },
                     {
                         "path":  "templates/web_dashboard_v0/src/app.py",
-                        "sha256":  "5319d879777844dea636d560f5c1fcaaa42660ef21003aee55b8964443d8858a",
-                        "bytes":  12357
+                        "sha256":  "a323e8b09d2fb1586e0d6db1eb0067552b832a02902e0fe9540954101d26c54f",
+                        "bytes":  13482
                     },
                     {
                         "path":  "templates/web_dashboard_v0/src/canonical_json_v1.py",
