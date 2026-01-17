@@ -1,0 +1,37 @@
+vname: ECO-PROOF L1 (2 SKU)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  eco-proof:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bootstrap tools
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_tools_v1.ps1
+
+      - name: Run ECO-PROOF L1 (2 SKU)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\eco_proof_l1_2sku_v1.ps1 -RunAcceptance "YES"
+
+      - name: Upload artifacts (smoke + releases)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eco-proof-artifacts
+          path: |
+            args/data/smoke/**
+            dist/releases/*.zip
