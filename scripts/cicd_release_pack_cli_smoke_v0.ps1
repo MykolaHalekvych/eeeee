@@ -6,29 +6,35 @@ param(
   [string]$RunAcceptance = ""
 )
 
-$SCHEMA = "cicd_release_pack_cli_smoke_v0"
-$RC_OK = 0
+$SCHEMA  = "cicd_release_pack_cli_smoke_v0"
+$RC_OK   = 0
 $RC_FAIL = 1
-$RC_INFRA = 2
+$RC_INFRA= 2
 
 function UtcTs() {
   return (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 }
 
+function Ensure-Dir([string]$DirPath) {
+  if ($DirPath -and -not (Test-Path $DirPath)) {
+    New-Item -ItemType Directory -Force -Path $DirPath | Out-Null
+  }
+}
+
 function Write-Text([string]$Path, [string]$Text) {
   $p = Split-Path -Parent $Path
-  if ($p -and -not (Test-Path $p)) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
-  Set-Content -Path $Path -Value ($Text) -Encoding UTF8
+  Ensure-Dir $p
+  $enc = New-Object System.Text.UTF8Encoding($false) # no BOM
+  [System.IO.File]::WriteAllText($Path, ($Text -as [string]), $enc)
 }
 
 function Write-Json([string]$Path, $Obj) {
-  $p = Split-Path -Parent $Path
-  if ($p -and -not (Test-Path $p)) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
-  ($Obj | ConvertTo-Json -Depth 30 -Compress) | Set-Content -Path $Path -Encoding UTF8
+  $json = ($Obj | ConvertTo-Json -Depth 40 -Compress)
+  Write-Text $Path $json
 }
 
 function Emit-JsonStdout($Obj) {
-  $line = ($Obj | ConvertTo-Json -Depth 30 -Compress)
+  $line = ($Obj | ConvertTo-Json -Depth 40 -Compress)
   [Console]::Out.WriteLine($line)
 }
 
@@ -62,6 +68,7 @@ function Invoke-ExeStep(
   [bool]$ExpectedOk,
   [string]$ExpectedCmd,
   [string]$ExpectedReasonCode,
+  [string]$ExpectedStdoutMode,
   [string]$Exe,
   [string]$EvidenceDir
 ) {
@@ -71,6 +78,7 @@ function Invoke-ExeStep(
   $stdout = ""
   $rc = 999
   try {
+    # IMPORTANT: @CliArgs (never @Args / $Args)
     $stdout = & $Exe @CliArgs 2> $stderrPath | Out-String
     $rc = $LASTEXITCODE
   } catch {
@@ -97,19 +105,31 @@ function Invoke-ExeStep(
   }
 
   $ok = $true
+
+  # Basic gates
   if ($rc -ne $ExpectedRc) { $ok = $false }
   if ($stdoutTrim.Length -le 0) { $ok = $false }
   if (-not $parseOk) { $ok = $false }
 
+  # Contract gates
   if ($parseOk) {
     if ($obj.schema -ne "cicd_release_pack_v0_cli_v1") { $ok = $false }
     if ($obj.product_id -ne "cicd_release_pack_v0") { $ok = $false }
     if ([int]$obj.exit_code -ne $ExpectedRc) { $ok = $false }
     if ([bool]$obj.ok -ne $ExpectedOk) { $ok = $false }
+
     if ($ExpectedCmd -and ($obj.cmd -ne $ExpectedCmd)) { $ok = $false }
     if ($ExpectedReasonCode -and ($obj.reason_code -ne $ExpectedReasonCode)) { $ok = $false }
+
     if (-not $obj.child_reason_code) { $ok = $false }
     if (-not $obj.ts_utc) { $ok = $false }
+
+    # EXE-only proof (guard against accidentally calling python)
+    if ($null -eq $obj.is_frozen) { $ok = $false }
+    if ([bool]$obj.is_frozen -ne $true) { $ok = $false }
+
+    # Stdout mode proof
+    if ($ExpectedStdoutMode -and ($obj.stdout_mode -ne $ExpectedStdoutMode)) { $ok = $false }
   }
 
   return @{
@@ -121,6 +141,7 @@ function Invoke-ExeStep(
       ok = $ExpectedOk
       cmd = $ExpectedCmd
       reason_code = $ExpectedReasonCode
+      stdout_mode = $ExpectedStdoutMode
       schema = "cicd_release_pack_v0_cli_v1"
       product_id = "cicd_release_pack_v0"
     }
@@ -150,7 +171,7 @@ if (-not $ExePath) {
 if (-not $OutDir) {
   $OutDir = Join-Path $repoPath ("args\data\smoke\cicd_release_pack_cli_smoke_v0\{0}" -f $RunId)
 }
-if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
+Ensure-Dir $OutDir
 
 if ($RunAcceptance -ne "YES") {
   Fail "FAIL" "DENY_RUN_ACCEPTANCE_REQUIRED" $RC_FAIL $OutDir
@@ -161,14 +182,17 @@ if (-not (Test-Path $ExePath)) {
 }
 
 $evidenceDir = Join-Path $OutDir "evidence"
-if (-not (Test-Path $evidenceDir)) { New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null }
+Ensure-Dir $evidenceDir
+
+# Expected stdout mode (we proved this in EXE output)
+$expectedStdoutMode = "win_writefile_or_oswrite_v2"
 
 $steps = @()
-$steps += Invoke-ExeStep -StepId "01_help"     -CliArgs @("--help")        -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "help"    -ExpectedReasonCode "OK"                  -Exe $ExePath -EvidenceDir $evidenceDir
-$steps += Invoke-ExeStep -StepId "02_version"  -CliArgs @("version")       -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "version" -ExpectedReasonCode "OK"                  -Exe $ExePath -EvidenceDir $evidenceDir
-$steps += Invoke-ExeStep -StepId "03_selftest" -CliArgs @("selftest")      -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "selftest" -ExpectedReasonCode "OK"                 -Exe $ExePath -EvidenceDir $evidenceDir
-$steps += Invoke-ExeStep -StepId "04_ping"     -CliArgs @("ping")          -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "ping"    -ExpectedReasonCode "OK"                  -Exe $ExePath -EvidenceDir $evidenceDir
-$steps += Invoke-ExeStep -StepId "05_bogus"    -CliArgs @("bogus_command") -ExpectedRc 1 -ExpectedOk $false -ExpectedCmd "unknown" -ExpectedReasonCode "FAIL_UNKNOWN_COMMAND" -Exe $ExePath -EvidenceDir $evidenceDir
+$steps += Invoke-ExeStep -StepId "01_help"     -CliArgs @("--help")         -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "help"     -ExpectedReasonCode "OK"                  -ExpectedStdoutMode $expectedStdoutMode -Exe $ExePath -EvidenceDir $evidenceDir
+$steps += Invoke-ExeStep -StepId "02_version"  -CliArgs @("version")        -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "version"  -ExpectedReasonCode "OK"                  -ExpectedStdoutMode $expectedStdoutMode -Exe $ExePath -EvidenceDir $evidenceDir
+$steps += Invoke-ExeStep -StepId "03_selftest" -CliArgs @("selftest")       -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "selftest" -ExpectedReasonCode "OK"                  -ExpectedStdoutMode $expectedStdoutMode -Exe $ExePath -EvidenceDir $evidenceDir
+$steps += Invoke-ExeStep -StepId "04_ping"     -CliArgs @("ping")           -ExpectedRc 0 -ExpectedOk $true  -ExpectedCmd "ping"     -ExpectedReasonCode "OK"                  -ExpectedStdoutMode $expectedStdoutMode -Exe $ExePath -EvidenceDir $evidenceDir
+$steps += Invoke-ExeStep -StepId "05_bogus"    -CliArgs @("bogus_command")  -ExpectedRc 1 -ExpectedOk $false -ExpectedCmd "unknown"  -ExpectedReasonCode "FAIL_UNKNOWN_COMMAND" -ExpectedStdoutMode $expectedStdoutMode -Exe $ExePath -EvidenceDir $evidenceDir
 
 $okAll = $true
 foreach ($s in $steps) {
