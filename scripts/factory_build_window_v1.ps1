@@ -1,6 +1,6 @@
 param(
   [string]$Repo = ".",
-  [string]$Python = "py -3.11 -c "import sys; sys.exit(0)"",
+  [string]$Python = "py -3.11",
   [string]$ControlPlane = "control_plane.json",
   [string]$Product = "cicd_release_pack_v0",
   [string]$Factory = "local",

@@ -1,6 +1,6 @@
 param(
   [string]$Repo = ".",
-  [string]$Python = "py -3.11 -c "import sys; sys.exit(0)"",
+  [string]$Python = "py -3.11",
   [string]$LatestOnly = "true"
 )
 
