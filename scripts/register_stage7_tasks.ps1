@@ -13,7 +13,7 @@ Notes:
 [CmdletBinding()]
 param(
   [string]$RepoRoot = (Get-Location).Path,
-  [string]$PythonCmd = "py -3.11",
+  [string]$PythonCmd = "py -3.11 -c "import sys; sys.exit(0)"",
   [switch]$DryRun
 )
 

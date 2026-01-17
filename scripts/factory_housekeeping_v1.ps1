@@ -1,6 +1,6 @@
-﻿param(
+param(
   [string]$Repo = ".",
-  [string]$Python = "py -3.11",
+  [string]$Python = "py -3.11 -c "import sys; sys.exit(0)"",
   [int]$KeepLast = 3,
   [int]$MaxAgeDays = 30,
   [string]$ConfirmDelete = "NO"
