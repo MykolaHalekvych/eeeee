@@ -1,14 +1,13 @@
-﻿
-param(
+﻿param(
   [string]$ControlTokenPath = "",
   [string]$ControlRunId = "",
   [string]$ControlJobType = "FOUNDRY_BUILD_WINDOW_V1",
   [string]$InnerScript = "",
 
-  # Preferred: path to JSON file containing array of strings
+  # Preferred: path to JSON file containing array of strings (REQUIRED in Control mode)
   [string]$InnerArgsPath = "",
 
-  # Fallback only (fragile)
+  # Fallback only (fragile) - kept for backward compatibility, but Control requires InnerArgsPath
   [string]$InnerArgsJson = "[]",
 
   [ValidateSet("YES","NO")]
@@ -74,7 +73,7 @@ if (-not [string]::IsNullOrWhiteSpace($childDir)) {
   $childGateOutPath = Join-Path $childDir "foundry_gate_output.json"
 }
 
-Emit-Err ("WRAPPER.DEBUG run_dir=[{0}] child_dir=[{1}] child_gate_out=[{2}]" -f $runDir, $childDir, $childGateOutPath)
+Emit-Err ("WRAPPER.DEBUG run_dir=[{0}] child_dir=[{1}] child_gate_out=[{2}] inner_args_path=[{3}]" -f $runDir, $childDir, $childGateOutPath, $InnerArgsPath)
 
 function _WriteJsonFile([string]$path, $obj) {
   if ([string]::IsNullOrWhiteSpace($path)) { return }
@@ -85,6 +84,15 @@ function _WriteJsonFile([string]$path, $obj) {
   } catch {
     Emit-Err ("WRAPPER.WARN write_json_file_failed path=[{0}] err=[{1}]" -f $path, $_.Exception.Message)
   }
+}
+
+function _WriteTextFile([string]$path, [string]$text) {
+  if ([string]::IsNullOrWhiteSpace($path)) { return }
+  try {
+    $dir = Split-Path -Parent $path
+    if (-not [string]::IsNullOrWhiteSpace($dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $text | Set-Content -LiteralPath $path -Encoding UTF8
+  } catch { }
 }
 
 # DoD#14: create placeholder gate output immediately (survives harness TIMEOUT/kill)
@@ -168,6 +176,33 @@ function _ReadTail([string]$path, [int]$tail) {
   try { return (Get-Content -LiteralPath $path -Tail $tail -ErrorAction Stop) } catch { return @() }
 }
 
+function _DetectPythonRepl([string]$stderrPath) {
+  try {
+    if ([string]::IsNullOrWhiteSpace($stderrPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $stderrPath)) { return $false }
+    $tail = Get-Content -LiteralPath $stderrPath -Tail 140 -ErrorAction SilentlyContinue
+    $joined = ($tail -join "`n")
+    if (($joined -match "Python\s+3\.") -and ($joined -match ">>>")) { return $true }
+  } catch { }
+  return $false
+}
+
+function _DumpProcCmdline([int]$pid, [string]$outPath) {
+  try {
+    $ci = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pid)
+    ($ci | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String) |
+      Out-File -LiteralPath $outPath -Encoding utf8
+  } catch { }
+}
+
+function _DumpChildrenCmdlines([int]$pid, [string]$outPath) {
+  try {
+    $kids = Get-CimInstance Win32_Process -Filter ("ParentProcessId=" + $pid)
+    ($kids | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-Table -AutoSize | Out-String) |
+      Out-File -LiteralPath $outPath -Encoding utf8
+  } catch { }
+}
+
 # ---------------------------------------------------------------------------
 # Token verify (non-bypass)
 $expectedJobType = "FOUNDRY_BUILD_WINDOW_V1"
@@ -192,19 +227,25 @@ if (-not ([string]$tok.nonce -match '^[a-f0-9]{16,64}$')) { _Deny "CONTROL_TOKEN
 Emit-Err "WRAPPER.TOKEN.OK"
 
 # ---------------------------------------------------------------------------
+# HARD REQUIREMENT (Control): InnerArgsPath must exist
+if ([string]::IsNullOrWhiteSpace($InnerArgsPath)) {
+  _Deny "INNER_ARGS_PATH.REQUIRED" "InnerArgsPath empty (must point to JSON array file)" 2
+}
+if (-not (Test-Path -LiteralPath $InnerArgsPath)) {
+  _Deny "INNER_ARGS_PATH.MISSING" ("not found: " + $InnerArgsPath) 2
+}
+
+# ---------------------------------------------------------------------------
 # Resolve inner
 if ([string]::IsNullOrWhiteSpace($InnerScript)) { $InnerScript = Join-Path $PSScriptRoot "factory_build_window_v1.ps1" }
 if (-not (Test-Path -LiteralPath $InnerScript)) { _Deny "INNER_SCRIPT.MISSING" ("inner not found: " + $InnerScript) 2 }
 
 # ---------------------------------------------------------------------------
-# Read args raw (prefer file)
-$raw = $InnerArgsJson
-$source = "json"
-if (-not [string]::IsNullOrWhiteSpace($InnerArgsPath)) {
-  if (-not (Test-Path -LiteralPath $InnerArgsPath)) { _Deny "INNER_ARGS_PATH.MISSING" ("not found: " + $InnerArgsPath) 2 }
-  try { $raw = Get-Content -LiteralPath $InnerArgsPath -Raw -ErrorAction Stop; $source="path" }
-  catch { _Deny "INNER_ARGS_PATH.READ_FAIL" $_.Exception.Message 2 }
-}
+# Read args raw (REQUIRED file)
+$raw = ""
+$source = "path"
+try { $raw = Get-Content -LiteralPath $InnerArgsPath -Raw -ErrorAction Stop }
+catch { _Deny "INNER_ARGS_PATH.READ_FAIL" $_.Exception.Message 2 }
 
 # Parse args (expect JSON array of strings)
 $innerArgs = @()
@@ -220,7 +261,7 @@ try {
   _Deny "INNER_ARGS_JSON.BAD_JSON" $_.Exception.Message 2
 }
 
-# Validate args: no null/empty elements
+# Validate args: no null/empty elements + no pure whitespace
 for ($i=0; $i -lt $innerArgs.Count; $i++) {
   $v = $innerArgs[$i]
   if ([string]::IsNullOrWhiteSpace($v)) {
@@ -246,7 +287,8 @@ function _InvokeInnerProcess([string[]]$argsToUse, [string]$attemptTag) {
     $v = $psArgs[$i]
     if ([string]::IsNullOrWhiteSpace($v)) {
       return @{
-        ok=$false; rc=2; stdout_path=$stdoutPath; stderr_path=$stderrPath;
+        ok=$false; rc=2; reason_code="INNER.INVOKE.ARGS_EMPTY";
+        stdout_path=$stdoutPath; stderr_path=$stderrPath;
         err=("psArgs has null/empty at index=" + $i)
       }
     }
@@ -261,19 +303,43 @@ function _InvokeInnerProcess([string[]]$argsToUse, [string]$attemptTag) {
       -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -ErrorAction Stop
   } catch {
     return @{
-      ok=$false; rc=2; stdout_path=$stdoutPath; stderr_path=$stderrPath;
+      ok=$false; rc=2; reason_code="INNER.INVOKE.START_PROCESS_FAIL";
+      stdout_path=$stdoutPath; stderr_path=$stderrPath;
       err=("Start-Process failed: " + $_.Exception.Message)
     }
   }
 
   if (-not $proc -or -not $proc.Id) {
     return @{
-      ok=$false; rc=2; stdout_path=$stdoutPath; stderr_path=$stderrPath;
+      ok=$false; rc=2; reason_code="INNER.INVOKE.NO_PID";
+      stdout_path=$stdoutPath; stderr_path=$stderrPath;
       err="Start-Process returned null proc or missing Id"
     }
   }
 
   Emit-Err ("INNER.START attempt={0} pid={1}" -f $attemptTag, $proc.Id)
+
+  # Always dump cmdline + children cmdlines (forensic)
+  try {
+    Start-Sleep -Milliseconds 200
+    _DumpProcCmdline $proc.Id (Join-Path $baseDir ("inner_cmdline_" + $attemptTag + ".txt"))
+    _DumpChildrenCmdlines $proc.Id (Join-Path $baseDir ("inner_children_cmdline_" + $attemptTag + ".txt"))
+  } catch { }
+
+  # Fast REPL guard (detect early)
+  try {
+    Start-Sleep -Milliseconds 800
+    if (_DetectPythonRepl $stderrPath) {
+      Emit-Err ("WRAPPER.REPL_DETECTED attempt={0} inner_pid={1}" -f $attemptTag, $proc.Id)
+      try { _DumpChildrenCmdlines $proc.Id (Join-Path $baseDir ("inner_children_cmdline_repl_" + $attemptTag + ".txt")) } catch { }
+      try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+      return @{
+        ok=$false; rc=2; reason_code="INFRA_REPL_DETECTED";
+        stdout_path=$stdoutPath; stderr_path=$stderrPath;
+        err=("INFRA_REPL_DETECTED stdout=" + $stdoutPath + " stderr=" + $stderrPath)
+      }
+    }
+  } catch { }
 
   $t0 = Get-Date
   $prevOut = -1
@@ -310,6 +376,20 @@ function _InvokeInnerProcess([string[]]$argsToUse, [string]$attemptTag) {
       $prevCpu = $cpu
     }
 
+    # REPL guard (continuous)
+    try {
+      if (_DetectPythonRepl $stderrPath) {
+        Emit-Err ("WRAPPER.REPL_DETECTED attempt={0} inner_pid={1}" -f $attemptTag, $proc.Id)
+        try { _DumpChildrenCmdlines $proc.Id (Join-Path $baseDir ("inner_children_cmdline_repl_" + $attemptTag + ".txt")) } catch { }
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        return @{
+          ok=$false; rc=2; reason_code="INFRA_REPL_DETECTED";
+          stdout_path=$stdoutPath; stderr_path=$stderrPath;
+          err=("INFRA_REPL_DETECTED stdout=" + $stdoutPath + " stderr=" + $stderrPath)
+        }
+      }
+    } catch { }
+
     Emit-Err ("WRAPPER.HEARTBEAT elapsed_s={0} inner_pid={1} attempt={2}" -f $elapsed, $proc.Id, $attemptTag)
   }
 
@@ -317,7 +397,7 @@ function _InvokeInnerProcess([string[]]$argsToUse, [string]$attemptTag) {
   Emit-Err ("INNER.EXIT attempt={0} pid={1} exit_code={2}" -f $attemptTag, $proc.Id, $rc)
 
   return @{
-    ok=$true; rc=$rc; stdout_path=$stdoutPath; stderr_path=$stderrPath; err=""
+    ok=$true; rc=$rc; stdout_path=$stdoutPath; stderr_path=$stderrPath; err=""; reason_code=""
   }
 }
 
@@ -334,7 +414,9 @@ if ($PassTokenArgs -eq "YES") {
 
 $r1 = _InvokeInnerProcess $args1 "A1"
 if (-not $r1.ok) {
-  _Deny "INNER.INVOKE.FAIL" $r1.err 2
+  $rc1 = "INNER.INVOKE.FAIL"
+  try { if ($r1.reason_code) { $rc1 = [string]$r1.reason_code } } catch { }
+  _Deny $rc1 $r1.err 2
 }
 
 $innerRc = [int]$r1.rc
@@ -353,7 +435,9 @@ if ($token_args_used -and $RetryWithoutTokenArgs -eq "YES") {
 
     $r2 = _InvokeInnerProcess $innerArgs "A2"
     if (-not $r2.ok) {
-      _Deny "INNER.INVOKE.RETRY_FAIL" $r2.err 2
+      $rc2 = "INNER.INVOKE.RETRY_FAIL"
+      try { if ($r2.reason_code) { $rc2 = [string]$r2.reason_code } } catch { }
+      _Deny $rc2 $r2.err 2
     }
 
     $innerRc = [int]$r2.rc
