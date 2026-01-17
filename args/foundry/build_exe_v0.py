@@ -149,9 +149,56 @@ def run_cmd(
         }
 
 
+def _win_writefile_stdout(data: bytes) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.WriteFile.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPCVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        kernel32.WriteFile.restype = wintypes.BOOL
+
+        std_out = wintypes.DWORD(0xFFFFFFF5)  # STD_OUTPUT_HANDLE (-11)
+        h = kernel32.GetStdHandle(std_out)
+        invalid = ctypes.c_void_p(-1).value
+        if h is None or int(h) == 0 or int(h) == int(invalid):
+            return False
+
+        written = wintypes.DWORD(0)
+        ok = kernel32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+        return bool(ok) and int(written.value) == len(data)
+    except Exception:
+        return False
+
+
 def emit_json_stdout(payload: Dict[str, Any]) -> None:
     # Contract: exactly 1 JSON line to stdout with newline.
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    data = line.encode("utf-8", errors="replace")
+
+    # Prefer WinAPI WriteFile (more robust in some frozen/windowed cases)
+    if _win_writefile_stdout(data):
+        return
+
+    # Then OS-level fd=1
+    try:
+        os.write(1, data)
+        return
+    except Exception:
+        pass
+
+    # Fallback to sys.stdout
+    sys.stdout.write(line)
     sys.stdout.flush()
 
 
@@ -690,32 +737,209 @@ if __name__ == "__main__":
     raise SystemExit(main())
 """
 
+# New: CICD CLI fallback (non-bypass overlay) — robust stdout via WinAPI WriteFile / os.write / sys.stdout
+FALLBACK_CICD_RELEASE_PACK_MAIN_PY = r"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from typing import Any
+
+PRODUCT_ID = "cicd_release_pack_v0"
+VERSION = os.environ.get("CICD_RELEASE_PACK_V0_VERSION", "0.1.0")
+
+# IMPORTANT: this exact line is required by ensure_entrypoint_overlay()
+STDOUT_MODE = "win_writefile_or_oswrite_v2"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _win_writefile_stdout(data: bytes) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.WriteFile.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPCVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        kernel32.WriteFile.restype = wintypes.BOOL
+
+        std_out = wintypes.DWORD(0xFFFFFFF5)  # STD_OUTPUT_HANDLE (-11)
+        h = kernel32.GetStdHandle(std_out)
+        invalid = ctypes.c_void_p(-1).value
+        if h is None or int(h) == 0 or int(h) == int(invalid):
+            return False
+
+        written = wintypes.DWORD(0)
+        ok = kernel32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+        return bool(ok) and int(written.value) == len(data)
+    except Exception:
+        return False
+
+
+def emit_one_json(payload: dict[str, Any]) -> None:
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    data = line.encode("utf-8", errors="replace")
+
+    if STDOUT_MODE == "win_writefile_or_oswrite_v2" and _win_writefile_stdout(data):
+        return
+
+    try:
+        os.write(1, data)
+        return
+    except Exception:
+        pass
+
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
+def summary(ok: bool, exit_code: int, reason_code: str, child_reason_code: str, cmd: str, **extra: Any) -> dict[str, Any]:
+    rc = reason_code or "INFRA_REASON_NULL_FORBIDDEN"
+    crc = child_reason_code or "INFRA_CHILD_REASON_NULL_FORBIDDEN"
+    base: dict[str, Any] = {
+        "schema": "cicd_release_pack_v0_cli_v1",
+        "ok": bool(ok),
+        "exit_code": int(exit_code),
+        "reason_code": rc,
+        "child_reason_code": crc,
+        "ts_utc": utc_now_iso(),
+        "product_id": PRODUCT_ID,
+        "version": VERSION,
+        "stdout_mode": STDOUT_MODE,
+        "is_frozen": bool(getattr(sys, "frozen", False)),
+        "exe_path": sys.executable,
+        "cmd": cmd,
+    }
+    base.update(extra)
+    return base
+
+
+def cmd_help() -> int:
+    emit_one_json(
+        summary(
+            True,
+            0,
+            "OK",
+            "OK",
+            "help",
+            usage=[
+                "app.exe --help",
+                "app.exe version",
+                "app.exe selftest",
+                "app.exe ping",
+                "app.exe <unknown> (rc=1 + JSON)",
+            ],
+            commands=["--help", "-h", "help", "version", "selftest", "ping"],
+        )
+    )
+    return 0
+
+
+def cmd_version() -> int:
+    emit_one_json(summary(True, 0, "OK", "OK", "version"))
+    return 0
+
+
+def cmd_selftest() -> int:
+    tests = [
+        {"name": "version_present", "ok": bool(VERSION)},
+        {"name": "stdout_mode_present", "ok": bool(STDOUT_MODE)},
+    ]
+    ok_all = all(bool(t.get("ok")) for t in tests)
+    rc = 0 if ok_all else 1
+    emit_one_json(summary(ok_all, rc, "OK" if ok_all else "SELFTEST_FAIL", "OK" if ok_all else "SELFTEST_FAIL", "selftest", tests=tests))
+    return rc
+
+
+def cmd_ping() -> int:
+    emit_one_json(summary(True, 0, "OK", "OK", "ping", pong=True))
+    return 0
+
+
+def cmd_unknown(args: list[str]) -> int:
+    emit_one_json(summary(False, 1, "FAIL_UNKNOWN_COMMAND", "FAIL_UNKNOWN_COMMAND", "unknown", argv=args[:32]))
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if not args or "--help" in args or "-h" in args or "help" in args:
+        return cmd_help()
+
+    cmd = (args[0] or "").strip().lower()
+    if cmd == "version":
+        return cmd_version()
+    if cmd == "selftest":
+        return cmd_selftest()
+    if cmd == "ping":
+        return cmd_ping()
+
+    return cmd_unknown(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
 
 def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, Any]:
-    marker = "server_contract_v0"
-    placeholder = "Placeholder dashboard entrypoint"
-    required = 'STDOUT_MODE = "win_writefile_or_oswrite_v2"'
+    # web_dashboard_v0 — enforce Server Contract v0 + robust stdout mode
+    marker_web = "server_contract_v0"
+    placeholder_web = "Placeholder dashboard entrypoint"
+    required_stdout = 'STDOUT_MODE = "win_writefile_or_oswrite_v2"'
+
+    # cicd_release_pack_v0 — enforce CLI v1 + robust stdout mode
+    marker_cicd = "cicd_release_pack_v0_cli_v1"
+    placeholder_cicd = "Placeholder cicd release pack entrypoint"
 
     try:
         current = entry_script.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         return {"ok": False, "reason_code": "INFRA_ENTRY_READ_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
 
-    if product_id != "web_dashboard_v0":
-        return {"ok": True, "reason_code": "OK", "action": "skip_not_target", "entrypoint": str(entry_script)}
+    if product_id == "web_dashboard_v0":
+        if (marker_web in current) and (placeholder_web not in current) and (required_stdout in current):
+            return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
 
-    if (marker in current) and (placeholder not in current) and (required in current):
-        return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
+        if (marker_web not in FALLBACK_WEB_DASHBOARD_APP_PY) or (required_stdout not in FALLBACK_WEB_DASHBOARD_APP_PY):
+            return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
 
-    if (marker not in FALLBACK_WEB_DASHBOARD_APP_PY) or (required not in FALLBACK_WEB_DASHBOARD_APP_PY):
-        return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
+        try:
+            entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
+        except Exception as e:
+            return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
 
-    try:
-        entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
-    except Exception as e:
-        return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+        return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
 
-    return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
+    if product_id == "cicd_release_pack_v0":
+        if (marker_cicd in current) and (placeholder_cicd not in current) and (required_stdout in current):
+            return {"ok": True, "reason_code": "OK", "action": "already_cli_contract", "entrypoint": str(entry_script)}
+
+        if (marker_cicd not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY) or (required_stdout not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY):
+            return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
+
+        try:
+            entry_script.write_text(FALLBACK_CICD_RELEASE_PACK_MAIN_PY, encoding="utf-8", newline="\n")
+        except Exception as e:
+            return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+
+        return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
+
+    return {"ok": True, "reason_code": "OK", "action": "skip_not_target", "entrypoint": str(entry_script)}
 
 
 def _stdout_ok(res: Dict[str, Any]) -> bool:
