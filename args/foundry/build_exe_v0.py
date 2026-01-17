@@ -26,8 +26,8 @@ def utc_ts() -> str:
 
 
 def safe_reason(x: Optional[str], fallback: str) -> str:
-    x = (x or "").strip()
-    return x if x else fallback
+    v = (x or "").strip()
+    return v if v else fallback
 
 
 def write_text(path: Path, text: str) -> None:
@@ -45,6 +45,9 @@ def write_json(path: Path, obj: Any) -> None:
 
 
 def sha256_file(path: Path) -> str:
+    # Standard: safe hash (no crash). Caller decides if empty hash is fatal.
+    if not path.exists():
+        return ""
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -62,24 +65,23 @@ def step_paths(out_dir: Path, step_id: str, name: str) -> Tuple[Path, Path, Path
 
 
 def compute_pre_out_dir(args: argparse.Namespace) -> Optional[Path]:
-    """
-    Precompute out_dir BEFORE main_inner() so exception handlers write into the SAME out_dir
-    that holds step_* artifacts.
-    """
+    # Precompute out_dir BEFORE main_inner() so exception handlers write into the same out_dir.
     try:
         repo = Path(args.repo).resolve()
 
-        if getattr(args, "out_dir", None):
-            return Path(args.out_dir).resolve()
+        out_dir_raw = getattr(args, "out_dir", None)
+        if out_dir_raw:
+            return Path(out_dir_raw).resolve()
 
-        if getattr(args, "workspace", None):
+        ws_raw = getattr(args, "workspace", None)
+        if ws_raw:
             pid = getattr(args, "product_id", None) or "workspace_build"
             return (repo / "dist" / pid).resolve()
 
-        pid = getattr(args, "product_id", None)
-        if not pid:
+        pid2 = getattr(args, "product_id", None)
+        if not pid2:
             return None
-        return (repo / "dist" / pid).resolve()
+        return (repo / "dist" / pid2).resolve()
     except Exception:
         return None
 
@@ -107,22 +109,44 @@ def write_exception_step(out_dir: Path, exc: Exception, code: int) -> Dict[str, 
     return s
 
 
-def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    p = subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return {
-        "cmd": cmd,
-        "cwd": str(cwd) if cwd else None,
-        "rc": int(p.returncode),
-        "stdout": p.stdout or "",
-        "stderr": p.stderr or "",
-    }
+def run_cmd(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+    timeout_s: Optional[int] = None,
+) -> Dict[str, Any]:
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=timeout_s,
+        )
+        return {
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "rc": int(p.returncode),
+            "stdout": p.stdout or "",
+            "stderr": p.stderr or "",
+        }
+    except subprocess.TimeoutExpired as e:
+        out = ""
+        if isinstance(e.stdout, (bytes, bytearray)):
+            out = e.stdout.decode("utf-8", errors="replace")
+        elif isinstance(e.stdout, str):
+            out = e.stdout
+        return {
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "rc": RC_INFRA,
+            "stdout": out,
+            "stderr": "TIMEOUT",
+        }
 
 
 def emit_json_stdout(payload: Dict[str, Any]) -> None:
@@ -138,6 +162,7 @@ def classify_exit_code(exc: Exception) -> int:
         "No module named",
         "pip",
         "ruff",
+        "TIMEOUT",
     ]
     if any(m in msg for m in infra_markers):
         return RC_INFRA
@@ -186,25 +211,18 @@ def load_product(repo: Path, product_id: str) -> Product:
 
 
 def py_compile_tree(root: Path) -> Dict[str, Any]:
-    """
-    RGLOB-safe py_compile tree: any rglob failure becomes an error record (no hidden crash).
-    """
     import py_compile
 
     errors: List[Dict[str, str]] = []
     try:
         py_files = sorted(root.rglob("*.py"))
-    except Exception as e:  # noqa: BLE001
-        return {
-            "files": [],
-            "errors": [{"file": str(root), "error": "RGLOB_ERROR:" + repr(e)}],
-            "ok": False,
-        }
+    except Exception as e:
+        return {"files": [], "errors": [{"file": str(root), "error": "RGLOB_ERROR:" + repr(e)}], "ok": False}
 
     for f in py_files:
         try:
             py_compile.compile(str(f), doraise=True)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             errors.append({"file": str(f), "error": repr(e)})
 
     return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
@@ -212,45 +230,27 @@ def py_compile_tree(root: Path) -> Dict[str, Any]:
 
 def build_runbook(exe_name: str, is_server: bool) -> str:
     if is_server:
-        return f"""# Runbook (Release Pack v0) — Server Contract v0
-
-## Commands (JSON stdout)
-
-- Version:
-  - `{exe_name} version`
-
-- Selftest:
-  - `{exe_name} selftest`
-
-- Ping:
-  - `{exe_name} ping`
-
-- Serve:
-  - `{exe_name} serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200`
-
-## Endpoints
-
-- Health: `GET /health`
-- Ready:  `GET /ready` (200 when ready, else 503)
-
-## Shutdown
-
-- Create stop flag file:
-  - `type nul > stop.flag`
-"""
-    return f"""# Runbook (Release Pack v0)
-
-## Run
-
-- Show help:
-  - `{exe_name} --help`
-
-- Version:
-  - `{exe_name} version`
-
-- Ping:
-  - `{exe_name} ping`
-"""
+        return (
+            "# Runbook (Release Pack v0) — Server Contract v0\n\n"
+            "## Commands (JSON stdout)\n\n"
+            f"- Version:\n  - `{exe_name} version`\n\n"
+            f"- Selftest:\n  - `{exe_name} selftest`\n\n"
+            f"- Ping:\n  - `{exe_name} ping`\n\n"
+            f"- Serve:\n  - `{exe_name} serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200`\n\n"
+            "## Endpoints\n\n"
+            "- Health: `GET /health`\n"
+            "- Ready:  `GET /ready` (200 when ready, else 503)\n\n"
+            "## Shutdown\n\n"
+            "- Create stop flag file:\n"
+            "  - `type nul > stop.flag`\n"
+        )
+    return (
+        "# Runbook (Release Pack v0)\n\n"
+        "## Run\n\n"
+        f"- Show help:\n  - `{exe_name} --help`\n\n"
+        f"- Version:\n  - `{exe_name} version`\n\n"
+        f"- Ping:\n  - `{exe_name} ping`\n"
+    )
 
 
 def build_evidence_md(
@@ -293,9 +293,7 @@ def build_evidence_md(
     return "".join(md)
 
 
-# Fallback Server Contract v0 app.py (non-bypass)
-# IMPORTANT: must be RAW string; otherwise sequences like "\n" inside code become real newlines
-# and break the generated app.py (unterminated string literal).
+# NOTE: keep overlay non-bypass; fallback contains no docstrings inside code.
 FALLBACK_WEB_DASHBOARD_APP_PY = r"""
 from __future__ import annotations
 
@@ -323,9 +321,7 @@ def utc_now_iso() -> str:
 
 
 def _precheck_port_in_use(host: str, port: int) -> bool:
-    # Deterministic NEG bind (Windows): if port already LISTENING -> fail fast before attempting bind.
     test_host = host
-    # connect() cannot target 0.0.0.0/::, use loopback for precheck
     if test_host in ("0.0.0.0", "::"):
         test_host = "127.0.0.1"
     try:
@@ -333,6 +329,13 @@ def _precheck_port_in_use(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _resolve_stop_flag_path(stop_flag: str) -> str:
+    try:
+        return stop_flag if os.path.isabs(stop_flag) else os.path.abspath(stop_flag)
+    except Exception:
+        return stop_flag
 
 
 def _win_writefile_stdout(data: bytes) -> bool:
@@ -343,10 +346,8 @@ def _win_writefile_stdout(data: bytes) -> bool:
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
         kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
         kernel32.GetStdHandle.restype = wintypes.HANDLE
-
         kernel32.WriteFile.argtypes = [
             wintypes.HANDLE,
             wintypes.LPCVOID,
@@ -356,10 +357,8 @@ def _win_writefile_stdout(data: bytes) -> bool:
         ]
         kernel32.WriteFile.restype = wintypes.BOOL
 
-        # -11 unsigned
         std_out = wintypes.DWORD(0xFFFFFFF5)
         h = kernel32.GetStdHandle(std_out)
-
         invalid = ctypes.c_void_p(-1).value
         if h is None or int(h) == 0 or int(h) == int(invalid):
             return False
@@ -372,34 +371,23 @@ def _win_writefile_stdout(data: bytes) -> bool:
 
 
 def emit_one_json(payload: dict[str, Any]) -> None:
-    # Contract: exactly 1 JSON line to stdout with newline.
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
     data = line.encode("utf-8")
 
-    # 1) Windows WriteFile (most robust for weird STDOUT handles)
     if STDOUT_MODE == "win_writefile_or_oswrite_v2" and _win_writefile_stdout(data):
         return
 
-    # 2) os.write(fd=1)
     try:
         os.write(1, data)
         return
     except Exception:
         pass
 
-    # 3) sys.stdout fallback
     sys.stdout.write(line)
     sys.stdout.flush()
 
 
-def summary(
-    schema: str,
-    ok: bool,
-    exit_code: int,
-    reason_code: str,
-    child_reason_code: str,
-    **extra: Any,
-) -> dict[str, Any]:
+def summary(schema: str, ok: bool, exit_code: int, reason_code: str, child_reason_code: str, **extra: Any) -> dict[str, Any]:
     rc = reason_code or "INFRA_REASON_NULL_FORBIDDEN"
     crc = child_reason_code or "INFRA_CHILD_REASON_NULL_FORBIDDEN"
     base: dict[str, Any] = {
@@ -437,34 +425,78 @@ class _State:
             return bool(self._ready)
 
 
+def _index_html(state: _State) -> str:
+    ready_txt = "READY" if state.is_ready() else "NOT_READY"
+    uptime = state.uptime_s()
+    return (
+        "<!doctype html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "  <meta charset=\"utf-8\" />\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
+        f"  <title>{PRODUCT_ID}</title>\n"
+        "  <style>\n"
+        "    body { font-family: Arial, sans-serif; margin: 24px; }\n"
+        "    .card { max-width: 820px; padding: 16px 18px; border: 1px solid #ddd; border-radius: 10px; }\n"
+        "    .muted { color: #666; }\n"
+        "  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        "  <div class=\"card\">\n"
+        f"    <h1>{PRODUCT_ID} <span class=\"muted\">v{VERSION}</span></h1>\n"
+        f"    <p>Status: <b>{ready_txt}</b></p>\n"
+        f"    <p class=\"muted\">Uptime: {uptime}s</p>\n"
+        "    <hr />\n"
+        "    <p>Entry page is a placeholder UI (no SPA bundle yet). Endpoints:</p>\n"
+        "    <ul>\n"
+        "      <li><a href=\"/health\">/health</a> (JSON)</li>\n"
+        "      <li><a href=\"/ready\">/ready</a> (JSON)</li>\n"
+        "    </ul>\n"
+        "  </div>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
 def make_handler(state: _State) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002
+        def log_message(self, fmt: str, *args: Any) -> None:
             return
 
         def _send_json(self, code: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
+        def _send_html(self, code: int, html: str) -> None:
+            body = html.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+
+            if path in ("/", "/ui"):
+                self._send_html(200, _index_html(state))
+                return
+
+            if path == "/favicon.ico":
+                self.send_response(204)
+                self.end_headers()
+                return
 
             if path == "/health":
                 self._send_json(
                     200,
-                    {
-                        "schema": "server_contract_v0.health",
-                        "ok": True,
-                        "ts_utc": utc_now_iso(),
-                        "product_id": PRODUCT_ID,
-                        "version": VERSION,
-                        "uptime_s": state.uptime_s(),
-                    },
+                    {"schema": "server_contract_v0.health", "ok": True, "ts_utc": utc_now_iso(), "product_id": PRODUCT_ID, "version": VERSION, "uptime_s": state.uptime_s()},
                 )
                 return
 
@@ -472,44 +504,33 @@ def make_handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 if state.is_ready():
                     self._send_json(
                         200,
-                        {
-                            "schema": "server_contract_v0.ready",
-                            "ok": True,
-                            "ts_utc": utc_now_iso(),
-                            "product_id": PRODUCT_ID,
-                            "version": VERSION,
-                            "uptime_s": state.uptime_s(),
-                        },
+                        {"schema": "server_contract_v0.ready", "ok": True, "ts_utc": utc_now_iso(), "product_id": PRODUCT_ID, "version": VERSION, "uptime_s": state.uptime_s()},
                     )
                     return
-
                 self._send_json(
                     503,
-                    {
-                        "schema": "server_contract_v0.ready",
-                        "ok": False,
-                        "reason_code": "NOT_READY",
-                        "ts_utc": utc_now_iso(),
-                        "product_id": PRODUCT_ID,
-                        "version": VERSION,
-                        "uptime_s": state.uptime_s(),
-                    },
+                    {"schema": "server_contract_v0.ready", "ok": False, "reason_code": "NOT_READY", "ts_utc": utc_now_iso(), "product_id": PRODUCT_ID, "version": VERSION, "uptime_s": state.uptime_s()},
                 )
                 return
 
-            self._send_json(
-                404,
-                {
-                    "schema": "server_contract_v0.http_404",
-                    "ok": False,
-                    "reason_code": "NOT_FOUND",
-                    "ts_utc": utc_now_iso(),
-                    "product_id": PRODUCT_ID,
-                    "version": VERSION,
-                },
-            )
+            self._send_json(404, {"schema": "server_contract_v0.http_404", "ok": False, "reason_code": "NOT_FOUND", "ts_utc": utc_now_iso(), "product_id": PRODUCT_ID, "version": VERSION})
 
     return Handler
+
+
+def cmd_help() -> int:
+    emit_one_json(
+        summary(
+            "server_contract_v0.help",
+            True,
+            0,
+            "OK",
+            "OK",
+            commands=["version", "selftest", "ping", "serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200", "--help/-h/help"],
+            endpoints=["GET /", "GET /ui", "GET /health", "GET /ready"],
+        )
+    )
+    return 0
 
 
 def cmd_version() -> int:
@@ -523,49 +544,16 @@ def cmd_ping() -> int:
 
 
 def cmd_selftest() -> int:
-    tests: list[dict[str, Any]] = [
-        {"name": "version_present", "ok": bool(VERSION)},
-        {"name": "stdout_mode_present", "ok": bool(STDOUT_MODE)},
-    ]
+    tests = [{"name": "version_present", "ok": bool(VERSION)}, {"name": "stdout_mode_present", "ok": bool(STDOUT_MODE)}]
     ok_all = all(bool(t["ok"]) for t in tests)
     rc = 0 if ok_all else 1
-    emit_one_json(
-        summary(
-            "server_contract_v0.selftest",
-            ok_all,
-            rc,
-            "OK" if ok_all else "SELFTEST_FAIL",
-            "OK" if ok_all else "SELFTEST_FAIL",
-            tests=tests,
-        )
-    )
+    emit_one_json(summary("server_contract_v0.selftest", ok_all, rc, "OK" if ok_all else "SELFTEST_FAIL", "OK" if ok_all else "SELFTEST_FAIL", tests=tests))
     return rc
 
 
-def cmd_help() -> int:
-    emit_one_json(
-        summary(
-            "server_contract_v0.help",
-            True,
-            0,
-            "OK",
-            "OK",
-            commands=[
-                "version",
-                "selftest",
-                "ping",
-                "serve --host 127.0.0.1 --port 17811 --stop-flag stop.flag --ready-after-ms 200",
-                "--help/-h/help",
-            ],
-            endpoints=["GET /health", "GET /ready"],
-        )
-    )
-    return 0
-
-
-def watch_stop_flag(stop_flag: str, httpd: ThreadingHTTPServer, stop_event: threading.Event) -> None:
+def watch_stop_flag(stop_flag_fs: str, httpd: ThreadingHTTPServer, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
-        if os.path.exists(stop_flag):
+        if os.path.exists(stop_flag_fs):
             break
         time.sleep(0.2)
     try:
@@ -581,20 +569,8 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
     if port <= 0 or port > 65535:
         emit_one_json(summary("server_contract_v0.startup", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="PORT_RANGE"))
         return 1
-
     if _precheck_port_in_use(host, port):
-        emit_one_json(
-            summary(
-                "server_contract_v0.startup",
-                False,
-                2,
-                "INFRA_BIND_FAILED",
-                "INFRA_BIND_FAILED",
-                host=host,
-                port=port,
-                detail="PRECHECK_PORT_IN_USE",
-            )
-        )
+        emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_FAILED", "INFRA_BIND_FAILED", host=host, port=port, detail="PRECHECK_PORT_IN_USE"))
         return 2
 
     state = _State()
@@ -607,25 +583,11 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
         if winerror == 10048:
             emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_FAILED", "INFRA_BIND_FAILED", host=host, port=port))
             return 2
-        emit_one_json(
-            summary(
-                "server_contract_v0.startup",
-                False,
-                2,
-                "INFRA_BIND_ERROR",
-                "INFRA_BIND_ERROR",
-                host=host,
-                port=port,
-                err=str(e),
-                winerror=winerror,
-            )
-        )
-        return 2
-    except Exception as e:
-        emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_ERROR", "INFRA_BIND_ERROR", host=host, port=port, err=str(e)))
+        emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_ERROR", "INFRA_BIND_ERROR", host=host, port=port, err=str(e), winerror=winerror))
         return 2
 
     stop_event = threading.Event()
+    stop_flag_fs = _resolve_stop_flag_path(stop_flag)
 
     def ready_worker() -> None:
         if ready_after_ms > 0:
@@ -633,7 +595,7 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
         state.set_ready(True)
 
     threading.Thread(target=ready_worker, daemon=True).start()
-    threading.Thread(target=watch_stop_flag, args=(stop_flag, httpd, stop_event), daemon=True).start()
+    threading.Thread(target=watch_stop_flag, args=(stop_flag_fs, httpd, stop_event), daemon=True).start()
 
     def shutdown_now() -> None:
         if stop_event.is_set():
@@ -681,27 +643,22 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
             pass
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-
     if not args or "--help" in args or "-h" in args or "help" in args:
         return cmd_help()
-
     cmd = args[0].strip().lower()
-
     if cmd == "version":
         return cmd_version()
     if cmd == "selftest":
         return cmd_selftest()
     if cmd == "ping":
         return cmd_ping()
-
     if cmd == "serve":
         host = "127.0.0.1"
         port = 17811
         stop_flag = ""
         ready_after_ms = 0
-
         i = 1
         while i < len(args):
             a = args[i]
@@ -721,10 +678,8 @@ def main(argv: list[str] | None = None) -> int:
                 ready_after_ms = int(args[i + 1])
                 i += 2
                 continue
-
             emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_FLAG", flag=a))
             return 1
-
         return cmd_serve(host, port, stop_flag, ready_after_ms)
 
     emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_COMMAND", command=cmd))
@@ -743,7 +698,7 @@ def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, 
 
     try:
         current = entry_script.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"ok": False, "reason_code": "INFRA_ENTRY_READ_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
 
     if product_id != "web_dashboard_v0":
@@ -757,15 +712,20 @@ def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, 
 
     try:
         entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
 
     return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
 
 
+def _stdout_ok(res: Dict[str, Any]) -> bool:
+    return (int(res.get("rc", 1)) == 0) and (len((res.get("stdout") or "").strip()) > 0)
+
+
 def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     repo = Path(args.repo).resolve()
 
+    # Resolve inputs
     if args.workspace is None:
         if not args.product_id:
             raise ValueError("BAD_ARGS_MISSING_PRODUCT_ID_OR_WORKSPACE")
@@ -799,12 +759,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         if not config_src.exists():
             raise FileNotFoundError(f"config.example.json not found in workspace: {config_src}")
         src_root = ws
-        inputs = {
-            "mode": "workspace",
-            "product_id": product_id,
-            "workspace": str(ws),
-            "entrypoint": str(entry_script),
-        }
+        inputs = {"mode": "workspace", "product_id": product_id, "workspace": str(ws), "entrypoint": str(entry_script)}
 
     if not entry_script.exists():
         raise FileNotFoundError(f"entrypoint not found: {entry_script}")
@@ -887,7 +842,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
     # STEP 03: ruff
     so, se, ss = step_paths(out_dir, "03", "ruff")
-    ruff = run_cmd([sys.executable, "-m", "ruff", "check", str(src_root)])
+    ruff = run_cmd([sys.executable, "-m", "ruff", "check", str(src_root)], timeout_s=120)
     write_text(so, ruff.get("stdout", ""))
     write_text(se, ruff.get("stderr", ""))
     s3 = {
@@ -907,36 +862,48 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     if not s3["ok"]:
         raise RuntimeError("FAIL_RUFF")
 
-    # STEP 04: python smoke
+    # STEP 04: python smoke (STDOUT must be non-empty)
     so, se, ss = step_paths(out_dir, "04", "python_smoke")
     env = os.environ.copy()
     pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(src_root) if not pp else (str(src_root) + os.pathsep + pp)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
-    smoke_help = run_cmd([sys.executable, str(entry_script), "--help"], cwd=src_root, env=env)
+    smoke_help = run_cmd([sys.executable, str(entry_script), "--help"], cwd=src_root, env=env, timeout_s=60)
     smoke_ver: Optional[Dict[str, Any]] = None
     chosen = "help"
-    ok = smoke_help["rc"] == 0
-    if not ok:
-        smoke_ver = run_cmd([sys.executable, str(entry_script), "version"], cwd=src_root, env=env)
-        chosen = "version"
-        ok = smoke_ver["rc"] == 0
+    ok_smoke = _stdout_ok(smoke_help)
 
-    smoke_obj = {
-        "chosen": chosen,
-        "help": smoke_help,
-        "version": smoke_ver,
-        "cwd": str(src_root),
-        "py_path": env["PYTHONPATH"],
-    }
-    write_text(so, (smoke_help.get("stdout", "") or ""))
-    write_text(se, (smoke_help.get("stderr", "") or ""))
+    if not ok_smoke:
+        smoke_ver = run_cmd([sys.executable, str(entry_script), "version"], cwd=src_root, env=env, timeout_s=60)
+        chosen = "version"
+        ok_smoke = _stdout_ok(smoke_ver)
+
+    smoke_obj = {"chosen": chosen, "help": smoke_help, "version": smoke_ver, "cwd": str(src_root), "py_path": env["PYTHONPATH"]}
+
+    write_text(so, (smoke_help.get("stdout", "") or "") + "\n---\n" + ((smoke_ver or {}).get("stdout", "") or ""))
+    write_text(se, (smoke_help.get("stderr", "") or "") + "\n---\n" + ((smoke_ver or {}).get("stderr", "") or ""))
+
+    child_reason = "OK"
+    if not ok_smoke:
+        if smoke_help.get("rc") != 0:
+            child_reason = "FAIL_PYTHON_SMOKE_HELP_RC"
+        elif len((smoke_help.get("stdout") or "").strip()) == 0:
+            child_reason = "FAIL_PYTHON_SMOKE_HELP_STDOUT_EMPTY"
+        elif smoke_ver is None:
+            child_reason = "FAIL_PYTHON_SMOKE_VERSION_NOT_RUN"
+        elif smoke_ver.get("rc") != 0:
+            child_reason = "FAIL_PYTHON_SMOKE_VERSION_RC"
+        else:
+            child_reason = "FAIL_PYTHON_SMOKE_VERSION_STDOUT_EMPTY"
+
     s4 = {
         "id": "04_python_smoke",
-        "ok": ok,
-        "exit_code": 0 if ok else 1,
-        "reason_code": "OK" if ok else "FAIL_PYTHON_SMOKE",
-        "child_reason_code": "OK" if ok else "FAIL_PYTHON_SMOKE_RC",
+        "ok": ok_smoke,
+        "exit_code": 0 if ok_smoke else 1,
+        "reason_code": "OK" if ok_smoke else "FAIL_PYTHON_SMOKE",
+        "child_reason_code": "OK" if ok_smoke else child_reason,
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
@@ -946,7 +913,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     write_json(ss, s4)
     add_step(s4)
     if not s4["ok"]:
-        raise RuntimeError("FAIL_PYTHON_SMOKE")
+        raise RuntimeError(s4["child_reason_code"])
 
     # STEP 05: toolchain
     so, se, ss = step_paths(out_dir, "05", "toolchain")
@@ -954,9 +921,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         "python": sys.version.replace("\n", " "),
         "python_exe": sys.executable,
         "platform": platform.platform(),
-        "pip": run_cmd([sys.executable, "-m", "pip", "--version"]),
-        "ruff": run_cmd([sys.executable, "-m", "ruff", "--version"]),
-        "pyinstaller": run_cmd([sys.executable, "-m", "PyInstaller", "--version"]),
+        "pip": run_cmd([sys.executable, "-m", "pip", "--version"], timeout_s=60),
+        "ruff": run_cmd([sys.executable, "-m", "ruff", "--version"], timeout_s=60),
+        "pyinstaller": run_cmd([sys.executable, "-m", "PyInstaller", "--version"], timeout_s=60),
     }
     write_text(so, json.dumps(toolchain, ensure_ascii=False, indent=2))
     write_text(se, "")
@@ -1018,7 +985,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     ]
 
     so, se, ss = step_paths(out_dir, "06", "pyinstaller")
-    pyinstaller_res = run_cmd(pyinstaller_cmd, cwd=src_root, env=env)
+    pyinstaller_res = run_cmd(pyinstaller_cmd, cwd=src_root, env=env, timeout_s=None)
     write_text(so, pyinstaller_res.get("stdout", ""))
     write_text(se, pyinstaller_res.get("stderr", ""))
     s6 = {
@@ -1058,28 +1025,30 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     else:
         write_text(config_dst, "{}\n")
 
-    # STEP 07: postcheck (MUST have non-empty stdout for web_dashboard_v0 version)
+    # STEP 07: postcheck (STDOUT must be non-empty for ALL products)
     so, se, ss = step_paths(out_dir, "07", "postcheck")
-    post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir)
-    post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir)
+    post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir, timeout_s=30)
+    post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir, timeout_s=30)
+
     write_text(so, (post_help.get("stdout", "") or "") + "\n---\n" + (post_ver.get("stdout", "") or ""))
     write_text(se, (post_help.get("stderr", "") or "") + "\n---\n" + (post_ver.get("stderr", "") or ""))
 
-    ok_help = post_help["rc"] == 0
-    ok_ver_stdout = True
-    ver_reason = "OK"
-    if product_id == "web_dashboard_v0":
-        ok_ver_stdout = (post_ver["rc"] == 0) and (len((post_ver.get("stdout") or "").strip()) > 0)
-        if not ok_ver_stdout:
-            ver_reason = "FAIL_POSTCHECK_VERSION_STDOUT_EMPTY"
+    ok_help = _stdout_ok(post_help)
+    ok_ver = _stdout_ok(post_ver)
+    ok_post = ok_help and ok_ver
 
-    ok_post = ok_help and ok_ver_stdout
+    child_post = "OK"
+    if not ok_help:
+        child_post = "FAIL_POSTCHECK_HELP_RC" if post_help.get("rc") != 0 else "FAIL_POSTCHECK_HELP_STDOUT_EMPTY"
+    elif not ok_ver:
+        child_post = "FAIL_POSTCHECK_VERSION_RC" if post_ver.get("rc") != 0 else "FAIL_POSTCHECK_VERSION_STDOUT_EMPTY"
+
     s7 = {
         "id": "07_postcheck",
         "ok": ok_post,
         "exit_code": 0 if ok_post else 1,
         "reason_code": "OK" if ok_post else "FAIL_POSTCHECK",
-        "child_reason_code": "OK" if ok_post else (ver_reason if not ok_ver_stdout else "FAIL_POSTCHECK_HELP"),
+        "child_reason_code": "OK" if ok_post else child_post,
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
@@ -1091,7 +1060,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     if not s7["ok"]:
         raise RuntimeError(s7["child_reason_code"])
 
-    # STEP 08: artifacts
+    # STEP 08: artifacts + hashes
     is_server = product_id == "web_dashboard_v0"
     runbook_path = out_dir / "runbook.md"
     evidence_path = out_dir / "evidence.md"
@@ -1099,12 +1068,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
     write_text(runbook_path, build_runbook(exe_name, is_server))
 
-    checks_bundle = {
-        "py_compile": pc,
-        "ruff": ruff,
-        "smoke": smoke_obj,
-    }
-
+    checks_bundle = {"py_compile": pc, "ruff": ruff, "smoke": smoke_obj}
     evidence_md = build_evidence_md(
         inputs=inputs,
         checks=checks_bundle,
@@ -1115,6 +1079,7 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     )
     write_text(evidence_path, evidence_md)
 
+    # Standard: do NOT self-hash hashes.json (no recursion). Hash only primary artifacts.
     hashes = {
         "schema": "hashes_v0",
         "product_id": product_id,
@@ -1124,9 +1089,12 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
             "config.example.json": sha256_file(config_dst),
             "runbook.md": sha256_file(runbook_path),
             "evidence.md": sha256_file(evidence_path),
-            "hashes.json": sha256_file(hashes_path),
         },
     }
+
+    if any(v == "" for v in hashes["files"].values()):
+        raise RuntimeError("FAIL_HASH_MISSING")
+
     write_text(hashes_path, json.dumps(hashes, indent=2, ensure_ascii=False) + "\n")
 
     artifacts = {
@@ -1202,7 +1170,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         emit_json_stdout(payload)
         return int(code)
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         code = classify_exit_code(e)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         if out_dir is None:
