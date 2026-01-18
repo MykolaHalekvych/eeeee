@@ -1,9 +1,14 @@
-param(
+﻿param(
   [string]$Repo = ".",
   [string]$Python = "py -3.11",
   [string]$ControlPlane = "control_plane.json",
   [string]$Product = "cicd_release_pack_v0",
   [string]$Factory = "local",
+
+  # Compatibility with Control runner: accept these even if Product/Factory defaults are used
+  [string]$KitId = "",
+  [ValidateSet("YES","NO")]
+  [string]$RunAcceptance = "YES",
 
   # --- Control non-bypass token (MUST be provided by Control) ---
   [string]$ControlTokenPath = "",
@@ -12,6 +17,58 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+function _QuoteArg([string]$a) {
+  if ($null -eq $a) { return "" }
+  if ($a -match "\s") {
+    $q = $a -replace '"','\"'
+    return '"' + $q + '"'
+  }
+  return $a
+}
+
+function _FmtCmd([string]$exe, [string[]]$args) {
+  $parts = @($exe) + $args
+  $q = @()
+  foreach ($p in $parts) {
+    $pp = [string]$p
+    $q += (_QuoteArg $pp)
+  }
+  return ($q -join " ")
+}
+
+# Parse $Python ("py -3.11") into exe + base args
+$pyParts = $Python -split '\s+'
+$pyExe = $pyParts[0]
+$pyBaseArgs = @()
+if ($pyParts.Length -gt 1) { $pyBaseArgs = $pyParts[1..($pyParts.Length-1)] }
+
+function InvokePyCapture {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Args,
+    [string]$Label = "PY"
+  )
+
+  if ($null -eq $Args -or $Args.Count -eq 0) {
+    throw ("PY_ARGS_EMPTY label=" + $Label)
+  }
+
+  # Ban stdin-mode "-" in this window (too easy to slip into interactive)
+  if ($Args.Count -ge 1 -and $Args[0] -eq "-") {
+    throw ("PY_STDIN_MODE_FORBIDDEN label=" + $Label)
+  }
+
+  $out = & $pyExe @pyBaseArgs @Args
+  $rc = $LASTEXITCODE
+  return @{
+    out = (($out | Out-String).Trim())
+    rc  = [int]$rc
+  }
+}
 
 # ----------------------------
 # M8 RUNS/EVIDENCE v0 (WRAPPED INTO WINDOW)
@@ -26,13 +83,12 @@ $runDir = $null
 $runsEventsPath = $null
 $runsFinalReportPath = $null
 
-$pyParts = $Python -split '\s+'
-$pyExe = $pyParts[0]
-$pyBaseArgs = @()
-if ($pyParts.Length -gt 1) { $pyBaseArgs = $pyParts[1..($pyParts.Length-1)] }
-
 function RunsSafeCall {
   param([string[]]$Args)
+
+  # Critical: never allow accidental "py -3.11" with empty argv
+  if ($null -eq $Args -or $Args.Count -eq 0) { return }
+
   try {
     & $pyExe @pyBaseArgs @Args | Out-Null
   } catch {
@@ -137,6 +193,8 @@ function RunsFinalize {
 # original helpers (kept)
 # ----------------------------
 
+$ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
 function EmitJsonAndExit([hashtable]$obj, [int]$code) {
   $obj.exit_code = $code
 
@@ -163,15 +221,23 @@ function WriteText([string]$path, [string]$text) {
 }
 
 function TempJson([string]$leaf) {
-  $ts = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmssfff")
-  return (Join-Path $env:TEMP ("ARGS_ENGINE_" + $leaf + "_" + $ts + ".json"))
+  $ts2 = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmssfff")
+  return (Join-Path $env:TEMP ("ARGS_ENGINE_" + $leaf + "_" + $ts2 + ".json"))
+}
+
+# --- Map KitId -> Product if caller uses kit_* and Product left default ---
+if (-not [string]::IsNullOrWhiteSpace($KitId)) {
+  if ($KitId -match '^kit_(.+)$') {
+    $maybeProduct = $Matches[1]
+    if ($Product -eq "cicd_release_pack_v0" -and $maybeProduct) {
+      $Product = $maybeProduct
+    }
+  }
 }
 
 # --- Resolve repo root ---
 $repoPath = (Resolve-Path -LiteralPath $Repo).Path
 Set-Location -LiteralPath $repoPath
-
-$ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 
 # ----------------------------
 # CONTROL NON-BYPASS TOKEN CHECK (DENY EARLY)
@@ -231,6 +297,11 @@ if (-not ([string]$tok.nonce -match '^[a-f0-9]{16,64}$')) {
   _ControlTokenDeny "CONTROL_TOKEN.NONCE_INVALID" ("nonce=" + [string]$tok.nonce)
 }
 
+# Optional human acceptance gate (Control always passes YES)
+if ($RunAcceptance -ne "YES") {
+  _ControlTokenDeny "RUN_ACCEPTANCE.DENY" ("RunAcceptance=" + $RunAcceptance)
+}
+
 # --- Guards ---
 if (-not (Test-Path -LiteralPath ".\.args_engine_repo")) {
   EmitJsonAndExit @{
@@ -256,7 +327,7 @@ if (Test-Path -LiteralPath $stopFlag) {
 
     RunsEvent -RunDir $runDir -Event "HALT" -Rc 2 -Data @{ reason="stop.flag present"; stop_flag=$stopFlag }
     RunsFinalize -RunDir $runDir -OverallRc 2 -Seed @{
-      window="scripts/factory_build_window_m8_v1.ps1"
+      window="scripts/factory_build_window_v1.ps1"
       repo_root=$repoPath
       product=$Product
       factory=$Factory
@@ -296,7 +367,7 @@ try {
   if ($runDir) {
     RunsEvent -RunDir $runDir -Event "CONTROL_PLANE_BACKUP" -Rc 2 -Data @{ error=$_.Exception.Message; control_plane=$cpPath }
     RunsFinalize -RunDir $runDir -OverallRc 2 -Seed @{
-      window="scripts/factory_build_window_m8_v1.ps1"
+      window="scripts/factory_build_window_v1.ps1"
       repo_root=$repoPath
       product=$Product
       factory=$Factory
@@ -335,30 +406,46 @@ try {
   # Enable build for this window
   Set-AllowBuild $true
 
-  # 0) Gate
-  $gateCmd = "$Python -m args.foundry.gate_v0 --control-plane .\$ControlPlane"
-  $gateJson = Invoke-Expression $gateCmd
-  $gateRc = $LASTEXITCODE
-  if ($runDir) { RunsEvent -RunDir $runDir -Event "GATE" -Rc $gateRc -Data @{ cmd=$gateCmd } }
-  if ($gateRc -ne 0) { throw "gate failed rc=$gateRc" }
+  # 0) Gate (NO Invoke-Expression; argv only)
+  $gateArgs = @("-m","args.foundry.gate_v0","--control-plane", (".\" + $ControlPlane))
+  $gateCmdStr = _FmtCmd $pyExe (@($pyBaseArgs) + $gateArgs)
+  $gateRes = InvokePyCapture -Args $gateArgs -Label "GATE"
+  $gateJson = $gateRes.out
+  $gateRc = $gateRes.rc
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "GATE" -Rc $gateRc -Data @{ cmd=$gateCmdStr } }
+  if ($gateRc -ne 0) { throw ("gate failed rc=" + $gateRc) }
 
   # 1) Plan
-  $planCmd = "$Python -m args.foundry.plan_v0 --control-plane .\$ControlPlane --product $Product --factory $Factory"
-  $planJson = Invoke-Expression $planCmd
-  $planRc = $LASTEXITCODE
-  if ($runDir) { RunsEvent -RunDir $runDir -Event "PLAN" -Rc $planRc -Data @{ cmd=$planCmd; product=$Product; factory=$Factory } }
-  if ($planRc -ne 0) { throw "plan failed rc=$planRc" }
+  $planArgs = @(
+    "-m","args.foundry.plan_v0",
+    "--control-plane", (".\" + $ControlPlane),
+    "--product", $Product,
+    "--factory", $Factory
+  )
+  $planCmdStr = _FmtCmd $pyExe (@($pyBaseArgs) + $planArgs)
+  $planRes = InvokePyCapture -Args $planArgs -Label "PLAN"
+  $planJson = $planRes.out
+  $planRc = $planRes.rc
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "PLAN" -Rc $planRc -Data @{ cmd=$planCmdStr; product=$Product; factory=$Factory } }
+  if ($planRc -ne 0) { throw ("plan failed rc=" + $planRc) }
 
   # 2) Build
-  $buildCmd = "$Python -m args.foundry.build_v0 --control-plane .\$ControlPlane --product $Product --factory $Factory"
-  $buildJson = Invoke-Expression $buildCmd
-  $buildRc = $LASTEXITCODE
-  if ($runDir) { RunsEvent -RunDir $runDir -Event "BUILD" -Rc $buildRc -Data @{ cmd=$buildCmd; product=$Product } }
-  if ($buildRc -ne 0) { throw "build failed rc=$buildRc" }
+  $buildArgs = @(
+    "-m","args.foundry.build_v0",
+    "--control-plane", (".\" + $ControlPlane),
+    "--product", $Product,
+    "--factory", $Factory
+  )
+  $buildCmdStr = _FmtCmd $pyExe (@($pyBaseArgs) + $buildArgs)
+  $buildRes = InvokePyCapture -Args $buildArgs -Label "BUILD"
+  $buildJson = $buildRes.out
+  $buildRc = $buildRes.rc
+  if ($runDir) { RunsEvent -RunDir $runDir -Event "BUILD" -Rc $buildRc -Data @{ cmd=$buildCmdStr; product=$Product } }
+  if ($buildRc -ne 0) { throw ("build failed rc=" + $buildRc) }
 
   if ($runDir) {
     RunsFinalize -RunDir $runDir -OverallRc 0 -Seed @{
-      window="scripts/factory_build_window_m8_v1.ps1"
+      window="scripts/factory_build_window_v1.ps1"
       repo_root=$repoPath
       product=$Product
       factory=$Factory
@@ -399,7 +486,7 @@ catch {
     }
 
     RunsFinalize -RunDir $runDir -OverallRc $code -Seed @{
-      window="scripts/factory_build_window_m8_v1.ps1"
+      window="scripts/factory_build_window_v1.ps1"
       repo_root=$repoPath
       product=$Product
       factory=$Factory
