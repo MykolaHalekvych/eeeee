@@ -1,0 +1,8 @@
+{
+  "old_id": "foundry_baseline_v0_0019",
+  "new_id": "foundry_baseline_v0_0020",
+  "report_used": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\out\\drift_gate\\DRIFT_PRE_20260118T181256Z\\drift_check\\drift_report.json",
+  "added_paths_count": 11,
+  "missing_dropped_count": 0,
+  "note": "bytes recomputed from filesystem; sha256 recomputed from filesystem"
+}
