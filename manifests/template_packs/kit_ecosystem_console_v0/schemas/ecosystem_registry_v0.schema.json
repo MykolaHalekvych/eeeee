@@ -1,0 +1,36 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ecosystem_registry_v0.schema.json",
+  "title": "ecosystem_registry_v0",
+  "type": "object",
+  "required": ["schema", "schema_version", "systems", "safe_roots"],
+  "properties": {
+    "schema": { "const": "ecosystem_registry_v0" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "ts_utc": { "type": "string" },
+    "safe_roots": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "systems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["system_id", "repo_path"],
+        "properties": {
+          "system_id": { "type": "string" },
+          "display_name": { "type": "string" },
+          "repo_path": { "type": "string" },
+          "runs_root": { "type": ["string","null"] },
+          "releases_root": { "type": ["string","null"] },
+          "proof_packs_root": { "type": ["string","null"] },
+          "version_tag": { "type": ["string","null"] },
+          "entrypoints": { "type": ["object","null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

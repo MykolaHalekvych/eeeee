@@ -1,0 +1,31 @@
+﻿{
+  "schema": "ecosystem_registry_v0",
+  "schema_version": 1,
+  "ts_utc": "2026-01-18T00:00:00Z",
+  "safe_roots": [
+    "C:\\Users\\mukol\\ARGS-",
+    "C:\\Users\\mukol\\ARGS_ARTIFACTS"
+  ],
+  "systems": [
+    {
+      "system_id": "FOUNDRY",
+      "display_name": "ARGS-ENGINEER / Foundry",
+      "repo_path": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0",
+      "runs_root": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\args\\data\\runs",
+      "releases_root": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\dist\\releases",
+      "proof_packs_root": null,
+      "version_tag": null,
+      "entrypoints": { "runbook": "README.md" }
+    },
+    {
+      "system_id": "CONTROL",
+      "display_name": "ARGS-Control",
+      "repo_path": "C:\\Users\\mukol\\ARGS-Control-v0",
+      "runs_root": null,
+      "releases_root": null,
+      "proof_packs_root": null,
+      "version_tag": null,
+      "entrypoints": { "runbook": "README.md" }
+    }
+  ]
+}
