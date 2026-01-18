@@ -1,0 +1,10 @@
+﻿target-version = "py311"
+line-length = 100
+force-exclude = true
+
+extend-exclude = [
+  "legacy_fin/**",
+  "dist/**",
+  "out/**",
+  "args/data/**",
+]
