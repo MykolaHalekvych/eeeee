@@ -6,6 +6,7 @@ import hashlib
 import json
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -14,12 +15,28 @@ from args.foundry.manifests_v0 import ManifestError, load_factories, load_produc
 from args.foundry.gate_v0 import run_gate  # returns (exit_code, summary) with 0/1/2
 
 EXIT_OK = 0
-EXIT_EVAL_FAIL = 1
+EXIT_FAIL = 1
 EXIT_INFRA = 2
 
 # Deterministic ZIP metadata
 FIXED_ZIP_DT = (1980, 1, 1, 0, 0, 0)
 ZIP_MODE_644 = (0o644 & 0xFFFF) << 16
+
+# Gate scope must match the standard repo scope used elsewhere (foundry_gate_v0)
+DEFAULT_GATE_SCOPE: List[str] = [
+    "args",
+    "manifests",
+    "packs",
+    "templates",
+    "scripts",
+    "control_plane.json",
+    ".gitignore",
+    ".gitattributes",
+]
+
+
+def utc_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def dump(obj: Dict[str, Any]) -> None:
@@ -43,6 +60,16 @@ def sha256_file(path: Path) -> str:
 def normalize_rel(p: Path) -> str:
     # Always forward slashes for determinism
     return p.as_posix()
+
+
+def get_field(obj: Any, name: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if hasattr(obj, name):
+        return getattr(obj, name)
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return default
 
 
 def expand_patterns(repo_root: Path, patterns: List[str]) -> List[Path]:
@@ -81,9 +108,7 @@ def expand_patterns(repo_root: Path, patterns: List[str]) -> List[Path]:
     return uniq
 
 
-def policy_check_build(
-    cp: Dict[str, Any], product_id: str, factory_id: str
-) -> Tuple[bool, List[str]]:
+def policy_check_build(cp: Dict[str, Any], product_id: str, factory_id: str) -> Tuple[bool, List[str]]:
     blocked: List[str] = []
     engine = cp.get("engine", {}) if isinstance(cp, dict) else {}
     perms = engine.get("permissions", {}) if isinstance(engine, dict) else {}
@@ -94,17 +119,9 @@ def policy_check_build(
 
     products = allow.get("products", [])
     factories = allow.get("factories", [])
-    if (
-        not isinstance(products, list)
-        or len(products) == 0
-        or product_id not in products
-    ):
+    if (not isinstance(products, list)) or (len(products) == 0) or (product_id not in products):
         blocked.append("product_not_in_allowlist")
-    if (
-        not isinstance(factories, list)
-        or len(factories) == 0
-        or factory_id not in factories
-    ):
+    if (not isinstance(factories, list)) or (len(factories) == 0) or (factory_id not in factories):
         blocked.append("factory_not_in_allowlist")
 
     return (len(blocked) == 0), blocked
@@ -139,6 +156,33 @@ def make_zip_deterministic(zip_path: Path, repo_root: Path, files: List[Path]) -
             zf.writestr(zi, data)
 
 
+def _drop_nondet(obj: Any) -> Any:
+    """
+    Best-effort deterministic filter: strips common volatile keys from nested structures.
+    This is used only for evidence.md (deterministic artifact).
+    """
+    drop = {
+        "ts_utc",
+        "run_id",
+        "out_dir",
+        "stdout_path",
+        "stderr_path",
+        "summary_path",
+        "steps",
+        "duration_ms",
+    }
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if k in drop:
+                continue
+            out[k] = _drop_nondet(v)
+        return out
+    if isinstance(obj, list):
+        return [_drop_nondet(x) for x in obj]
+    return obj
+
+
 def write_evidence(
     out_path: Path,
     product_id: str,
@@ -147,20 +191,21 @@ def write_evidence(
     policy_summary: Dict[str, Any],
     gate_summary: Dict[str, Any],
 ) -> None:
-    # Deterministic: no timestamps, no run_id
+    # Deterministic: no timestamps, no run_id (best-effort stripping from summaries)
+    gate_det = _drop_nondet(gate_summary)
+    policy_det = _drop_nondet(policy_summary)
+
     lines: List[str] = []
     lines.append(f"# Evidence — {product_id} v{version}")
     lines.append("")
-    lines.append("## Gate summary")
+    lines.append("## Gate summary (deterministic)")
     lines.append("```json")
-    lines.append(json.dumps(gate_summary, ensure_ascii=False, indent=2, sort_keys=True))
+    lines.append(json.dumps(gate_det, ensure_ascii=False, indent=2, sort_keys=True))
     lines.append("```")
     lines.append("")
     lines.append("## Policy summary (deterministic)")
     lines.append("```json")
-    lines.append(
-        json.dumps(policy_summary, ensure_ascii=False, indent=2, sort_keys=True)
-    )
+    lines.append(json.dumps(policy_det, ensure_ascii=False, indent=2, sort_keys=True))
     lines.append("```")
     lines.append("")
     lines.append("## Payload files included")
@@ -179,176 +224,211 @@ def main() -> int:
     args = ap.parse_args()
 
     repo_root = find_repo_root(Path("."))
+
+    # Wrap everything so we ALWAYS emit JSON (important for build_window callers)
     try:
+        # repo guard
         require_engine_repo(repo_root)
-    except Exception as e:
-        dump(
-            {
-                "schema": "foundry_build_v0",
-                "ok": False,
-                "exit_code": EXIT_INFRA,
-                "error": str(e),
-            }
-        )
-        return EXIT_INFRA
 
-    # Load control plane
-    cp_path = (repo_root / Path(args.control_plane)).resolve()
-    try:
+        # load control plane
+        cp_path = (repo_root / Path(args.control_plane)).resolve()
         cp = read_json(cp_path)
-    except Exception as e:
-        dump(
-            {
-                "schema": "foundry_build_v0",
-                "ok": False,
-                "exit_code": EXIT_INFRA,
-                "error": f"control_plane load failed: {type(e).__name__}: {e}",
-            }
-        )
-        return EXIT_INFRA
 
-    # Policy must allow build
-    ok_policy, blocked_by = policy_check_build(cp, args.product, args.factory)
-    if not ok_policy:
-        dump(
-            {
-                "schema": "foundry_build_v0",
-                "ok": False,
-                "exit_code": EXIT_INFRA,
-                "blocked_by": blocked_by,
-            }
-        )
-        return EXIT_INFRA
+        # policy must allow build (DENY => FAIL, not INFRA)
+        ok_policy, blocked_by = policy_check_build(cp, args.product, args.factory)
+        if not ok_policy:
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": EXIT_FAIL,
+                    "reason_code": "BUILD.DENY.POLICY",
+                    "blocked_by": blocked_by,
+                }
+            )
+            return EXIT_FAIL
 
-    # Load manifests
-    try:
+        # load manifests
         factories = load_factories(repo_root)
         if args.factory not in factories:
             raise ManifestError(f"unknown factory_id: {args.factory}")
         product = load_product(repo_root, args.product)
+
+        factory = factories[args.factory]
+        default_out_dir = get_field(factory, "default_out_dir", "dist")
+
+        product_id = get_field(product, "product_id", args.product)
+        version = get_field(product, "version", "0.0.0")
+        include_paths = get_field(product, "include_paths", None) or get_field(product, "payload_include_paths", None) or []
+        runbook_template_path = get_field(product, "runbook_template_path", "")
+
+        if not isinstance(include_paths, list) or len(include_paths) == 0:
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": EXIT_FAIL,
+                    "reason_code": "BUILD.FAIL.MANIFEST_EMPTY_INCLUDE_PATHS",
+                    "error": "include_paths/payload_include_paths is empty",
+                }
+            )
+            return EXIT_FAIL
+        if not isinstance(runbook_template_path, str) or not runbook_template_path:
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": EXIT_FAIL,
+                    "reason_code": "BUILD.FAIL.MANIFEST_EMPTY_RUNBOOK_TEMPLATE",
+                    "error": "runbook_template_path missing",
+                }
+            )
+            return EXIT_FAIL
+
+        # Run quality gate — must PASS before build
+        gate_base_out_dir = repo_root / "args" / "data" / "gates" / "gate_v0"
+        gate_base_out_dir.mkdir(parents=True, exist_ok=True)
+
+        gate_code, gate_summary = run_gate(repo_root, gate_base_out_dir, DEFAULT_GATE_SCOPE)
+        if gate_code != 0:
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": int(gate_code),
+                    "reason_code": "BUILD.FAIL.GATE" if int(gate_code) == 1 else "BUILD.INFRA.GATE",
+                    "error": "gate failed",
+                    "gate": gate_summary,
+                }
+            )
+            return int(gate_code)
+
+        # Expand payload and validate build inputs
+        files = expand_patterns(repo_root, include_paths)
+        if len(files) == 0:
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": EXIT_FAIL,
+                    "reason_code": "BUILD.FAIL.EMPTY_PAYLOAD",
+                    "error": "payload include_paths matched 0 files",
+                }
+            )
+            return EXIT_FAIL
+
+        rb_src = repo_root / runbook_template_path
+        if not rb_src.exists():
+            dump(
+                {
+                    "schema": "foundry_build_v0",
+                    "ts_utc": utc_ts(),
+                    "ok": False,
+                    "exit_code": EXIT_FAIL,
+                    "reason_code": "BUILD.FAIL.MISSING_RUNBOOK_TEMPLATE",
+                    "error": f"missing runbook template: {runbook_template_path}",
+                }
+            )
+            return EXIT_FAIL
+
+        included_rel = [normalize_rel(p.relative_to(repo_root)) for p in files]
+
+        # Deterministic policy summary (no timestamps)
+        policy_summary = {
+            "schema": "engine_policy_summary_det_v0",
+            "execution_mode": cp.get("execution_mode", "DRYRUN"),
+            "permissions": (cp.get("engine", {}) or {}).get("permissions", {}),
+            "allowlist": (cp.get("engine", {}) or {}).get("allowlist", {}),
+            "control_plane_sha256": sha256_file(cp_path),
+        }
+
+        out_dir = repo_root / str(default_out_dir) / str(product_id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) runbook.md
+        runbook_path = out_dir / "runbook.md"
+        copy_runbook_bytes(repo_root, runbook_template_path, runbook_path)
+
+        # 2) bundle.zip (deterministic)
+        bundle_path = out_dir / "bundle.zip"
+        make_zip_deterministic(bundle_path, repo_root, files)
+
+        # 3) evidence.md (deterministic)
+        evidence_path = out_dir / "evidence.md"
+        write_evidence(
+            evidence_path,
+            str(product_id),
+            str(version),
+            included_rel,
+            policy_summary,
+            gate_summary,
+        )
+
+        # 4) hashes.json (hash 3 files; no self-hash)
+        hashes = {
+            "schema": "engine_hashes_v0",
+            "product_id": str(product_id),
+            "version": str(version),
+            "files": {
+                "bundle.zip": sha256_file(bundle_path),
+                "evidence.md": sha256_file(evidence_path),
+                "runbook.md": sha256_file(runbook_path),
+            },
+        }
+        hashes_path = out_dir / "hashes.json"
+        hashes_path.write_text(
+            json.dumps(hashes, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ts_utc": utc_ts(),
+                "ok": True,
+                "exit_code": EXIT_OK,
+                "reason_code": "BUILD.OK.PASS",
+                "out_dir": str(out_dir),
+                "artifacts": {
+                    "bundle_zip": str(bundle_path),
+                    "evidence_md": str(evidence_path),
+                    "hashes_json": str(hashes_path),
+                    "runbook_md": str(runbook_path),
+                },
+                "payload_count": len(files),
+            }
+        )
+        return EXIT_OK
+
     except ManifestError as e:
         dump(
             {
                 "schema": "foundry_build_v0",
+                "ts_utc": utc_ts(),
                 "ok": False,
                 "exit_code": EXIT_INFRA,
+                "reason_code": "BUILD.INFRA.MANIFEST_ERROR",
                 "error": str(e),
             }
         )
         return EXIT_INFRA
-
-    # Run quality gate (M4) — must PASS before build
-    gate_code, gate_summary = run_gate(repo_root)
-    if gate_code != 0:
-        dump(
-            {
-                "schema": "foundry_build_v0",
-                "ok": False,
-                "exit_code": gate_code,
-                "error": "gate failed",
-                "gate": gate_summary,
-            }
-        )
-        return gate_code
-
-    # Expand payload and validate build inputs
-    try:
-        files = expand_patterns(repo_root, product.include_paths)
-        if len(files) == 0:
-            raise RuntimeError("payload include_paths matched 0 files")
-        rb_src = repo_root / product.runbook_template_path
-        if not rb_src.exists():
-            raise RuntimeError(
-                f"missing runbook template: {product.runbook_template_path}"
-            )
     except Exception as e:
         dump(
             {
                 "schema": "foundry_build_v0",
+                "ts_utc": utc_ts(),
                 "ok": False,
-                "exit_code": EXIT_EVAL_FAIL,
-                "error": str(e),
+                "exit_code": EXIT_INFRA,
+                "reason_code": "BUILD.INFRA.EXCEPTION",
+                "error": f"{type(e).__name__}: {e}",
             }
         )
-        return EXIT_EVAL_FAIL
-
-    included_rel = [normalize_rel(p.relative_to(repo_root)) for p in files]
-
-    # Deterministic policy summary (no timestamps)
-    policy_summary = {
-        "schema": "engine_policy_summary_det_v0",
-        "execution_mode": cp.get("execution_mode", "DRYRUN"),
-        "permissions": (cp.get("engine", {}) or {}).get("permissions", {}),
-        "allowlist": (cp.get("engine", {}) or {}).get("allowlist", {}),
-        "control_plane_sha256": sha256_file(cp_path),
-    }
-
-    out_dir = repo_root / factories[args.factory].default_out_dir / product.product_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1) runbook.md
-    runbook_path = out_dir / "runbook.md"
-    try:
-        copy_runbook_bytes(repo_root, product.runbook_template_path, runbook_path)
-    except Exception as e:
-        dump(
-            {
-                "schema": "foundry_build_v0",
-                "ok": False,
-                "exit_code": EXIT_EVAL_FAIL,
-                "error": str(e),
-            }
-        )
-        return EXIT_EVAL_FAIL
-
-    # 2) bundle.zip (deterministic)
-    bundle_path = out_dir / "bundle.zip"
-    make_zip_deterministic(bundle_path, repo_root, files)
-
-    # 3) evidence.md (deterministic)
-    evidence_path = out_dir / "evidence.md"
-    write_evidence(
-        evidence_path,
-        product.product_id,
-        product.version,
-        included_rel,
-        policy_summary,
-        gate_summary,
-    )
-
-    # 4) hashes.json (hash 3 files; no self-hash)
-    hashes = {
-        "schema": "engine_hashes_v0",
-        "product_id": product.product_id,
-        "version": product.version,
-        "files": {
-            "bundle.zip": sha256_file(bundle_path),
-            "evidence.md": sha256_file(evidence_path),
-            "runbook.md": sha256_file(runbook_path),
-        },
-    }
-    hashes_path = out_dir / "hashes.json"
-    hashes_path.write_text(
-        json.dumps(hashes, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-    dump(
-        {
-            "schema": "foundry_build_v0",
-            "ok": True,
-            "exit_code": 0,
-            "out_dir": str(out_dir),
-            "artifacts": {
-                "bundle_zip": str(bundle_path),
-                "evidence_md": str(evidence_path),
-                "hashes_json": str(hashes_path),
-                "runbook_md": str(runbook_path),
-            },
-            "payload_count": len(files),
-        }
-    )
-    return EXIT_OK
+        return EXIT_INFRA
 
 
 if __name__ == "__main__":
