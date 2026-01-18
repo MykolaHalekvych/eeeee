@@ -66,6 +66,26 @@
       }
     },
     {
+      "kit_id": "kit_ecosystem_console_v0",
+      "default_product_id": "ecosystem_console_v0",
+      "workspace": {
+        "entrypoint": "src/app.py",
+        "cli_entry": "src/cli.py",
+        "stdlib_only": true
+      },
+      "allowed_paths": [
+        "src/app.py",
+        "src/cli.py",
+        "src/canonical_json_v1.py",
+        "tests/test_smoke.py",
+        "config.example.json",
+        ".gitignore"
+      ],
+      "requirements_default": {
+        "summary": "Create a minimal dashboard scaffold (stdlib-only). Provide CLI commands: ping/selftest/version. The dashboard entrypoint is src/app.py (placeholder)."
+      }
+    },
+    {
       "kit_id": "kit_cicd_release_pack_v0",
       "default_product_id": "cicd_release_pack_v0",
       "workspace": "templates\\cicd_release_pack_v0",
