@@ -1,0 +1,9 @@
+{
+  "old_id": "foundry_baseline_v0_0018",
+  "new_id": "foundry_baseline_v0_0019",
+  "report_used": "C:\\Users\\mukol\\ARGS-Engine-Foundry-v0\\out\\drift_gate\\DRIFT_PRE_20260118T173532Z\\drift_check\\drift_report.json",
+  "modified_count": 3,
+  "added_count": 6,
+  "container_kind": "dict_list",
+  "container_path": "root.entries"
+}
