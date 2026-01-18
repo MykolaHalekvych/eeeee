@@ -1204,27 +1204,33 @@
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/.gitignore",
-      "sha256": "0c1aa49e4b89dad241a73e69e549929053ff23b0202abdb64d2a6acfcedd377b"
+      "sha256": "0c1aa49e4b89dad241a73e69e549929053ff23b0202abdb64d2a6acfcedd377b",
+      "bytes": 35
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/config.example.json",
-      "sha256": "3f2839884670122eedf496a069a74598cd9a677b5afce2e141f45fc5bb903b04"
+      "sha256": "3f2839884670122eedf496a069a74598cd9a677b5afce2e141f45fc5bb903b04",
+      "bytes": 82
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/app.py",
-      "sha256": "401dbbb6c2f9d34014c0261e008791acac94a1c5cbd72f04b3ea281733054e5e"
+      "sha256": "401dbbb6c2f9d34014c0261e008791acac94a1c5cbd72f04b3ea281733054e5e",
+      "bytes": 363
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/canonical_json_v1.py",
-      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306"
+      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306",
+      "bytes": 287
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/cli.py",
-      "sha256": "250ecaa1d663e45dff71b2c8945b545b434693c037926515be6a1154c4c9f502"
+      "sha256": "250ecaa1d663e45dff71b2c8945b545b434693c037926515be6a1154c4c9f502",
+      "bytes": 912
     },
     {
       "path": "manifests/template_packs/kit_ecosystem_console_v0/tests/test_smoke.py",
-      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc"
+      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc",
+      "bytes": 412
     }
   ],
   "policy_sha256": "cb22618d1d30a342d19711666032abf211dc0c004e22c31ca18cd9526d44a7e3",
