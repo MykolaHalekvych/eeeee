@@ -2,12 +2,21 @@ name: ECO-PROOF L1 (2 SKU)
 
 on:
   push:
+    paths-ignore:
+      - "docs/proofs/**"
   pull_request:
+    paths-ignore:
+      - "docs/proofs/**"
   workflow_dispatch:
+
+concurrency:
+  group: eco-proof-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   eco-proof:
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -18,23 +27,53 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Python info
+        shell: pwsh
+        run: |
+          python --version
+          python -m pip --version
+
       - name: Bootstrap tools
         shell: pwsh
         run: |
           python -m pip install -U pip
           python -m pip install ruff pyinstaller
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_tools_v1.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_tools_v1.ps1
 
       - name: Run ECO-PROOF L1 (2 SKU)
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\eco_proof_l1_2sku_v1.ps1 -RunAcceptance "YES"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\eco_proof_l1_2sku_v1.ps1 -RunAcceptance "YES"
 
       - name: Upload artifacts (smoke + releases)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: eco-proof-artifacts
+          retention-days: 7
+          if-no-files-found: warn
           path: |
             args/data/smoke/**
             dist/releases/*.zip
+
+      - name: Verify artifacts exist on success
+        if: success()
+        shell: pwsh
+        run: |
+          $missing = @()
+
+          if (-not (Test-Path "args/data/smoke")) {
+            $missing += "args/data/smoke/**"
+          }
+
+          if (-not (Test-Path "dist/releases")) {
+            $missing += "dist/releases/*.zip"
+          } else {
+            $z = Get-ChildItem "dist/releases" -Filter "*.zip" -ErrorAction SilentlyContinue
+            if (-not $z) { $missing += "dist/releases/*.zip" }
+          }
+
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing expected artifact paths: " + ($missing -join ", "))
+            exit 1
+          }
