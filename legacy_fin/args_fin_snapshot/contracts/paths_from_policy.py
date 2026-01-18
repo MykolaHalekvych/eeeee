@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, List, Set
 
 import yaml
 
@@ -51,7 +51,9 @@ def inventory_from_policy_yaml(policy_path: str) -> PathInventory:
     ops: Set[str] = set()
     _walk(raw, paths, ops)
 
-    return PathInventory(paths=sorted(list(paths)), ops=sorted(list(ops)), blocks=blocks)
+    return PathInventory(
+        paths=sorted(list(paths)), ops=sorted(list(ops)), blocks=blocks
+    )
 
 
 def main() -> int:

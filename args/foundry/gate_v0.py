@@ -1,4 +1,3 @@
-﻿
 from __future__ import annotations
 
 import argparse
@@ -70,7 +69,12 @@ SECRET_PATTERNS = [
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     ("openai_like", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
-    ("generic_secret", re.compile(r"(?i)\b(api[_-]?key|secret|password|token)\b\s*[:=]\s*['\"][^'\"]{8,}['\"]")),
+    (
+        "generic_secret",
+        re.compile(
+            r"(?i)\b(api[_-]?key|secret|password|token)\b\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+        ),
+    ),
 ]
 
 
@@ -148,7 +152,7 @@ def list_scope_files(repo_root: Path, scope: List[str]) -> Tuple[List[Path], Lis
     missing: List[str] = []
 
     for item in scope:
-        p = (rr / item)
+        p = rr / item
 
         if not p.exists():
             missing.append(item)
@@ -167,7 +171,9 @@ def list_scope_files(repo_root: Path, scope: List[str]) -> Tuple[List[Path], Lis
             continue
 
         # Walk with pruning
-        for dirpath, dirnames, filenames in os.walk(str(p), topdown=True, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(
+            str(p), topdown=True, followlinks=False
+        ):
             dp = Path(dirpath)
 
             # prune excluded dirs by name
@@ -202,7 +208,13 @@ def list_scope_files(repo_root: Path, scope: List[str]) -> Tuple[List[Path], Lis
     return out, missing
 
 
-def _write_step(out_dir: Path, step_name: str, stdout_text: str, stderr_text: str, step_summary: Dict[str, Any]) -> Dict[str, Any]:
+def _write_step(
+    out_dir: Path,
+    step_name: str,
+    stdout_text: str,
+    stderr_text: str,
+    step_summary: Dict[str, Any],
+) -> Dict[str, Any]:
     step_dir = out_dir / f"step_{step_name}"
     step_dir.mkdir(parents=True, exist_ok=True)
 
@@ -240,7 +252,9 @@ def py_compile_check(repo_root: Path) -> Tuple[bool, List[str], str]:
         if not t.exists():
             continue
         compiled.append(rel(repo_root, t))
-        r = subprocess.run([sys.executable, "-m", "py_compile", str(t)], capture_output=True, text=True)
+        r = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(t)], capture_output=True, text=True
+        )
         if r.returncode != 0:
             msg = (r.stderr or r.stdout or "").strip()
             errs.append(f"{rel(repo_root, t)} :: {msg[:400]}")
@@ -262,7 +276,9 @@ def ruff_check(repo_root: Path) -> Tuple[int, str]:
     return r.returncode, out
 
 
-def secrets_scan(repo_root: Path, files: List[Path]) -> Tuple[bool, List[Dict[str, Any]], int]:
+def secrets_scan(
+    repo_root: Path, files: List[Path]
+) -> Tuple[bool, List[Dict[str, Any]], int]:
     findings: List[Dict[str, Any]] = []
     read_errors = 0
 
@@ -294,14 +310,21 @@ def secrets_scan(repo_root: Path, files: List[Path]) -> Tuple[bool, List[Dict[st
                     }
                 )
                 # bound spam per file
-                if len([f for f in findings if f.get("path") == rel(repo_root, p)]) >= 10:
+                if (
+                    len([f for f in findings if f.get("path") == rel(repo_root, p)])
+                    >= 10
+                ):
                     break
 
-    ok = (len([f for f in findings if f.get("type") != "read_error"]) == 0) and (read_errors == 0)
+    ok = (len([f for f in findings if f.get("type") != "read_error"]) == 0) and (
+        read_errors == 0
+    )
     return ok, findings, read_errors
 
 
-def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dict[str, Any]]:
+def run_gate(
+    repo_root: Path, out_dir: Path, scope: List[str]
+) -> Tuple[int, Dict[str, Any]]:
     ts = _utc_now_iso()
 
     steps: List[Dict[str, Any]] = []
@@ -336,7 +359,9 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
             },
             ensure_ascii=False,
         )
-        steps.append(_write_step(out_dir, "scope", step0_stdout + "\n", "", step0_summary))
+        steps.append(
+            _write_step(out_dir, "scope", step0_stdout + "\n", "", step0_summary)
+        )
     except KeyboardInterrupt:
         step0_summary = {
             "schema": f"{SCHEMA}.step.scope",
@@ -347,7 +372,9 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
             "reason_code": "INFRA_INTERRUPTED",
             "error": "KeyboardInterrupt",
         }
-        steps.append(_write_step(out_dir, "scope", "", "KeyboardInterrupt\n", step0_summary))
+        steps.append(
+            _write_step(out_dir, "scope", "", "KeyboardInterrupt\n", step0_summary)
+        )
         infra_fail = True
         reason_codes.append("INFRA_INTERRUPTED")
         # minimal summary
@@ -360,7 +387,9 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
             "checks": [],
             "scope_sha256": "",
             "steps": steps,
-            "reason_code": "|".join(reason_codes) if reason_codes else "INFRA_INTERRUPTED",
+            "reason_code": "|".join(reason_codes)
+            if reason_codes
+            else "INFRA_INTERRUPTED",
         }
         return EXIT_INFRA, summary
     except Exception as e:
@@ -373,7 +402,11 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
             "reason_code": "INFRA_SCOPE_LIST",
             "error": f"{type(e).__name__}: {e}",
         }
-        steps.append(_write_step(out_dir, "scope", "", step0_summary["error"] + "\n", step0_summary))
+        steps.append(
+            _write_step(
+                out_dir, "scope", "", step0_summary["error"] + "\n", step0_summary
+            )
+        )
         infra_fail = True
         reason_codes.append("INFRA_SCOPE_LIST")
         summary = {
@@ -413,13 +446,23 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
         "error_count": len(compile_errs),
     }
     step1_stderr = ("\n".join(compile_errs)).strip()
-    steps.append(_write_step(out_dir, "py_compile", compile_stdout.strip() + ("\n" if compile_stdout else ""), step1_stderr + ("\n" if step1_stderr else ""), step1_summary))
+    steps.append(
+        _write_step(
+            out_dir,
+            "py_compile",
+            compile_stdout.strip() + ("\n" if compile_stdout else ""),
+            step1_stderr + ("\n" if step1_stderr else ""),
+            step1_summary,
+        )
+    )
 
     # 2) ruff
     if not ruff_available():
         infra_fail = True
         reason_codes.append("INFRA_MISSING_RUFF")
-        checks.append({"id": "ruff", "ok": False, "infra": True, "missing_tool": "ruff"})
+        checks.append(
+            {"id": "ruff", "ok": False, "infra": True, "missing_tool": "ruff"}
+        )
         step2_summary = {
             "schema": f"{SCHEMA}.step.ruff",
             "ts_utc": ts,
@@ -431,8 +474,10 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
         steps.append(_write_step(out_dir, "ruff", "", "ruff missing\n", step2_summary))
     else:
         ruff_rc, ruff_out = ruff_check(repo_root)
-        ok_ruff = (ruff_rc == 0)
-        checks.append({"id": "ruff", "ok": ok_ruff, "rc": ruff_rc, "output": ruff_out[:2000]})
+        ok_ruff = ruff_rc == 0
+        checks.append(
+            {"id": "ruff", "ok": ok_ruff, "rc": ruff_rc, "output": ruff_out[:2000]}
+        )
         if not ok_ruff:
             eval_fail = True
             reason_codes.append("FAIL_RUFF")
@@ -446,7 +491,15 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
             "reason_code": "PASS" if ok_ruff else "FAIL_RUFF",
             "rc": ruff_rc,
         }
-        steps.append(_write_step(out_dir, "ruff", (ruff_out or "").strip() + ("\n" if ruff_out else ""), "", step2_summary))
+        steps.append(
+            _write_step(
+                out_dir,
+                "ruff",
+                (ruff_out or "").strip() + ("\n" if ruff_out else ""),
+                "",
+                step2_summary,
+            )
+        )
 
     # 3) secrets scan
     ok_secrets, findings, read_errors = secrets_scan(repo_root, files)
@@ -456,7 +509,14 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
         infra_fail = True
         reason_codes.append("INFRA_SECRETS_READ_ERROR")
 
-    checks.append({"id": "secrets_scan", "ok": ok_secrets, "finding_count": len(findings), "findings": findings[:30]})
+    checks.append(
+        {
+            "id": "secrets_scan",
+            "ok": ok_secrets,
+            "finding_count": len(findings),
+            "findings": findings[:30],
+        }
+    )
 
     if not ok_secrets and read_errors == 0:
         eval_fail = True
@@ -466,15 +526,28 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
         "schema": f"{SCHEMA}.step.secrets_scan",
         "ts_utc": ts,
         "ok": ok_secrets,
-        "exit_code": EXIT_OK if ok_secrets else (EXIT_INFRA if read_errors > 0 else EXIT_EVAL_FAIL),
+        "exit_code": EXIT_OK
+        if ok_secrets
+        else (EXIT_INFRA if read_errors > 0 else EXIT_EVAL_FAIL),
         "result": "PASS" if ok_secrets else ("INFRA" if read_errors > 0 else "FAIL"),
-        "reason_code": "PASS" if ok_secrets else ("INFRA_SECRETS_READ_ERROR" if read_errors > 0 else "FAIL_SECRETS_SCAN"),
+        "reason_code": "PASS"
+        if ok_secrets
+        else ("INFRA_SECRETS_READ_ERROR" if read_errors > 0 else "FAIL_SECRETS_SCAN"),
         "finding_count": len(findings),
         "read_error_count": read_errors,
     }
     # keep bounded but useful in stdout
-    step3_stdout = json.dumps({"finding_count": len(findings), "read_error_count": read_errors, "findings": findings[:30]}, ensure_ascii=False)
-    steps.append(_write_step(out_dir, "secrets", step3_stdout + "\n", "", step3_summary))
+    step3_stdout = json.dumps(
+        {
+            "finding_count": len(findings),
+            "read_error_count": read_errors,
+            "findings": findings[:30],
+        },
+        ensure_ascii=False,
+    )
+    steps.append(
+        _write_step(out_dir, "secrets", step3_stdout + "\n", "", step3_summary)
+    )
 
     # Final summary (backward-compatible shape)
     ok_all = (not infra_fail) and (not eval_fail)
@@ -496,7 +569,17 @@ def run_gate(repo_root: Path, out_dir: Path, scope: List[str]) -> Tuple[int, Dic
         "scope": scope,
         "scope_file_count": len(files),
         "checks": checks,
-        "scope_sha256": steps[0].get("reason_code") and (json.loads(Path(steps[0]["stdout_path"]).read_text(encoding="utf-8", errors="ignore") or "{}").get("scope_sha256") or "") or "",
+        "scope_sha256": steps[0].get("reason_code")
+        and (
+            json.loads(
+                Path(steps[0]["stdout_path"]).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+                or "{}"
+            ).get("scope_sha256")
+            or ""
+        )
+        or "",
         "steps": steps,
     }
 
@@ -507,8 +590,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog=SCHEMA)
     ap.add_argument("--control-plane", default="control_plane.json")
     ap.add_argument("--scope", nargs="*", default=None, help="override scope paths")
-    ap.add_argument("--out-dir", default="", help="output directory (default: args/data/gates/gate_v0/<run_id>)")
-    ap.add_argument("--run-id", default="", help="optional run id for default out-dir naming")
+    ap.add_argument(
+        "--out-dir",
+        default="",
+        help="output directory (default: args/data/gates/gate_v0/<run_id>)",
+    )
+    ap.add_argument(
+        "--run-id", default="", help="optional run id for default out-dir naming"
+    )
     args = ap.parse_args()
 
     ts = _utc_now_iso()

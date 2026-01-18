@@ -1,4 +1,3 @@
-
 # args/run/paper_loop_v0.py
 from __future__ import annotations
 
@@ -58,6 +57,7 @@ class PaperLoopConfig:
 # small utilities
 # ---------------------------
 
+
 def _now_id() -> str:
     return uuid.uuid4().hex[:10]
 
@@ -75,7 +75,9 @@ def _json_compact(obj: Dict[str, Any]) -> str:
 
 def _write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
 
 def _write_jsonl_line(f, obj: Dict[str, Any]) -> None:
@@ -107,7 +109,9 @@ def _choose_csv_path(repo_root: Path, rc: Dict[str, Any], cfg: PaperLoopConfig) 
     csv_ibkr = data_dir / "hg_5m_bars_ibkr.csv"
     csv_sample = data_dir / "hg_5m_bars_sample.csv"
 
-    chosen = _resolve_path(repo_root, cfg.csv_path) or _resolve_path(repo_root, str(rc.get("csv_path") or ""))
+    chosen = _resolve_path(repo_root, cfg.csv_path) or _resolve_path(
+        repo_root, str(rc.get("csv_path") or "")
+    )
 
     if chosen is None:
         return csv_ibkr if csv_ibkr.exists() else csv_sample
@@ -229,7 +233,11 @@ def _build_order_intent(
     env: str,
     operator_global_mode: Optional[str],
 ) -> Dict[str, Any]:
-    re0 = tick_ev.get("risk_envelope") if isinstance(tick_ev.get("risk_envelope"), dict) else {}
+    re0 = (
+        tick_ev.get("risk_envelope")
+        if isinstance(tick_ev.get("risk_envelope"), dict)
+        else {}
+    )
     mi = tick_ev.get("ma_input") if isinstance(tick_ev.get("ma_input"), dict) else {}
 
     mode = str(re0.get("mode") or "").strip().upper() or "UNKNOWN"
@@ -250,8 +258,16 @@ def _build_order_intent(
     pos_size = _extract_position_size(tick_ev)
     has_position = abs(pos_size) > 1e-12
 
-    allow_new_entries = (not enforced_no_trade) and (mode == "ALLOW_NEW_ENTRIES") and (ma_decision == "ALLOW")
-    allow_exits = (not enforced_no_trade) and (mode in {"ONLY_EXITS", "ALLOW_NEW_ENTRIES"}) and has_position
+    allow_new_entries = (
+        (not enforced_no_trade)
+        and (mode == "ALLOW_NEW_ENTRIES")
+        and (ma_decision == "ALLOW")
+    )
+    allow_exits = (
+        (not enforced_no_trade)
+        and (mode in {"ONLY_EXITS", "ALLOW_NEW_ENTRIES"})
+        and has_position
+    )
 
     kind = "INTENT_NONE"
     kind_raw = "INTENT_NONE"
@@ -431,7 +447,10 @@ def _inject_order_submit_events(
     inserted = 0
 
     try:
-        with events_path.open("r", encoding="utf-8-sig", errors="replace") as fin, tmp.open("w", encoding="utf-8") as fout:
+        with (
+            events_path.open("r", encoding="utf-8-sig", errors="replace") as fin,
+            tmp.open("w", encoding="utf-8") as fout,
+        ):
             for raw in fin:
                 s = raw.strip()
                 if not s:
@@ -471,7 +490,9 @@ def _inject_order_submit_events(
                         "index": plan.get("index"),
                         "ts": plan.get("ts") or ev.get("ts"),
                         "execute": bool(plan.get("execute", execute_default)),
-                        "payload_execute": bool(plan.get("payload_execute", execute_default))
+                        "payload_execute": bool(
+                            plan.get("payload_execute", execute_default)
+                        )
                         if "payload_execute" in plan
                         else bool(plan.get("execute", execute_default)),
                         "plan_kind": plan.get("plan_kind"),
@@ -499,12 +520,18 @@ def _inject_order_submit_events(
                 pass
 
     unmatched_plans = max(0, plans_total - inserted) if plans_total > 0 else 0
-    return {"ok": True, "inserted": inserted, "plans_total": plans_total, "unmatched_plans": unmatched_plans}
+    return {
+        "ok": True,
+        "inserted": inserted,
+        "plans_total": plans_total,
+        "unmatched_plans": unmatched_plans,
+    }
 
 
 # ---------------------------
 # main pipeline
 # ---------------------------
+
 
 def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[2]
@@ -525,14 +552,15 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
     orders_exec_events: Optional[Path] = None
 
     csv_path = _choose_csv_path(repo_root, rc, cfg)
-    policy_path = (
-        _resolve_path(repo_root, str(rc.get("policy_path") or ""))
-        or (repo_root / "args" / "data" / "invariants_hg_v0.yaml")
+    policy_path = _resolve_path(repo_root, str(rc.get("policy_path") or "")) or (
+        repo_root / "args" / "data" / "invariants_hg_v0.yaml"
     )
 
     max_steps = int(rc.get("max_steps", 0))
     start_index = int(rc.get("start_index", 0))
-    defaults = rc.get("defaults", {}) if isinstance(rc.get("defaults", {}), dict) else {}
+    defaults = (
+        rc.get("defaults", {}) if isinstance(rc.get("defaults", {}), dict) else {}
+    )
 
     if cfg.fresh_run:
         for p in (out_events, out_orders, out_intents, out_payload, out_sendplan):
@@ -648,7 +676,10 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                     operator_global_mode=operator_global_mode,
                 )
 
-                if str(intent.get("kind") or "").strip().upper() in {"INTENT_ENTRY", "INTENT_NEW_ENTRY"}:
+                if str(intent.get("kind") or "").strip().upper() in {
+                    "INTENT_ENTRY",
+                    "INTENT_NEW_ENTRY",
+                }:
                     if not bool(intent.get("allow_new_entries", False)):
                         intent["kind"] = "INTENT_NONE"
                         intent["kind_raw"] = "INTENT_ENTRY_GATED"
@@ -713,11 +744,16 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
 
     if cfg.gen_payload:
         payload_args = [
-            "--intents", str(out_intents),
-            "--execute", ("1" if cfg.execute else "0"),
-            "--force-one-order", ("1" if cfg.force_one_order else "0"),
+            "--intents",
+            str(out_intents),
+            "--execute",
+            ("1" if cfg.execute else "0"),
+            "--force-one-order",
+            ("1" if cfg.force_one_order else "0"),
         ]
-        payload_module_run = _run_module_json(repo_root, "args.wa.order_payload_v0", payload_args)
+        payload_module_run = _run_module_json(
+            repo_root, "args.wa.order_payload_v0", payload_args
+        )
         if not payload_module_run.get("ok", False):
             raise RuntimeError(
                 "order_payload_v0 failed\n"
@@ -726,7 +762,11 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 + f"stderr_tail={payload_module_run.get('stderr_tail')}\n"
             )
 
-        p = payload_module_run.get("parsed") if isinstance(payload_module_run.get("parsed"), dict) else {}
+        p = (
+            payload_module_run.get("parsed")
+            if isinstance(payload_module_run.get("parsed"), dict)
+            else {}
+        )
         if isinstance(p.get("out_path"), str) and p.get("out_path"):
             pp = Path(p["out_path"])
             out_payload = pp if pp.is_absolute() else (repo_root / pp)
@@ -736,16 +776,21 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
             raise FileNotFoundError(f"orders_payload not found: {out_payload}")
 
         sendplan_args = [
-            "--payload", str(out_payload),
-            "--execute", ("1" if cfg.execute else "0"),
-            "--force-one-plan", ("1" if cfg.force_one_plan else "0"),
+            "--payload",
+            str(out_payload),
+            "--execute",
+            ("1" if cfg.execute else "0"),
+            "--force-one-plan",
+            ("1" if cfg.force_one_plan else "0"),
         ]
 
         # Engineering smoke: only when force_one_plan is enabled
         if cfg.probe_allow_first_actionable and cfg.force_one_plan:
             sendplan_args += ["--probe-allow-first-actionable", "1"]
 
-        sendplan_module_run = _run_module_json(repo_root, "args.wa.order_sendplan_v0", sendplan_args)
+        sendplan_module_run = _run_module_json(
+            repo_root, "args.wa.order_sendplan_v0", sendplan_args
+        )
 
         if not sendplan_module_run.get("ok", False):
             if _is_nonfatal_sendplan_failure(sendplan_module_run):
@@ -760,7 +805,11 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                     + f"stderr_tail={sendplan_module_run.get('stderr_tail')}\n"
                 )
 
-        sp = sendplan_module_run.get("parsed") if isinstance(sendplan_module_run.get("parsed"), dict) else {}
+        sp = (
+            sendplan_module_run.get("parsed")
+            if isinstance(sendplan_module_run.get("parsed"), dict)
+            else {}
+        )
         if isinstance(sp.get("out_path"), str) and sp.get("out_path"):
             spp = Path(sp["out_path"])
             out_sendplan = spp if spp.is_absolute() else (repo_root / spp)
@@ -779,12 +828,18 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
             raise FileNotFoundError(f"orders_sendplan not found: {out_sendplan}")
 
         exec_args = [
-            "--sendplan", str(out_sendplan),
-            "--execute", "1",
-            "--ledger-path", str(cfg.exec_ledger_path),
-            "--max-orders", str(int(cfg.exec_max_orders)),
+            "--sendplan",
+            str(out_sendplan),
+            "--execute",
+            "1",
+            "--ledger-path",
+            str(cfg.exec_ledger_path),
+            "--max-orders",
+            str(int(cfg.exec_max_orders)),
         ]
-        exec_module_run = _run_module_json(repo_root, "args.wa.wa_ibkr_executor_v0", exec_args)
+        exec_module_run = _run_module_json(
+            repo_root, "args.wa.wa_ibkr_executor_v0", exec_args
+        )
         if not exec_module_run.get("ok", False):
             raise RuntimeError(
                 "wa_ibkr_executor_v0 failed\n"
@@ -793,14 +848,20 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 + f"stderr_tail={exec_module_run.get('stderr_tail')}\n"
             )
 
-        ep = exec_module_run.get("parsed") if isinstance(exec_module_run.get("parsed"), dict) else {}
+        ep = (
+            exec_module_run.get("parsed")
+            if isinstance(exec_module_run.get("parsed"), dict)
+            else {}
+        )
         outp = ep.get("out_path")
         if isinstance(outp, str) and outp.strip():
             orders_exec_events = Path(outp.strip())
             if not orders_exec_events.is_absolute():
                 orders_exec_events = repo_root / orders_exec_events
         else:
-            orders_exec_events = repo_root / "args" / "data" / f"orders_exec_events_{run_id}.jsonl"
+            orders_exec_events = (
+                repo_root / "args" / "data" / f"orders_exec_events_{run_id}.jsonl"
+            )
 
         if orders_exec_events.exists():
             mr = merge_events_jsonl(out_events, orders_exec_events)
@@ -819,14 +880,20 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 "note": f"exec_events_missing:{orders_exec_events}",
             }
 
-    payload_kind_summary = _count_jsonl_field(out_payload, "payload_kind") if out_payload.exists() else {}
-    sendplan_kind_summary = _count_jsonl_field(out_sendplan, "plan_kind") if out_sendplan.exists() else {}
+    payload_kind_summary = (
+        _count_jsonl_field(out_payload, "payload_kind") if out_payload.exists() else {}
+    )
+    sendplan_kind_summary = (
+        _count_jsonl_field(out_sendplan, "plan_kind") if out_sendplan.exists() else {}
+    )
 
     logs_dir = repo_root / "args" / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     report_path = logs_dir / f"run_report_{run_id}_{cfg.tag}.json"
 
-    top_gate_reasons = sorted(gate_reason_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_gate_reasons = sorted(
+        gate_reason_counts.items(), key=lambda kv: kv[1], reverse=True
+    )[:10]
 
     outputs: Dict[str, Any] = {
         "events_run": str(out_events),
@@ -844,41 +911,36 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
         "fresh_run": cfg.fresh_run,
         "execute": cfg.execute,
         "report_path": str(report_path),
-
         "policy_name": pol.name,
         "schema_version": pol.schema_version,
-
         "instrument": str(defaults.get("instrument", pol.instrument)),
         "timeframe": str(defaults.get("timeframe", pol.timeframe)),
         "env": str(defaults.get("env", pol.environment)),
-
         "inputs": {
             "csv_path": str(csv_path),
             "policy_path": str(policy_path),
         },
         "outputs": outputs,
-
         "harness_summary": h_summary,
-
         "wa_summary": {
             "ticks": n_ticks,
             "orders_written": n_orders,
             "intents_written": n_intents,
             "events_parse_seen": parse_seen,
             "events_parse_errors": parse_errors,
-            "intent_kind_counts": dict(sorted(intent_kind_counts.items(), key=lambda kv: kv[0])),
+            "intent_kind_counts": dict(
+                sorted(intent_kind_counts.items(), key=lambda kv: kv[0])
+            ),
             "top_gate_reasons": top_gate_reasons,
-
-            "payload_module": payload_module_run.get("parsed") or {"ok": payload_module_run.get("ok", False)},
-            "sendplan_module": sendplan_module_run.get("parsed") or {"ok": sendplan_module_run.get("ok", False)},
+            "payload_module": payload_module_run.get("parsed")
+            or {"ok": payload_module_run.get("ok", False)},
+            "sendplan_module": sendplan_module_run.get("parsed")
+            or {"ok": sendplan_module_run.get("ok", False)},
             "sendplan_nonfatal_all_none": bool(sendplan_nonfatal_all_none),
-
             "payload_kind_counts": payload_kind_summary,
             "sendplan_kind_counts": sendplan_kind_summary,
-
             "order_submit_inject": order_submit_inject,
             "order_submit_events": int(order_submit_inject.get("inserted", 0)),
-
             "executor_enabled": bool(cfg.execute),
             "executor_safety": {
                 "exec_max_orders": int(cfg.exec_max_orders),
@@ -887,10 +949,10 @@ def run_paper_loop(cfg: PaperLoopConfig) -> Dict[str, Any]:
                 "force_one_plan": bool(cfg.force_one_plan),
                 "probe_allow_first_actionable": bool(cfg.probe_allow_first_actionable),
             },
-            "executor_module": exec_module_run.get("parsed") or ({"ok": exec_module_run.get("ok", False)} if exec_module_run else {}),
+            "executor_module": exec_module_run.get("parsed")
+            or ({"ok": exec_module_run.get("ok", False)} if exec_module_run else {}),
             "exec_events_merge": exec_merge,
         },
-
         "last_tick": {
             "index": last_tick_index,
             "ts": last_tick_ts,
@@ -910,19 +972,34 @@ def _parse_cli() -> PaperLoopConfig:
 
     ap.add_argument("--tag", default="paper")
     ap.add_argument("--fresh-run", default="1", help="0/1")
-    ap.add_argument("--execute", default="0", help="0/1. When 1: run executor + merge exec events into events_run")
+    ap.add_argument(
+        "--execute",
+        default="0",
+        help="0/1. When 1: run executor + merge exec events into events_run",
+    )
 
     ap.add_argument("--gen-payload", default="1", help="0/1")
     ap.add_argument("--gen-sendplan", default="1", help="0/1")
 
-    ap.add_argument("--csv-path", default="", help="Optional override (absolute or repo-relative)")
+    ap.add_argument(
+        "--csv-path", default="", help="Optional override (absolute or repo-relative)"
+    )
 
     ap.add_argument("--exec-ledger-path", default="args/data/order_ledger_v0.jsonl")
-    ap.add_argument("--exec-max-orders", type=int, default=1, help="Safety cap when execute=1 (0=no limit)")
+    ap.add_argument(
+        "--exec-max-orders",
+        type=int,
+        default=1,
+        help="Safety cap when execute=1 (0=no limit)",
+    )
 
     ap.add_argument("--force-one-order", default="0", help="ENGINEERING ONLY: 0/1")
     ap.add_argument("--force-one-plan", default="0", help="ENGINEERING ONLY: 0/1")
-    ap.add_argument("--probe-allow-first-actionable", default="0", help="ENGINEERING ONLY: 0/1 (requires force-one-plan)")
+    ap.add_argument(
+        "--probe-allow-first-actionable",
+        default="0",
+        help="ENGINEERING ONLY: 0/1 (requires force-one-plan)",
+    )
 
     ns = ap.parse_args()
 
@@ -976,12 +1053,24 @@ def main() -> int:
         "sendplan_nonfatal_all_none:",
         w.get("sendplan_nonfatal_all_none"),
     )
-    re0 = report.get("risk_envelope") if isinstance(report.get("risk_envelope"), dict) else {}
+    re0 = (
+        report.get("risk_envelope")
+        if isinstance(report.get("risk_envelope"), dict)
+        else {}
+    )
     print("mode:", re0.get("mode"), "enforced_no_trade:", re0.get("enforced_no_trade"))
-    ps = report.get("position_state") if isinstance(report.get("position_state"), dict) else {}
+    ps = (
+        report.get("position_state")
+        if isinstance(report.get("position_state"), dict)
+        else {}
+    )
     print("position_size:", ps.get("size"))
 
-    em = w.get("exec_events_merge") if isinstance(w.get("exec_events_merge"), dict) else {}
+    em = (
+        w.get("exec_events_merge")
+        if isinstance(w.get("exec_events_merge"), dict)
+        else {}
+    )
     if em:
         print("exec_events_merge:", em)
 

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import csv
@@ -60,7 +59,9 @@ def _normalize_qc_default(x: Any) -> str:
 def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        f.write(
+            json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
         f.write("\n")
 
 
@@ -107,7 +108,7 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
     if cfg.max_steps and cfg.max_steps > 0:
         end_index = min(total_rows, cfg.start_index + cfg.max_steps)
 
-    slice_rows = rows[cfg.start_index:end_index]
+    slice_rows = rows[cfg.start_index : end_index]
 
     policy = load_policy(str(cfg.policy_path))
     inv = inventory_from_policy_yaml(str(cfg.policy_path))
@@ -201,7 +202,9 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
         if safety.decision == "NO_DECISION":
             summary["processed"] += 1
             summary["safety_no_decision"] += 1
-            summary["ma_decisions"]["NO_DECISION"] = summary["ma_decisions"].get("NO_DECISION", 0) + 1
+            summary["ma_decisions"]["NO_DECISION"] = (
+                summary["ma_decisions"].get("NO_DECISION", 0) + 1
+            )
 
             _append_jsonl(
                 cfg.out_events,
@@ -230,7 +233,9 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                         "enforced_no_trade": True,
                         "note": "live_safety_no_decision",
                     },
-                    "position_state": ma_input.get("position_state") if isinstance(ma_input.get("position_state"), dict) else None,
+                    "position_state": ma_input.get("position_state")
+                    if isinstance(ma_input.get("position_state"), dict)
+                    else None,
                     "ma_input": ma_input,
                     "safety": safety.to_dict(),
                 },
@@ -281,7 +286,9 @@ def run_harness(cfg: RunConfig) -> Dict[str, Any]:
                 "ma_decision": decision,
                 "violations": report.get("violations", []),
                 "risk_envelope": risk_env,
-                "position_state": ma_input.get("position_state") if isinstance(ma_input.get("position_state"), dict) else None,
+                "position_state": ma_input.get("position_state")
+                if isinstance(ma_input.get("position_state"), dict)
+                else None,
                 "ma_input": ma_input,
                 "safety": safety.to_dict(),
             },
@@ -318,4 +325,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

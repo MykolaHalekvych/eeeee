@@ -1,4 +1,3 @@
-
 # args/ui/run_explorer_tab.py
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from args.ui.ops_watchdog_tab import render_ops_watchdog_tab
 
 import streamlit as st
 
@@ -111,7 +109,9 @@ def _mtime_info(path: Path) -> Dict[str, Any]:
         mt = path.stat().st_mtime
         return {
             "exists": True,
-            "mtime_utc": datetime.utcfromtimestamp(mt).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "mtime_utc": datetime.utcfromtimestamp(mt).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            ),
             "age_s": float(time.time() - mt),
         }
     except Exception as e:
@@ -147,7 +147,9 @@ def _clip(s: str, n: int = 2000) -> str:
 # -----------------------------
 # Stage 6 UI: Reconcile helpers
 # -----------------------------
-def _run_snapshot_refresh(repo: Path, out_path: Path, timeout_s: float = 30.0) -> Dict[str, Any]:
+def _run_snapshot_refresh(
+    repo: Path, out_path: Path, timeout_s: float = 30.0
+) -> Dict[str, Any]:
     """
     Safe action: refresh open-orders snapshot via snapshotter.
     Does NOT trade and does NOT run executor.
@@ -184,18 +186,24 @@ def _run_snapshot_refresh(repo: Path, out_path: Path, timeout_s: float = 30.0) -
             "stdout": (cp.stdout or "").strip(),
             "stderr": (cp.stderr or "").strip(),
             "out_path": str(out_path),
-            "mtime_utc": _mtime_info(out_path).get("mtime_utc") if out_path.exists() else None,
+            "mtime_utc": _mtime_info(out_path).get("mtime_utc")
+            if out_path.exists()
+            else None,
         }
     except Exception as e:
         return {
             "ok": False,
             "error": repr(e),
             "out_path": str(out_path),
-            "mtime_utc": _mtime_info(out_path).get("mtime_utc") if out_path.exists() else None,
+            "mtime_utc": _mtime_info(out_path).get("mtime_utc")
+            if out_path.exists()
+            else None,
         }
 
 
-def _scan_last_skip_reconcile(exec_events_path: Path, max_lines: int = 200_000) -> Optional[Dict[str, Any]]:
+def _scan_last_skip_reconcile(
+    exec_events_path: Path, max_lines: int = 200_000
+) -> Optional[Dict[str, Any]]:
     """
     Best-effort: scan exec events for last ORDER_SKIP_RECONCILE.
     Works even if there is no run_report wiring.
@@ -249,20 +257,33 @@ def _load_control_state(data_dir: Path) -> Dict[str, Any]:
     """
     p = _control_state_path(data_dir)
     if not p.exists():
-        return {"_ok": True, "_exists": False, "_path": str(p), "global_mode": "NO_TRADE"}
+        return {
+            "_ok": True,
+            "_exists": False,
+            "_path": str(p),
+            "global_mode": "NO_TRADE",
+        }
 
     try:
         with p.open("r", encoding="utf-8-sig", errors="replace") as f:
             obj = json.load(f)
         if not isinstance(obj, dict):
             obj = {}
-        obj["global_mode"] = _normalize_global_mode(obj.get("global_mode"), default="NO_TRADE")
+        obj["global_mode"] = _normalize_global_mode(
+            obj.get("global_mode"), default="NO_TRADE"
+        )
         obj["_ok"] = True
         obj["_exists"] = True
         obj["_path"] = str(p)
         return obj
     except Exception as e:
-        return {"_ok": False, "_exists": True, "_path": str(p), "_error": str(e), "global_mode": "NO_TRADE"}
+        return {
+            "_ok": False,
+            "_exists": True,
+            "_path": str(p),
+            "_error": str(e),
+            "global_mode": "NO_TRADE",
+        }
 
 
 def _save_control_state(data_dir: Path, global_mode: str) -> Tuple[bool, str]:
@@ -308,10 +329,16 @@ def _fmt(v):
 
 def _extract_ma_explain(evt: dict, control_state: dict) -> dict:
     ma_input = evt.get("ma_input", {}) if isinstance(evt.get("ma_input"), dict) else {}
-    state_d = ma_input.get("state", {}) if isinstance(ma_input.get("state"), dict) else {}
+    state_d = (
+        ma_input.get("state", {}) if isinstance(ma_input.get("state"), dict) else {}
+    )
     risk_d = ma_input.get("risk", {}) if isinstance(ma_input.get("risk"), dict) else {}
 
-    re_d = evt.get("risk_envelope", {}) if isinstance(evt.get("risk_envelope"), dict) else {}
+    re_d = (
+        evt.get("risk_envelope", {})
+        if isinstance(evt.get("risk_envelope"), dict)
+        else {}
+    )
     limits = re_d.get("limits", {}) if isinstance(re_d.get("limits"), dict) else {}
 
     operator_mode = None
@@ -340,7 +367,9 @@ def _extract_ma_explain(evt: dict, control_state: dict) -> dict:
             "conf_min": limits.get("conf_min"),
             "margin_max": limits.get("margin_max"),
         },
-        "violations": evt.get("violations", []) if isinstance(evt.get("violations"), list) else [],
+        "violations": evt.get("violations", [])
+        if isinstance(evt.get("violations"), list)
+        else [],
     }
     return out
 
@@ -362,7 +391,9 @@ def _compute_mismatch_flags(explain: dict) -> List[str]:
         flags.append("ma_decision=ALLOW while risk_envelope.mode=NO_TRADE")
 
     if (not enforced) and ex == "ALLOW_NEW_ENTRIES" and rx != "ALLOW_NEW_ENTRIES":
-        flags.append("exec.global_mode=ALLOW_NEW_ENTRIES but risk_envelope.mode != ALLOW_NEW_ENTRIES")
+        flags.append(
+            "exec.global_mode=ALLOW_NEW_ENTRIES but risk_envelope.mode != ALLOW_NEW_ENTRIES"
+        )
 
     if op and ex and op != ex:
         flags.append(f"operator global_mode ({op}) != ma_input.exec.global_mode ({ex})")
@@ -384,7 +415,9 @@ def _render_step5_ma_explain(evt: dict, control_state: dict) -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("Operator global_mode", _fmt(ex["operator_global_mode"]))
     c2.metric("ma_input.exec.global_mode", _fmt(ex["ma_input_exec_global_mode"]))
-    c3.metric("risk_envelope.exec_global_mode", _fmt(ex["risk_envelope_exec_global_mode"]))
+    c3.metric(
+        "risk_envelope.exec_global_mode", _fmt(ex["risk_envelope_exec_global_mode"])
+    )
 
     # Core decision/mode
     d1, d2, d3, d4 = st.columns(4)
@@ -401,10 +434,26 @@ def _render_step5_ma_explain(evt: dict, control_state: dict) -> None:
     truth = ex["truth"]
     lim = ex["limits"]
     rows = [
-        {"field": "state.regime", "value": _fmt(truth.get("state.regime")), "limit": ""},
-        {"field": "state.confidence", "value": _fmt(truth.get("state.confidence")), "limit": f"conf_min={_fmt(lim.get('conf_min'))}"},
-        {"field": "state.tail_risk", "value": _fmt(truth.get("state.tail_risk")), "limit": ""},
-        {"field": "risk.margin_usage", "value": _fmt(truth.get("risk.margin_usage")), "limit": f"margin_max={_fmt(lim.get('margin_max'))}"},
+        {
+            "field": "state.regime",
+            "value": _fmt(truth.get("state.regime")),
+            "limit": "",
+        },
+        {
+            "field": "state.confidence",
+            "value": _fmt(truth.get("state.confidence")),
+            "limit": f"conf_min={_fmt(lim.get('conf_min'))}",
+        },
+        {
+            "field": "state.tail_risk",
+            "value": _fmt(truth.get("state.tail_risk")),
+            "limit": "",
+        },
+        {
+            "field": "risk.margin_usage",
+            "value": _fmt(truth.get("risk.margin_usage")),
+            "limit": f"margin_max={_fmt(lim.get('margin_max'))}",
+        },
     ]
     st.table(rows)
 
@@ -428,8 +477,14 @@ def _render_step5_ma_explain(evt: dict, control_state: dict) -> None:
         st.write("No violations in this event.")
 
     # Dominance hint
-    if bool(ex.get("enforced_no_trade")) and str(ex.get("ma_input_exec_global_mode") or "").strip().upper() == "ALLOW_NEW_ENTRIES":
-        st.info("Operator ALLOW_NEW_ENTRIES is dominated by enforced_no_trade (expected).")
+    if (
+        bool(ex.get("enforced_no_trade"))
+        and str(ex.get("ma_input_exec_global_mode") or "").strip().upper()
+        == "ALLOW_NEW_ENTRIES"
+    ):
+        st.info(
+            "Operator ALLOW_NEW_ENTRIES is dominated by enforced_no_trade (expected)."
+        )
 
 
 # -----------------------------
@@ -446,7 +501,11 @@ def read_json_safe(path: Path) -> Dict[str, Any]:
 def _read_ibkr_connection(data_dir: Path) -> Dict[str, Any]:
     cfg_path = data_dir / "ibkr_connection_v0.json"
     if not cfg_path.exists():
-        return {"ok": False, "error": "ibkr_connection_v0.json missing", "path": str(cfg_path)}
+        return {
+            "ok": False,
+            "error": "ibkr_connection_v0.json missing",
+            "path": str(cfg_path),
+        }
     obj = read_json_safe(cfg_path)
     if obj.get("_ok") is False:
         return {"ok": False, "error": obj.get("_error"), "path": str(cfg_path)}
@@ -463,7 +522,7 @@ def _tcp_check(host: str, port: int, timeout_s: float = 0.35) -> bool:
     else:
         targets = [(host, int(port))]
 
-    for (hh, pp) in targets:
+    for hh, pp in targets:
         try:
             with socket.create_connection((hh, pp), timeout=timeout_s):
                 return True
@@ -495,13 +554,24 @@ def _get_task_info(task_name: str) -> Dict[str, Any]:
 
     try:
         cp = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
             capture_output=True,
             text=True,
             timeout=2.5,
         )
         if cp.returncode != 0:
-            return {"ok": False, "error": (cp.stderr or cp.stdout or "").strip(), "returncode": cp.returncode}
+            return {
+                "ok": False,
+                "error": (cp.stderr or cp.stdout or "").strip(),
+                "returncode": cp.returncode,
+            }
         raw = (cp.stdout or "").strip()
         if not raw:
             return {"ok": False, "error": "empty output"}
@@ -525,7 +595,14 @@ _RX_SENDPLAN = re.compile(r"^orders_sendplan_(?P<rid>.+)\.jsonl$", re.IGNORECASE
 
 def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
     runs: Dict[str, Dict[str, Optional[Path]]] = defaultdict(
-        lambda: {"events": None, "orders": None, "report": None, "oi": None, "payload": None, "sendplan": None}
+        lambda: {
+            "events": None,
+            "orders": None,
+            "report": None,
+            "oi": None,
+            "payload": None,
+            "sendplan": None,
+        }
     )
     mtimes: Dict[str, float] = {}
 
@@ -595,7 +672,9 @@ def build_run_index(data_dir: Path, logs_dir: Path) -> List[RunArtifacts]:
         completeness = "+".join(parts) if parts else "none"
         lm = None
         if rid in mtimes:
-            lm = datetime.utcfromtimestamp(mtimes[rid]).strftime("%Y-%m-%d %H:%M:%S UTC")
+            lm = datetime.utcfromtimestamp(mtimes[rid]).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            )
 
         out.append(
             RunArtifacts(
@@ -637,7 +716,9 @@ def _extract_decision(obj: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> Dict[str, Any]:
+def summarize_jsonl(
+    path: Path, tail_n: int = 25, max_lines: int = 200_000
+) -> Dict[str, Any]:
     total = 0
     parse_errors = 0
     decision_counts: Dict[str, int] = defaultdict(int)
@@ -657,7 +738,11 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
                 return
         if isinstance(v, str):
             try:
-                dt = datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+                dt = (
+                    datetime.fromisoformat(v.replace("Z", "+00:00"))
+                    .astimezone()
+                    .replace(tzinfo=None)
+                )
                 ts_min = min(ts_min, dt) if ts_min else dt
                 ts_max = max(ts_max, dt) if ts_max else dt
             except Exception:
@@ -688,7 +773,14 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
                     parse_errors += 1
                     continue
     except Exception as e:
-        return {"ok": False, "error": str(e), "total": 0, "parse_errors": 0, "decision_counts": {}, "tail_raw": []}
+        return {
+            "ok": False,
+            "error": str(e),
+            "total": 0,
+            "parse_errors": 0,
+            "decision_counts": {},
+            "tail_raw": [],
+        }
 
     return {
         "ok": True,
@@ -702,7 +794,9 @@ def summarize_jsonl(path: Path, tail_n: int = 25, max_lines: int = 200_000) -> D
     }
 
 
-def _scan_tick_events(events_path: Path, max_ticks: int = 250, max_lines: int = 250_000) -> List[Dict[str, Any]]:
+def _scan_tick_events(
+    events_path: Path, max_ticks: int = 250, max_lines: int = 250_000
+) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:
         with events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
@@ -750,10 +844,19 @@ def _tick_label(e: Dict[str, Any]) -> str:
     return f"idx={idx} ts={ts} dec={dec} mode={mode} enforced={enforced} v={vcount}"
 
 
-_STEP6_EVENT_TYPES = {"ORDER_INTENT", "ORDER_SUBMIT", "ORDER_ACK", "ORDER_REJECT", "ORDER_FILL", "EXEC_FILL"}
+_STEP6_EVENT_TYPES = {
+    "ORDER_INTENT",
+    "ORDER_SUBMIT",
+    "ORDER_ACK",
+    "ORDER_REJECT",
+    "ORDER_FILL",
+    "EXEC_FILL",
+}
 
 
-def _summarize_step6_events(events_path: Path, max_lines: int = 250_000) -> Dict[str, int]:
+def _summarize_step6_events(
+    events_path: Path, max_lines: int = 250_000
+) -> Dict[str, int]:
     counts: Dict[str, int] = defaultdict(int)
     try:
         with events_path.open("r", encoding="utf-8-sig", errors="replace") as f:
@@ -779,7 +882,9 @@ def _summarize_step6_events(events_path: Path, max_lines: int = 250_000) -> Dict
     return dict(sorted(counts.items(), key=lambda kv: kv[0]))
 
 
-def summarize_order_intents_jsonl(path: Path, tail_n: int = 15, max_lines: int = 250_000) -> Dict[str, Any]:
+def summarize_order_intents_jsonl(
+    path: Path, tail_n: int = 15, max_lines: int = 250_000
+) -> Dict[str, Any]:
     total = 0
     parse_errors = 0
     none = 0
@@ -838,7 +943,9 @@ def summarize_order_intents_jsonl(path: Path, tail_n: int = 15, max_lines: int =
     }
 
 
-def summarize_payload_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_000) -> Dict[str, Any]:
+def summarize_payload_jsonl(
+    path: Path, tail_n: int = 10, max_lines: int = 250_000
+) -> Dict[str, Any]:
     total = 0
     parse_errors = 0
     kinds: Dict[str, int] = defaultdict(int)
@@ -881,7 +988,9 @@ def summarize_payload_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_0
     }
 
 
-def summarize_sendplan_jsonl(path: Path, tail_n: int = 10, max_lines: int = 250_000) -> Dict[str, Any]:
+def summarize_sendplan_jsonl(
+    path: Path, tail_n: int = 10, max_lines: int = 250_000
+) -> Dict[str, Any]:
     total = 0
     parse_errors = 0
     kinds: Dict[str, int] = defaultdict(int)
@@ -989,10 +1098,14 @@ def render_run_explorer_tab() -> None:
         p = control_state.get("_path")
         ok = control_state.get("_ok", True)
         if not ok:
-            st.error(f"Failed to read control_state.json: {control_state.get('_error')}")
+            st.error(
+                f"Failed to read control_state.json: {control_state.get('_error')}"
+            )
         st.caption(f"Path: {p}")
 
-        current_mode = _normalize_global_mode(control_state.get("global_mode"), default="NO_TRADE")
+        current_mode = _normalize_global_mode(
+            control_state.get("global_mode"), default="NO_TRADE"
+        )
         st.caption(f"File global_mode (loaded): {current_mode}")
 
         c1, c2, c3 = st.columns([2, 1, 2])
@@ -1000,7 +1113,9 @@ def render_run_explorer_tab() -> None:
             new_mode = st.selectbox(
                 "global_mode",
                 _ALLOWED_GLOBAL_MODES,
-                index=_ALLOWED_GLOBAL_MODES.index(current_mode) if current_mode in _ALLOWED_GLOBAL_MODES else 0,
+                index=_ALLOWED_GLOBAL_MODES.index(current_mode)
+                if current_mode in _ALLOWED_GLOBAL_MODES
+                else 0,
                 key="cp_global_mode_select",
                 help="Operator intent. Can be dominated by enforced_no_trade.",
                 disabled=not operator_mode,
@@ -1014,7 +1129,9 @@ def render_run_explorer_tab() -> None:
                 else:
                     st.error(f"Save failed: {msg}")
         with c3:
-            st.caption("Operator mode controls whether Save is enabled (safe-by-default).")
+            st.caption(
+                "Operator mode controls whether Save is enabled (safe-by-default)."
+            )
 
     # -----------------------------
     # Ops status (read-only)
@@ -1034,29 +1151,42 @@ def render_run_explorer_tab() -> None:
             c1.metric("Task state", str(d.get("State", "n/a")))
             c2.metric("LastTaskResult", f"{last_hex}")
             c3.metric("Missed runs", str(d.get("NumberOfMissedRuns", "n/a")))
-            c4.metric("Args", "… -Once" if "-Once" in str(d.get("Arguments", "")) else str(d.get("Arguments", ""))[:16] + "…")
-            st.caption(f"LastRunTime: {_fmt_task_dt(d.get('LastRunTime'))} | NextRunTime: {_fmt_task_dt(d.get('NextRunTime'))}")
+            c4.metric(
+                "Args",
+                "… -Once"
+                if "-Once" in str(d.get("Arguments", ""))
+                else str(d.get("Arguments", ""))[:16] + "…",
+            )
+            st.caption(
+                f"LastRunTime: {_fmt_task_dt(d.get('LastRunTime'))} | NextRunTime: {_fmt_task_dt(d.get('NextRunTime'))}"
+            )
         else:
             st.warning(f"ScheduledTask read failed: {task.get('error')}")
 
         latest_log = _latest_matching(logs_dir, prefix="auto_loop_", suffix=".log")
         if latest_log:
             li = _mtime_info(latest_log)
-            st.caption(f"Latest auto_loop log: {latest_log.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0))}")
+            st.caption(
+                f"Latest auto_loop log: {latest_log.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0))}"
+            )
         else:
             st.caption("Latest auto_loop log: n/a")
 
         lock_path = logs_dir / "auto_loop.lock"
         lock = _mtime_info(lock_path) if lock_path.exists() else {"exists": False}
         if lock.get("exists"):
-            st.warning(f"LOCK present: {lock_path} | {lock.get('mtime_utc')} | age {_fmt_age(lock.get('age_s', 0))}")
+            st.warning(
+                f"LOCK present: {lock_path} | {lock.get('mtime_utc')} | age {_fmt_age(lock.get('age_s', 0))}"
+            )
         else:
             st.caption("LOCK: not present (OK)")
 
         csv_path = data_dir / "hg_5m_bars_ibkr.csv"
         csv_i = _mtime_info(csv_path) if csv_path.exists() else {"exists": False}
         if csv_i.get("exists"):
-            st.caption(f"IBKR CSV: {csv_i.get('mtime_utc')} | age {_fmt_age(csv_i.get('age_s', 0))}")
+            st.caption(
+                f"IBKR CSV: {csv_i.get('mtime_utc')} | age {_fmt_age(csv_i.get('age_s', 0))}"
+            )
         else:
             st.caption("IBKR CSV: missing")
 
@@ -1072,7 +1202,9 @@ def render_run_explorer_tab() -> None:
         latest_oi = _latest_matching(data_dir, prefix="order_intents_", suffix=".jsonl")
         if latest_oi:
             oi = _mtime_info(latest_oi)
-            st.caption(f"Latest order_intents: {latest_oi.name} | {oi.get('mtime_utc')} | age {_fmt_age(oi.get('age_s', 0))}")
+            st.caption(
+                f"Latest order_intents: {latest_oi.name} | {oi.get('mtime_utc')} | age {_fmt_age(oi.get('age_s', 0))}"
+            )
         else:
             st.caption("Latest order_intents: n/a")
 
@@ -1084,7 +1216,9 @@ def render_run_explorer_tab() -> None:
         m = _mtime_info(live_snapshot)
         st.caption(f"Live snapshot path: {live_snapshot}")
         if m.get("exists"):
-            st.caption(f"Live snapshot mtime: {m.get('mtime_utc')} | age {_fmt_age(m.get('age_s', 0.0))}")
+            st.caption(
+                f"Live snapshot mtime: {m.get('mtime_utc')} | age {_fmt_age(m.get('age_s', 0.0))}"
+            )
         else:
             st.warning("Live snapshot missing (OK if not refreshed yet).")
 
@@ -1097,7 +1231,9 @@ def render_run_explorer_tab() -> None:
                 safe_open_folder(logs_dir)
         with c3:
             if operator_mode:
-                if st.button("Refresh Open Orders Snapshot", key="recon_refresh_snapshot"):
+                if st.button(
+                    "Refresh Open Orders Snapshot", key="recon_refresh_snapshot"
+                ):
                     res = _run_snapshot_refresh(root, live_snapshot, timeout_s=30.0)
                     st.session_state["recon_last_refresh"] = res
                     _st_rerun()
@@ -1121,11 +1257,15 @@ def render_run_explorer_tab() -> None:
                 st.code(_clip(str(last_refresh.get("stderr")), 2000), language="text")
 
         # Best-effort: show latest executor reconcile event from latest orders_exec_events_*.jsonl
-        latest_exec = _latest_matching(data_dir, prefix="orders_exec_events_", suffix=".jsonl")
+        latest_exec = _latest_matching(
+            data_dir, prefix="orders_exec_events_", suffix=".jsonl"
+        )
         if latest_exec and latest_exec.exists():
             st.markdown("**Latest executor events (orders_exec_events_*.jsonl)**")
             li = _mtime_info(latest_exec)
-            st.caption(f"{latest_exec.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0.0))}")
+            st.caption(
+                f"{latest_exec.name} | {li.get('mtime_utc')} | age {_fmt_age(li.get('age_s', 0.0))}"
+            )
 
             last_skip = _scan_last_skip_reconcile(latest_exec)
             if isinstance(last_skip, dict):
@@ -1138,7 +1278,9 @@ def render_run_explorer_tab() -> None:
                     }
                 )
             else:
-                st.caption("No ORDER_SKIP_RECONCILE found in latest executor events (OK).")
+                st.caption(
+                    "No ORDER_SKIP_RECONCILE found in latest executor events (OK)."
+                )
         else:
             st.caption("No orders_exec_events_*.jsonl found yet (run executor once).")
 
@@ -1199,7 +1341,10 @@ def render_run_explorer_tab() -> None:
         st.info("No runs found yet. Generate a run first (paper loop / demo).")
         st.stop()
 
-    run_labels = [f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}" for r in runs]
+    run_labels = [
+        f"{r.run_id}  |  {r.completeness}  |  {r.last_modified_utc or 'mtime: n/a'}"
+        for r in runs
+    ]
 
     if operator_mode and auto_refresh_enabled and follow_latest and run_labels:
         st.session_state["runexp_select_run"] = run_labels[0]
@@ -1215,9 +1360,13 @@ def render_run_explorer_tab() -> None:
         "events_path": str(selected.events_path) if selected.events_path else None,
         "orders_path": str(selected.orders_path) if selected.orders_path else None,
         "report_path": str(selected.report_path) if selected.report_path else None,
-        "order_intents_path": str(selected.order_intents_path) if selected.order_intents_path else None,
+        "order_intents_path": str(selected.order_intents_path)
+        if selected.order_intents_path
+        else None,
         "payload_path": str(selected.payload_path) if selected.payload_path else None,
-        "sendplan_path": str(selected.sendplan_path) if selected.sendplan_path else None,
+        "sendplan_path": str(selected.sendplan_path)
+        if selected.sendplan_path
+        else None,
     }
     st.json(meta)
 
@@ -1347,7 +1496,9 @@ def render_run_explorer_tab() -> None:
                 st.json({k: v for (k, v) in oi["top_gate_reasons"]})
 
             if oi.get("truncated"):
-                st.warning("order_intents file is large; UI scan is truncated for safety.")
+                st.warning(
+                    "order_intents file is large; UI scan is truncated for safety."
+                )
 
             with st.expander("Tail (last 15 lines)", expanded=False):
                 st.code("\n".join(oi["tail_raw"]), language="json")
@@ -1403,4 +1554,3 @@ def render_run_explorer_tab() -> None:
 
     # Auto-refresh tick (last)
     _auto_refresh_tick(auto_refresh_enabled and operator_mode, interval_s)
-

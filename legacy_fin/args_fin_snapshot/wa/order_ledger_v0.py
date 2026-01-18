@@ -1,4 +1,3 @@
-
 # args/wa/order_ledger_v0.py
 from __future__ import annotations
 
@@ -52,7 +51,12 @@ _VOLATILE_KEYS = {
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _u(x: Any) -> str:
@@ -84,7 +88,9 @@ def _rank(state: str) -> int:
     return _STATE_RANK.get(_u(state), 0)
 
 
-def compute_idempotency_key_from_plan(plan: Dict[str, Any], *, prefix: str = "") -> Tuple[str, str]:
+def compute_idempotency_key_from_plan(
+    plan: Dict[str, Any], *, prefix: str = ""
+) -> Tuple[str, str]:
     """
     Returns (ledger_key, fingerprint).
 
@@ -100,7 +106,11 @@ def compute_idempotency_key_from_plan(plan: Dict[str, Any], *, prefix: str = "")
     rid = run_id if run_id else "unknown"
 
     # Prefer explicit idempotency key if present
-    ik = plan.get("idempotency_key") or plan.get("ledger_key") or plan.get("idempotencyKey")
+    ik = (
+        plan.get("idempotency_key")
+        or plan.get("ledger_key")
+        or plan.get("idempotencyKey")
+    )
     if isinstance(ik, str) and ik.strip():
         key = f"{pfx}{rid}:{ik.strip()}"
         return key, ""
@@ -166,7 +176,9 @@ class OrderLedgerV0:
                     rid = str(obj.get("run_id") or "").strip()
                     if not lk or not st:
                         continue
-                    detail = obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
+                    detail = (
+                        obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
+                    )
                     prev = self._index.get(lk)
                     # keep most advanced state by rank; if equal rank keep latest ts
                     if prev is None:
@@ -177,7 +189,9 @@ class OrderLedgerV0:
                         elif _rank(st) == _rank(prev.state):
                             # prefer newer ts if comparable; otherwise keep existing
                             if ts and (not prev.ts_utc or ts >= prev.ts_utc):
-                                self._index[lk] = LedgerState(lk, st, ts, rid, dict(detail))
+                                self._index[lk] = LedgerState(
+                                    lk, st, ts, rid, dict(detail)
+                                )
         except Exception:
             # fail-soft
             return
@@ -233,7 +247,9 @@ class OrderLedgerV0:
                     "detail": {"plan_meta": dict(plan_meta or {})},
                 }
                 self._append(rec)
-                self._index[lk] = LedgerState(lk, state, ts, rid, {"plan_meta": dict(plan_meta or {})})
+                self._index[lk] = LedgerState(
+                    lk, state, ts, rid, {"plan_meta": dict(plan_meta or {})}
+                )
                 return True
 
             # Terminal already?
@@ -335,7 +351,14 @@ class OrderLedgerV0:
             self._index[lk] = LedgerState(lk, st, ts, rid, detail)
 
     # Optional helper (not required by current callers)
-    def mark_progress(self, ledger_key: str, *, run_id: str, state: str, detail: Optional[Dict[str, Any]] = None) -> None:
+    def mark_progress(
+        self,
+        ledger_key: str,
+        *,
+        run_id: str,
+        state: str,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Non-terminal progress marker (SENT/SUBMITTED/ACK etc).
         Monotonic.
@@ -394,7 +417,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "ts_utc": st.ts_utc,
                 "run_id": st.run_id,
                 "detail": st.detail,
-            } if st else None,
+            }
+            if st
+            else None,
         }
     else:
         out = {

@@ -1,11 +1,10 @@
-
 from __future__ import annotations
 
 import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
@@ -50,7 +49,11 @@ def _read_tail(path: Path, n: int = 200) -> str:
 def _latest_cycle_log() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
-    files = sorted(LOGS_DIR.glob("auto_loop_*_cycle*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(
+        LOGS_DIR.glob("auto_loop_*_cycle*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     return files[0] if files else None
 
 
@@ -71,7 +74,10 @@ def _file_stat(path: Path) -> Dict[str, Any]:
 def _set_stopflag(on: bool) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if on:
-        STOP_FLAG.write_text(f"created_utc={_now_utc().strftime('%Y-%m-%dT%H:%M:%SZ')}\n", encoding="utf-8")
+        STOP_FLAG.write_text(
+            f"created_utc={_now_utc().strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+            encoding="utf-8",
+        )
     else:
         try:
             STOP_FLAG.unlink()
@@ -82,12 +88,25 @@ def _set_stopflag(on: bool) -> None:
 def _run_powershell(ps_cmd: str, timeout_s: int = 10) -> Dict[str, Any]:
     try:
         p = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps_cmd,
+            ],
             capture_output=True,
             text=True,
             timeout=timeout_s,
         )
-        return {"ok": p.returncode == 0, "rc": p.returncode, "stdout": p.stdout.strip(), "stderr": p.stderr.strip()}
+        return {
+            "ok": p.returncode == 0,
+            "rc": p.returncode,
+            "stdout": p.stdout.strip(),
+            "stderr": p.stderr.strip(),
+        }
     except Exception as e:
         return {"ok": False, "rc": -1, "stdout": "", "stderr": str(e)}
 
@@ -182,13 +201,14 @@ if ($null -eq $rows) {{
     return {"ok": True, "data": data}
 
 
-
 # -----------------------------
 # Render
 # -----------------------------
 def render_ops_controls() -> None:
     st.header("OPS Controls")
-    st.caption("Safe-by-default: UI only manipulates control files; no BUY/SELL, no overrides.")
+    st.caption(
+        "Safe-by-default: UI only manipulates control files; no BUY/SELL, no overrides."
+    )
 
     # Operator mode is controlled by app_streamlit sidebar.
     operator_mode = bool(st.session_state.get("operator_mode", True))
@@ -253,7 +273,12 @@ def render_ops_controls() -> None:
         if ts["ok"]:
             d = ts["data"]
             state_val = d.get("State") if isinstance(d, dict) else d
-            st.write({"TaskName": d.get("TaskName") if isinstance(d, dict) else TASK_NAME, "State": _state_label(state_val)})
+            st.write(
+                {
+                    "TaskName": d.get("TaskName") if isinstance(d, dict) else TASK_NAME,
+                    "State": _state_label(state_val),
+                }
+            )
         else:
             st.warning(f"Task state error: {ts['error']}")
 
@@ -273,7 +298,9 @@ def render_ops_controls() -> None:
 
     with colA:
         st.caption("ops_stage6c.log (last 200 lines)")
-        st.text_area("ops_log_tail", _read_tail(OPS_LOG, 200), height=320, key="ops_log_tail_box")
+        st.text_area(
+            "ops_log_tail", _read_tail(OPS_LOG, 200), height=320, key="ops_log_tail_box"
+        )
         if OPS_LOG.exists():
             st.download_button(
                 "Download ops_stage6c.log",
@@ -286,9 +313,16 @@ def render_ops_controls() -> None:
 
     with colB:
         latest = _latest_cycle_log()
-        st.caption(f"latest cycle log (last 200 lines): {str(latest) if latest else '[missing]'}")
+        st.caption(
+            f"latest cycle log (last 200 lines): {str(latest) if latest else '[missing]'}"
+        )
         if latest and latest.exists():
-            st.text_area("cycle_log_tail", _read_tail(latest, 200), height=320, key="cycle_log_tail_box")
+            st.text_area(
+                "cycle_log_tail",
+                _read_tail(latest, 200),
+                height=320,
+                key="cycle_log_tail_box",
+            )
             st.download_button(
                 "Download latest cycle log",
                 data=latest.read_bytes(),
@@ -298,4 +332,9 @@ def render_ops_controls() -> None:
                 use_container_width=True,
             )
         else:
-            st.text_area("cycle_log_tail", "[missing] no auto_loop_*_cycle*.log found", height=320, key="cycle_log_tail_box")
+            st.text_area(
+                "cycle_log_tail",
+                "[missing] no auto_loop_*_cycle*.log found",
+                height=320,
+                key="cycle_log_tail_box",
+            )

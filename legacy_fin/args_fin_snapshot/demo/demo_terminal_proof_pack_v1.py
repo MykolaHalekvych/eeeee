@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -35,7 +35,11 @@ def _parse_last_json(stdout: str) -> Dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
-    ap.add_argument("--scenario", required=True, choices=["scenario_cancelled_v1", "scenario_rejected_v1", "scenario_fill_v1"])
+    ap.add_argument(
+        "--scenario",
+        required=True,
+        choices=["scenario_cancelled_v1", "scenario_rejected_v1", "scenario_fill_v1"],
+    )
     ap.add_argument("--contract-json", required=True)
     ap.add_argument("--symbol", default="MHG")
 
@@ -47,7 +51,9 @@ def main() -> int:
     ap.add_argument("--lmt-price", type=float, default=1.0)
 
     # reconcile pack launcher
-    ap.add_argument("--reconcile-cmd", default=r"scripts\run_stage5_reconcile_evidence_pack.cmd")
+    ap.add_argument(
+        "--reconcile-cmd", default=r"scripts\run_stage5_reconcile_evidence_pack.cmd"
+    )
     ap.add_argument("--skip-reconcile", action="store_true")
 
     args = ap.parse_args()
@@ -56,11 +62,18 @@ def main() -> int:
 
     # 1) Run terminal scenario
     scen_cmd = [
-        "py", "-3.11", "-m", "args.stage5.terminal_scenarios.terminal_scenarios_v1",
-        "--repo", str(repo),
-        "--scenario", args.scenario,
-        "--contract-json", args.contract_json,
-        "--symbol", args.symbol,
+        "py",
+        "-3.11",
+        "-m",
+        "args.stage5.terminal_scenarios.terminal_scenarios_v1",
+        "--repo",
+        str(repo),
+        "--scenario",
+        args.scenario,
+        "--contract-json",
+        args.contract_json,
+        "--symbol",
+        args.symbol,
     ]
 
     # optional flags
@@ -76,11 +89,19 @@ def main() -> int:
     scen_rc, scen_out, scen_err = _run_capture(scen_cmd, cwd=repo)
     scen_json = _parse_last_json(scen_out)
 
-    evidence_dir = Path(str(scen_json.get("evidence_dir") or "")).resolve() if scen_json.get("evidence_dir") else None
+    evidence_dir = (
+        Path(str(scen_json.get("evidence_dir") or "")).resolve()
+        if scen_json.get("evidence_dir")
+        else None
+    )
     if evidence_dir:
         _write_json(evidence_dir / "proof_pack_scenario_cmd.json", {"cmd": scen_cmd})
-        (evidence_dir / "proof_pack_scenario_stdout.txt").write_text(scen_out, encoding="utf-8")
-        (evidence_dir / "proof_pack_scenario_stderr.txt").write_text(scen_err, encoding="utf-8")
+        (evidence_dir / "proof_pack_scenario_stdout.txt").write_text(
+            scen_out, encoding="utf-8"
+        )
+        (evidence_dir / "proof_pack_scenario_stderr.txt").write_text(
+            scen_err, encoding="utf-8"
+        )
 
     # 2) Run reconcile pack (safe: should not place orders)
     reconcile_json: Optional[Dict[str, Any]] = None
@@ -93,9 +114,15 @@ def main() -> int:
 
         # capture logs
         if evidence_dir:
-            _write_json(evidence_dir / "proof_pack_reconcile_cmd.json", {"cmd": rec_cmd})
-            (evidence_dir / "proof_pack_reconcile_stdout.txt").write_text(rec_out, encoding="utf-8")
-            (evidence_dir / "proof_pack_reconcile_stderr.txt").write_text(rec_err, encoding="utf-8")
+            _write_json(
+                evidence_dir / "proof_pack_reconcile_cmd.json", {"cmd": rec_cmd}
+            )
+            (evidence_dir / "proof_pack_reconcile_stdout.txt").write_text(
+                rec_out, encoding="utf-8"
+            )
+            (evidence_dir / "proof_pack_reconcile_stderr.txt").write_text(
+                rec_err, encoding="utf-8"
+            )
 
         # load latest reconcile evidence, if present
         latest = repo / "args" / "data" / "reconcile_evidence_latest_v2.json"
@@ -103,11 +130,16 @@ def main() -> int:
         if latest.exists():
             reconcile_json = _read_json(latest)
             if evidence_dir:
-                _write_json(evidence_dir / "reconcile_evidence_latest_v2.json", reconcile_json)
+                _write_json(
+                    evidence_dir / "reconcile_evidence_latest_v2.json", reconcile_json
+                )
         elif last_fail.exists():
             reconcile_json = _read_json(last_fail)
             if evidence_dir:
-                _write_json(evidence_dir / "reconcile_evidence_last_fail_v2.json", reconcile_json)
+                _write_json(
+                    evidence_dir / "reconcile_evidence_last_fail_v2.json",
+                    reconcile_json,
+                )
 
     # 3) Final summary
     # Scenario PASS: rc==0 and json.ok==true

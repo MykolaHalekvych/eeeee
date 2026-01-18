@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 # Stage A: semantic intent kinds
 KIND_NONE = "INTENT_NONE"
 KIND_CANCEL_ALL = "INTENT_CANCEL_ALL"
-KIND_ORDER = "INTENT_ORDER"          # Stage6 test / generic order intent
+KIND_ORDER = "INTENT_ORDER"  # Stage6 test / generic order intent
 KIND_ENTRY = "INTENT_ENTRY"
 KIND_EXIT = "INTENT_EXIT"
 KIND_REDUCE = "INTENT_REDUCE"
@@ -187,7 +187,9 @@ def _infer_tif_from_wa_action(wa_action: Dict[str, Any]) -> str:
     return tif or "DAY"
 
 
-def _infer_idempotency_key(intent: Dict[str, Any], wa_action: Dict[str, Any]) -> Optional[str]:
+def _infer_idempotency_key(
+    intent: Dict[str, Any], wa_action: Dict[str, Any]
+) -> Optional[str]:
     ik = intent.get("idempotency_key")
     if isinstance(ik, str) and ik.strip():
         return ik.strip()
@@ -197,7 +199,9 @@ def _infer_idempotency_key(intent: Dict[str, Any], wa_action: Dict[str, Any]) ->
     return None
 
 
-def wa_action_to_order_fields(wa_action: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def wa_action_to_order_fields(
+    wa_action: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     SAFETY (pre-Level-5):
       - side must be explicit (BUY/SELL) (can be inferred from nested order.action)
@@ -235,7 +239,9 @@ def wa_action_to_order_fields(wa_action: Dict[str, Any]) -> Tuple[Optional[Dict[
     return order, None
 
 
-def intent_to_payload(intent: Dict[str, Any], contract_ref: Dict[str, Any], *, dry_run: bool = True) -> Dict[str, Any]:
+def intent_to_payload(
+    intent: Dict[str, Any], contract_ref: Dict[str, Any], *, dry_run: bool = True
+) -> Dict[str, Any]:
     kind = _u(intent.get("kind"))
     run_id = str(intent.get("run_id") or "").strip()
 
@@ -285,7 +291,8 @@ def intent_to_payload(intent: Dict[str, Any], contract_ref: Dict[str, Any], *, d
             "contract": contract_ref,
             "order": None,
             "idempotency_key": ik,
-            "reason": intent.get("reason") or (f"UNKNOWN_INTENT_KIND:{kind}" if kind else "NO_ACTION"),
+            "reason": intent.get("reason")
+            or (f"UNKNOWN_INTENT_KIND:{kind}" if kind else "NO_ACTION"),
         }
 
     # Controlled test / v1: allow only "entry-like" order intents.
@@ -332,7 +339,11 @@ def intent_to_payload(intent: Dict[str, Any], contract_ref: Dict[str, Any], *, d
             "order": None,
             "idempotency_key": ik,
             "reason": f"ORDER_MAP_FAIL:{err}",
-            "notes": {"ma_decision": ma_dec, "wa_action": wa_action, "intent_kind": kind},
+            "notes": {
+                "ma_decision": ma_dec,
+                "wa_action": wa_action,
+                "intent_kind": kind,
+            },
         }
 
     return {
@@ -347,4 +358,3 @@ def intent_to_payload(intent: Dict[str, Any], contract_ref: Dict[str, Any], *, d
         "reason": "OK",
         "notes": {"ma_decision": ma_dec, "intent_kind": kind},
     }
-

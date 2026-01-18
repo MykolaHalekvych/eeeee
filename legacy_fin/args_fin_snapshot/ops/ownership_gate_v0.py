@@ -26,27 +26,51 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 def _run(cmd: List[str], timeout_s: int) -> int:
     try:
-        cp = subprocess.run(cmd, timeout=timeout_s, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        cp = subprocess.run(
+            cmd,
+            timeout=timeout_s,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         return int(cp.returncode)
     except Exception:
         return 2
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Ownership gate (v0): halt on unknown positions/orders.")
-    ap.add_argument("--control", default="", help="control_plane.json (default args/data/control_plane.json)")
-    ap.add_argument("--write-out", default="", help="ownership_status.json (default args/data/ownership_status.json)")
+    ap = argparse.ArgumentParser(
+        description="Ownership gate (v0): halt on unknown positions/orders."
+    )
+    ap.add_argument(
+        "--control",
+        default="",
+        help="control_plane.json (default args/data/control_plane.json)",
+    )
+    ap.add_argument(
+        "--write-out",
+        default="",
+        help="ownership_status.json (default args/data/ownership_status.json)",
+    )
     ap.add_argument("--timeout-s", type=int, default=25)
     args = ap.parse_args()
 
     repo = _repo_root()
-    control_path = Path(args.control) if args.control else (repo / "args" / "data" / "control_plane.json")
-    out_path = Path(args.write_out) if args.write_out else (repo / "args" / "data" / "ownership_status.json")
+    control_path = (
+        Path(args.control)
+        if args.control
+        else (repo / "args" / "data" / "control_plane.json")
+    )
+    out_path = (
+        Path(args.write_out)
+        if args.write_out
+        else (repo / "args" / "data" / "ownership_status.json")
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     control = _read_json(control_path) or {}
     allow = set(control.get("instrument_allowlist") or [])
-    prefix = ((control.get("ownership") or {}).get("order_ref_prefix") or "ARGS|")
+    prefix = (control.get("ownership") or {}).get("order_ref_prefix") or "ARGS|"
     startup = control.get("startup") or {}
     halt_pos = bool(startup.get("halt_if_unknown_positions", True))
     halt_ord = bool(startup.get("halt_if_unknown_orders", True))
@@ -60,8 +84,22 @@ def main() -> int:
     # 1) snapshot positions
     pos_path = repo / "args" / "data" / "ibkr_positions_live.json"
     rc_pos = _run(
-        ["py", "-3.11", "-m", "args.ibkr.ibkr_positions_snapshotter_v0", "--host", host, "--port", str(port),
-         "--client-id", str(client_id), "--timeout-s", str(timeout_s), "--out", str(pos_path)],
+        [
+            "py",
+            "-3.11",
+            "-m",
+            "args.ibkr.ibkr_positions_snapshotter_v0",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--client-id",
+            str(client_id),
+            "--timeout-s",
+            str(timeout_s),
+            "--out",
+            str(pos_path),
+        ],
         timeout_s=timeout_s + 5,
     )
     pos = _read_json(pos_path) or {}
@@ -72,13 +110,31 @@ def main() -> int:
     orders: List[Dict[str, Any]] = []
     # best-effort: try existing snapshotter if present
     rc_ord = _run(
-        ["py", "-3.11", "-m", "args.ibkr.ibkr_open_orders_snapshotter_v0", "--host", host, "--port", str(port),
-         "--client-id", str(client_id), "--timeout-s", str(timeout_s), "--wait-s", "5", "--out", str(ord_path)],
+        [
+            "py",
+            "-3.11",
+            "-m",
+            "args.ibkr.ibkr_open_orders_snapshotter_v0",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--client-id",
+            str(client_id),
+            "--timeout-s",
+            str(timeout_s),
+            "--wait-s",
+            "5",
+            "--out",
+            str(ord_path),
+        ],
         timeout_s=timeout_s + 10,
     )
     if ord_path.exists():
         try:
-            for line in ord_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in ord_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
                 if line.strip():
                     orders.append(json.loads(line))
         except Exception:
@@ -86,12 +142,19 @@ def main() -> int:
 
     # classify
     unknown_positions: List[Dict[str, Any]] = []
-    for r in (pos.get("rows") or []):
+    for r in pos.get("rows") or []:
         try:
             sym = str(r.get("symbol") or "")
             qty = float(r.get("position") or 0.0)
             if abs(qty) > 0 and allow and (sym not in allow):
-                unknown_positions.append({"symbol": sym, "position": qty, "secType": r.get("secType"), "currency": r.get("currency")})
+                unknown_positions.append(
+                    {
+                        "symbol": sym,
+                        "position": qty,
+                        "secType": r.get("secType"),
+                        "currency": r.get("currency"),
+                    }
+                )
         except Exception:
             continue
 

@@ -43,7 +43,13 @@ def _make_cfg(csv_path: Path) -> PaperLoopConfig:
     except TypeError:
         # Fallback: create with minimal args, then best-effort set attribute
         cfg = PaperLoopConfig(tag="paper", fresh_run=True)  # type: ignore
-        for attr in ("csv_path", "bars_csv_path", "input_csv_path", "input_csv", "bars_path"):
+        for attr in (
+            "csv_path",
+            "bars_csv_path",
+            "input_csv_path",
+            "input_csv",
+            "bars_path",
+        ):
             if hasattr(cfg, attr):
                 try:
                     setattr(cfg, attr, str(csv_path))

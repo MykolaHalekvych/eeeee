@@ -16,7 +16,7 @@ def main() -> int:
         symbol="HG",
         exchange="COMEX",
         currency="USD",
-        sec_type="CONTFUT",     # try continuous future first
+        sec_type="CONTFUT",  # try continuous future first
         bar_size="5 mins",
         duration="1 D",
         what_to_show="TRADES",

@@ -55,7 +55,11 @@ def append_event(path: str, event: Dict[str, Any]) -> None:
     _ensure_parent_dir(path)
 
     # Fill ts_utc if caller left it empty (demo convenience).
-    if "ts_utc" not in event or not isinstance(event.get("ts_utc"), str) or not event.get("ts_utc"):
+    if (
+        "ts_utc" not in event
+        or not isinstance(event.get("ts_utc"), str)
+        or not event.get("ts_utc")
+    ):
         event["ts_utc"] = _now_utc_iso()
 
     _validate_event_schema(event)

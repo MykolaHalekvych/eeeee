@@ -97,8 +97,8 @@ def _normalize_exchange(sec_type: str, symbol: str, exchange: Any) -> str:
 @dataclass
 class PlanItem:
     priority: int
-    kind: str               # CANCEL_ORDER / MANUAL_CANCEL_REQUIRED / CLOSE_POSITION
-    bucket: str             # UNKNOWN / ALLOWLIST
+    kind: str  # CANCEL_ORDER / MANUAL_CANCEL_REQUIRED / CLOSE_POSITION
+    bucket: str  # UNKNOWN / ALLOWLIST
     reason: str
 
     # order identity
@@ -141,8 +141,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--control-plane", default=str(DATA_DIR / "control_plane.json"))
     ap.add_argument("--out-plan", default=str(DATA_DIR / "reset_plan_v1.json"))
     ap.add_argument("--out-preview", default=str(DATA_DIR / "reset_preview_v1.json"))
-    ap.add_argument("--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json"))
-    ap.add_argument("--open-orders-out", default=str(DATA_DIR / "ibkr_open_orders_live.json"))
+    ap.add_argument(
+        "--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json")
+    )
+    ap.add_argument(
+        "--open-orders-out", default=str(DATA_DIR / "ibkr_open_orders_live.json")
+    )
 
     args = ap.parse_args(argv)
     ts = _utc_now_iso()
@@ -172,7 +176,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         warnings.append("allowlist_empty: all items bucketed as UNKNOWN")
 
     # ---- snapshots ----
-    pos = snapshot_positions(args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s)
+    pos = snapshot_positions(
+        args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s
+    )
     _write_json(Path(args.positions_out), pos)
     if not pos.get("ok"):
         out = {
@@ -186,7 +192,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
         return 2
 
-    oo = snapshot_open_orders(args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s)
+    oo = snapshot_open_orders(
+        args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s
+    )
     _write_json(Path(args.open_orders_out), oo)
     if not oo.get("ok"):
         out = {
@@ -223,7 +231,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # Only exits posture: any BUY open order is suspicious
         if global_mode == "ONLY_EXITS" and _u(r.get("action")) == "BUY":
-            warnings.append(f"suspicious_open_buy_in_only_exits: permId={pid} symbol={sym} status={status}")
+            warnings.append(
+                f"suspicious_open_buy_in_only_exits: permId={pid} symbol={sym} status={status}"
+            )
 
         if oid <= 0:
             # Manual/untracked order: cannot reliably cancel via API
@@ -316,7 +326,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     # stable sort
-    items.sort(key=lambda x: (x.priority, _u(x.bucket), _u(x.symbol), _u(x.kind), int(x.orderId or 0), int(x.permId or 0)))
+    items.sort(
+        key=lambda x: (
+            x.priority,
+            _u(x.bucket),
+            _u(x.symbol),
+            _u(x.kind),
+            int(x.orderId or 0),
+            int(x.permId or 0),
+        )
+    )
 
     items_dict = [asdict(i) for i in items]
     plan_hash = _hash_plan(items_dict)
@@ -324,12 +343,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     counts = {
         "items_total": len(items_dict),
         "cancel_orders": sum(1 for i in items_dict if i.get("kind") == "CANCEL_ORDER"),
-        "manual_cancel_required": sum(1 for i in items_dict if i.get("kind") == "MANUAL_CANCEL_REQUIRED"),
-        "close_positions": sum(1 for i in items_dict if i.get("kind") == "CLOSE_POSITION"),
-        "cancel_orders_unknown": sum(1 for i in items_dict if i.get("kind") == "CANCEL_ORDER" and i.get("bucket") == "UNKNOWN"),
-        "cancel_orders_allowlist": sum(1 for i in items_dict if i.get("kind") == "CANCEL_ORDER" and i.get("bucket") == "ALLOWLIST"),
-        "close_positions_unknown": sum(1 for i in items_dict if i.get("kind") == "CLOSE_POSITION" and i.get("bucket") == "UNKNOWN"),
-        "close_positions_allowlist": sum(1 for i in items_dict if i.get("kind") == "CLOSE_POSITION" and i.get("bucket") == "ALLOWLIST"),
+        "manual_cancel_required": sum(
+            1 for i in items_dict if i.get("kind") == "MANUAL_CANCEL_REQUIRED"
+        ),
+        "close_positions": sum(
+            1 for i in items_dict if i.get("kind") == "CLOSE_POSITION"
+        ),
+        "cancel_orders_unknown": sum(
+            1
+            for i in items_dict
+            if i.get("kind") == "CANCEL_ORDER" and i.get("bucket") == "UNKNOWN"
+        ),
+        "cancel_orders_allowlist": sum(
+            1
+            for i in items_dict
+            if i.get("kind") == "CANCEL_ORDER" and i.get("bucket") == "ALLOWLIST"
+        ),
+        "close_positions_unknown": sum(
+            1
+            for i in items_dict
+            if i.get("kind") == "CLOSE_POSITION" and i.get("bucket") == "UNKNOWN"
+        ),
+        "close_positions_allowlist": sum(
+            1
+            for i in items_dict
+            if i.get("kind") == "CLOSE_POSITION" and i.get("bucket") == "ALLOWLIST"
+        ),
     }
 
     plan = {

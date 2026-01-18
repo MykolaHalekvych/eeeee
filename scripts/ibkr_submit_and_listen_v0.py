@@ -81,7 +81,15 @@ class App(EWrapper, EClient):
         with self._lock:
             self.errors.append((reqId, errorCode, errorString))
             self.obs.append(
-                Obs("ERROR", _ts_utc(), {"reqId": int(reqId), "code": int(errorCode), "msg": str(errorString)})
+                Obs(
+                    "ERROR",
+                    _ts_utc(),
+                    {
+                        "reqId": int(reqId),
+                        "code": int(errorCode),
+                        "msg": str(errorString),
+                    },
+                )
             )
 
     def orderStatus(
@@ -107,7 +115,9 @@ class App(EWrapper, EClient):
                         "orderId": int(orderId),
                         "status": str(status),
                         "filled": float(filled) if filled is not None else None,
-                        "remaining": float(remaining) if remaining is not None else None,
+                        "remaining": float(remaining)
+                        if remaining is not None
+                        else None,
                         "avgFillPrice": avgFillPrice,
                         "permId": int(permId),
                         "clientId": int(clientId),
@@ -174,7 +184,9 @@ def _build_order(args: argparse.Namespace) -> Tuple[Order, Dict[str, Any]]:
         if hasattr(o, "lmtPrice"):
             o.lmtPrice = float(args.lmt_price)
         else:
-            raise ValueError("Order.lmtPrice attribute not available in this ibapi build")
+            raise ValueError(
+                "Order.lmtPrice attribute not available in this ibapi build"
+            )
 
     sanitized = _sanitize_deprecated_order_attrs(o)
     return o, sanitized
@@ -212,7 +224,16 @@ def main() -> int:
     try:
         app.connect(args.host, int(args.port), int(args.client_id))
     except Exception as e:
-        print(json.dumps({"ok": False, "exit_code": 2, "error": "CONNECT_EXCEPTION", "detail": str(e)}))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "exit_code": 2,
+                    "error": "CONNECT_EXCEPTION",
+                    "detail": str(e),
+                }
+            )
+        )
         return 2
 
     th = threading.Thread(target=app.run, daemon=True)
@@ -252,7 +273,11 @@ def main() -> int:
             app.disconnect()
         except Exception:
             pass
-        print(json.dumps({"ok": False, "exit_code": 1, "error": "BUILD_FAILED", "detail": str(e)}))
+        print(
+            json.dumps(
+                {"ok": False, "exit_code": 1, "error": "BUILD_FAILED", "detail": str(e)}
+            )
+        )
         return 1
 
     with app._lock:
@@ -287,8 +312,22 @@ def main() -> int:
             "placed_orderId": placed_order_id,
             "place_error": place_error,
             "order_errors": order_errors,
-            "contract": {"conId": args.conId, "symbol": args.symbol, "secType": args.secType, "exchange": args.exchange, "currency": args.currency},
-            "order": {"action": args.action, "qty": args.qty, "order_type": args.order_type, "lmt_price": args.lmt_price, "tif": args.tif, "outside_rth": bool(args.outside_rth), "sanitized": sanitized},
+            "contract": {
+                "conId": args.conId,
+                "symbol": args.symbol,
+                "secType": args.secType,
+                "exchange": args.exchange,
+                "currency": args.currency,
+            },
+            "order": {
+                "action": args.action,
+                "qty": args.qty,
+                "order_type": args.order_type,
+                "lmt_price": args.lmt_price,
+                "tif": args.tif,
+                "outside_rth": bool(args.outside_rth),
+                "sanitized": sanitized,
+            },
             "obs": [asdict(x) for x in app.obs],
         }
 

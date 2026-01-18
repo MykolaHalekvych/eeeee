@@ -154,7 +154,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             unknown_nonzero.append(entry)
 
-    baseline_flat = (total_nonzero == 0)
+    baseline_flat = total_nonzero == 0
 
     warnings: List[str] = []
     if not allowlist_norm:

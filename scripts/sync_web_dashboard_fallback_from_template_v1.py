@@ -1,5 +1,5 @@
-﻿from pathlib import Path
-import sys
+from pathlib import Path
+
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
@@ -48,7 +48,9 @@ def main() -> int:
 
         end_idx = text.rfind('\n"""', start_line_end, def_idx)
         if end_idx < 0:
-            print("FAIL: cannot locate closing triple quotes before ensure_entrypoint_overlay")
+            print(
+                "FAIL: cannot locate closing triple quotes before ensure_entrypoint_overlay"
+            )
             return 1
         end_idx = end_idx + 1  # point at first quote
 
@@ -60,6 +62,7 @@ def main() -> int:
 
     print("OK: fallback synced")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

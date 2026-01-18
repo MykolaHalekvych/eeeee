@@ -28,10 +28,10 @@ class FetchCfg:
     exchange: str
     currency: str
     sec_type: str
-    bar_size: str          # e.g. "5 mins"
-    duration: str          # e.g. "2 D"
-    what_to_show: str      # "TRADES" usually
-    use_rth: int           # 0/1
+    bar_size: str  # e.g. "5 mins"
+    duration: str  # e.g. "2 D"
+    what_to_show: str  # "TRADES" usually
+    use_rth: int  # 0/1
     out_csv: Path
 
 
@@ -47,7 +47,13 @@ class _App(EWrapper, EClient):
         # called after connection is established
         self._next_req_id = max(self._next_req_id, int(orderId))
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         # errorCode 2104/2106/2158 are info messages; not fatal
         msg = f"IBKR error reqId={reqId} code={errorCode} msg={errorString}"
         if errorCode in (2104, 2106, 2158):
@@ -112,12 +118,12 @@ def fetch_historical_bars(fetch: FetchCfg) -> Dict[str, Any]:
     app.reqHistoricalData(
         req_id,
         contract,
-        "",                 # endDateTime: "" = now
+        "",  # endDateTime: "" = now
         fetch.duration,
         fetch.bar_size,
         fetch.what_to_show,
         fetch.use_rth,
-        1,                  # formatDate: 1 = yyyyMMdd HH:mm:ss
+        1,  # formatDate: 1 = yyyyMMdd HH:mm:ss
         False,
         [],
     )
@@ -126,7 +132,9 @@ def fetch_historical_bars(fetch: FetchCfg) -> Dict[str, Any]:
     app.disconnect()
 
     if not ok:
-        raise TimeoutError(f"Timeout waiting for historical data (timeout_sec={conn.timeout_sec})")
+        raise TimeoutError(
+            f"Timeout waiting for historical data (timeout_sec={conn.timeout_sec})"
+        )
 
     if app._err:
         raise RuntimeError(app._err)

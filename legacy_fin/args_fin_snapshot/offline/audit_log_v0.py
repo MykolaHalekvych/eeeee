@@ -56,7 +56,14 @@ class AuditLog:
         obj = json.loads(last)
         return int(obj.get("seq", 0) or 0), str(obj.get("hash") or "0" * 64)
 
-    def append(self, event_type: str, payload: Dict[str, Any], *, actor: str, now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+    def append(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        actor: str,
+        now_utc: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         last_seq, last_hash = self._tail_state()
         now = now_utc or utc_now()
@@ -81,7 +88,11 @@ class AuditLog:
 
     def verify(self) -> Tuple[bool, Dict[str, Any]]:
         if not self.path.exists():
-            return True, {"ok": True, "records": 0, "note": "missing file (no events yet)"}
+            return True, {
+                "ok": True,
+                "records": 0,
+                "note": "missing file (no events yet)",
+            }
 
         exp_prev = "0" * 64
         exp_seq = 1
@@ -96,22 +107,41 @@ class AuditLog:
                 records += 1
 
                 if int(obj.get("seq", 0) or 0) != exp_seq:
-                    return False, {"ok": False, "lineno": lineno, "error": "seq mismatch", "expected": exp_seq, "got": obj.get("seq")}
+                    return False, {
+                        "ok": False,
+                        "lineno": lineno,
+                        "error": "seq mismatch",
+                        "expected": exp_seq,
+                        "got": obj.get("seq"),
+                    }
 
                 if str(obj.get("prev_hash") or "") != exp_prev:
-                    return False, {"ok": False, "lineno": lineno, "error": "prev_hash mismatch"}
+                    return False, {
+                        "ok": False,
+                        "lineno": lineno,
+                        "error": "prev_hash mismatch",
+                    }
 
                 got_hash = str(obj.get("hash") or "")
                 obj2 = dict(obj)
                 obj2.pop("hash", None)
                 calc = _sha256(_canon(obj2))
                 if got_hash != calc:
-                    return False, {"ok": False, "lineno": lineno, "error": "hash mismatch"}
+                    return False, {
+                        "ok": False,
+                        "lineno": lineno,
+                        "error": "hash mismatch",
+                    }
 
                 exp_prev = got_hash
                 exp_seq += 1
 
-        return True, {"ok": True, "records": records, "last_seq": exp_seq - 1, "last_hash": exp_prev}
+        return True, {
+            "ok": True,
+            "records": records,
+            "last_seq": exp_seq - 1,
+            "last_hash": exp_prev,
+        }
 
 
 def main(argv: Optional[list[str]] = None) -> int:

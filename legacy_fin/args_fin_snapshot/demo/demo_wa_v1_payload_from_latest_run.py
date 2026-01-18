@@ -8,7 +8,12 @@ from typing import Any, Dict, Optional, Tuple
 from args.ibkr.ibkr_order_payload_v1 import build_contract_ref, intent_to_payload
 from args.wa.order_intents_v1 import build_order_intents
 from args.wa.wa_action_schema_v1 import apply_wa_action_schema_v1
-from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
+from args.wa.wa_order_gateway_v1 import (
+    append_jsonl,
+    decide_intent,
+    enforce_mode_gate,
+    iter_jsonl,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
@@ -25,7 +30,9 @@ def _latest_report() -> Optional[Path]:
         [
             p
             for p in LOGS_DIR.iterdir()
-            if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")
+            if p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
         ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
@@ -157,7 +164,9 @@ def _wa_test_config(control_state: Optional[Dict[str, Any]]) -> WaTestConfig:
     )
 
 
-def _stage5_max_lmt_price(control_state: Optional[Dict[str, Any]], default: float = 0.05) -> float:
+def _stage5_max_lmt_price(
+    control_state: Optional[Dict[str, Any]], default: float = 0.05
+) -> float:
     if not isinstance(control_state, dict):
         return default
     try:
@@ -202,23 +211,20 @@ def _seed_test_wa_action(
 
     # Provide both "action" and "side" to satisfy different translators (defensive).
     return {
-    # WA-level command (what intent_to_payload typically keys off)
-    "action": "PLACE_ORDER",
-
-    # Order spec (what sender later needs)
-    "order": {
-        "action": action,            # BUY/SELL
-        "orderType": order_type,     # LMT
-        "totalQuantity": qty,        # 1
-        "lmtPrice": lmt,             # <= stage5 cap
-        "tif": tif,                  # DAY
-        "transmit": False,           # sendplan expects False
-    },
-
-    # Idempotency key must match Stage5 allowlist prefix
-    "idempotency_key": f"STAGE5_TEST_LMT_{run_id}_{index:06d}",
-}
-
+        # WA-level command (what intent_to_payload typically keys off)
+        "action": "PLACE_ORDER",
+        # Order spec (what sender later needs)
+        "order": {
+            "action": action,  # BUY/SELL
+            "orderType": order_type,  # LMT
+            "totalQuantity": qty,  # 1
+            "lmtPrice": lmt,  # <= stage5 cap
+            "tif": tif,  # DAY
+            "transmit": False,  # sendplan expects False
+        },
+        # Idempotency key must match Stage5 allowlist prefix
+        "idempotency_key": f"STAGE5_TEST_LMT_{run_id}_{index:06d}",
+    }
 
 
 # -----------------------------
@@ -247,7 +253,11 @@ def _ensure_raw_intents(report: Dict[str, Any]) -> Tuple[str, Path]:
     halted = False
     halt_reason = ""
     if isinstance(hsum, dict):
-        halted = bool(hsum.get("halted")) if isinstance(hsum.get("halted"), (bool, int)) else False
+        halted = (
+            bool(hsum.get("halted"))
+            if isinstance(hsum.get("halted"), (bool, int))
+            else False
+        )
         halt_reason = str(hsum.get("halt_reason") or "")
 
     if intents_path.exists():
@@ -303,7 +313,9 @@ def _ensure_order_intents(report: Dict[str, Any]) -> Tuple[str, Path, Dict[str, 
         return run_id, order_intents_path, {"note": "exists"}
 
     _, raw_intents_path = _ensure_raw_intents(report)
-    oi_summary = build_order_intents(report, raw_intents_path, order_intents_path, source="wa_v1")
+    oi_summary = build_order_intents(
+        report, raw_intents_path, order_intents_path, source="wa_v1"
+    )
     return run_id, order_intents_path, oi_summary
 
 
@@ -359,14 +371,22 @@ def main() -> int:
             n_forced_intent_order += 1
 
         # Mode gate (optionally bypass in wa_test for INTENT_ORDER)
-        if wa_test_on and wt.bypass_mode_gate and str(rec.get("kind") or "").strip().upper() == "INTENT_ORDER":
+        if (
+            wa_test_on
+            and wt.bypass_mode_gate
+            and str(rec.get("kind") or "").strip().upper() == "INTENT_ORDER"
+        ):
             gated_intent = dict(rec)
-            gated_intent["gate_reason"] = gated_intent.get("gate_reason") or "wa_test_bypass_mode_gate"
+            gated_intent["gate_reason"] = (
+                gated_intent.get("gate_reason") or "wa_test_bypass_mode_gate"
+            )
             n_bypassed_mode_gate += 1
         else:
             gated_intent = enforce_mode_gate(rec, report)
 
-        if gated_intent.get("kind") == "INTENT_NONE" and gated_intent.get("gate_reason"):
+        if gated_intent.get("kind") == "INTENT_NONE" and gated_intent.get(
+            "gate_reason"
+        ):
             n_gated += 1
 
         # Apply WA Action Schema v1
@@ -381,7 +401,10 @@ def main() -> int:
         n_schema_applied += 1
 
         # DEMO: seed minimal wa_action for INTENT_ORDER if missing/empty
-        if wa_test_on and str(gated_intent.get("kind") or "").strip().upper() == "INTENT_ORDER":
+        if (
+            wa_test_on
+            and str(gated_intent.get("kind") or "").strip().upper() == "INTENT_ORDER"
+        ):
             wa_action = gated_intent.get("wa_action")
             if not isinstance(wa_action, dict) or not wa_action:
                 gated_intent = dict(gated_intent)
@@ -389,18 +412,28 @@ def main() -> int:
                     run_id=run_id, index=idx, control_state=control_state, wt=wt
                 )
                 gated_intent["wa_action_reason"] = "WA_TEST_SEED_ORDER"
-                gated_intent["wa_action_schema"] = gated_intent.get("wa_action_schema") or "wa_action_schema_v1"
+                gated_intent["wa_action_schema"] = (
+                    gated_intent.get("wa_action_schema") or "wa_action_schema_v1"
+                )
                 n_seeded_test_action += 1
 
         # HARD SAFE DEFAULT: no order payloads unless explicitly allowed
-        if (not allow_order_payloads) and str(gated_intent.get("kind") or "").strip().upper() == "INTENT_ORDER":
+        if (not allow_order_payloads) and str(
+            gated_intent.get("kind") or ""
+        ).strip().upper() == "INTENT_ORDER":
             n_blocked_no_control += 1
             gated_intent = dict(gated_intent)
-            gated_intent["kind_raw"] = gated_intent.get("kind_raw") or gated_intent.get("kind") or "INTENT_ORDER"
+            gated_intent["kind_raw"] = (
+                gated_intent.get("kind_raw")
+                or gated_intent.get("kind")
+                or "INTENT_ORDER"
+            )
             gated_intent["kind"] = "INTENT_NONE"
             gated_intent["wa_action"] = {}
             gated_intent["wa_action_reason"] = "SAFE_DEFAULT_NO_ALLOW_ORDER_PAYLOADS"
-            gated_intent["wa_action_schema"] = gated_intent.get("wa_action_schema") or "wa_action_schema_v1"
+            gated_intent["wa_action_schema"] = (
+                gated_intent.get("wa_action_schema") or "wa_action_schema_v1"
+            )
 
         payload = intent_to_payload(gated_intent, contract_ref, dry_run=True)
 
@@ -452,7 +485,10 @@ def main() -> int:
         "bypassed_mode_gate": n_bypassed_mode_gate,
         "seeded_test_action": n_seeded_test_action,
         "blocked_intent_order_no_control": n_blocked_no_control,
-        "contract": {"conId": contract_ref.get("conId"), "localSymbol": contract_ref.get("localSymbol")},
+        "contract": {
+            "conId": contract_ref.get("conId"),
+            "localSymbol": contract_ref.get("localSymbol"),
+        },
     }
 
     print("WA_V1_PAYLOAD_DRYRUN")

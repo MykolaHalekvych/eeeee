@@ -84,15 +84,40 @@ def _trim_to_last_n_lines(path: Path, max_lines: int) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Append soak_status snapshots to an append-only JSONL history.")
-    ap.add_argument("--in", dest="in_path", default="", help="Input soak_status.json (default args/data/soak_status.json)")
-    ap.add_argument("--out", dest="out_path", default="", help="Output history JSONL (default args/logs/soak_history.jsonl)")
-    ap.add_argument("--max-lines", type=int, default=20000, help="Trim history to last N lines (default 20000)")
+    ap = argparse.ArgumentParser(
+        description="Append soak_status snapshots to an append-only JSONL history."
+    )
+    ap.add_argument(
+        "--in",
+        dest="in_path",
+        default="",
+        help="Input soak_status.json (default args/data/soak_status.json)",
+    )
+    ap.add_argument(
+        "--out",
+        dest="out_path",
+        default="",
+        help="Output history JSONL (default args/logs/soak_history.jsonl)",
+    )
+    ap.add_argument(
+        "--max-lines",
+        type=int,
+        default=20000,
+        help="Trim history to last N lines (default 20000)",
+    )
     args = ap.parse_args()
 
     repo = _repo_root()
-    in_path = Path(args.in_path) if args.in_path else (repo / "args" / "data" / "soak_status.json")
-    out_path = Path(args.out_path) if args.out_path else (repo / "args" / "logs" / "soak_history.jsonl")
+    in_path = (
+        Path(args.in_path)
+        if args.in_path
+        else (repo / "args" / "data" / "soak_status.json")
+    )
+    out_path = (
+        Path(args.out_path)
+        if args.out_path
+        else (repo / "args" / "logs" / "soak_history.jsonl")
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     soak = _read_json(in_path)
@@ -126,7 +151,9 @@ def main() -> int:
         "prev_sha256": prev_sha,
         "soak": soak,
     }
-    core_str = json.dumps(core, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    core_str = json.dumps(
+        core, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     sha = _sha256(core_str)
 
     entry = dict(core)

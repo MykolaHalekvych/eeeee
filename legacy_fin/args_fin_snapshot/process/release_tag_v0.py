@@ -19,7 +19,9 @@ from args.offline.evidence_history_v0 import (
 
 def _run_git(root: Path, cmd: Sequence[str]) -> Tuple[int, str, str]:
     try:
-        p = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, shell=False)
+        p = subprocess.run(
+            cmd, cwd=str(root), capture_output=True, text=True, shell=False
+        )
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except Exception as e:
         return 1, "", repr(e)
@@ -74,7 +76,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not ns.allow_dirty:
         ok, _ = _git_clean(root)
         if not ok:
-            print("FAIL: git working tree is dirty; commit/stash or use --allow_dirty", file=sys.stderr)
+            print(
+                "FAIL: git working tree is dirty; commit/stash or use --allow_dirty",
+                file=sys.stderr,
+            )
             return 3
 
     as_mv_path = root / "args" / "data" / "as_model_version.json"
@@ -87,7 +92,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"FAIL: invalid as_model_version.json: {as_mv_path}", file=sys.stderr)
         return 2
 
-    latest_ptr_path = root / "args" / "offline" / "evidence" / "eval_gate" / "latest.json"
+    latest_ptr_path = (
+        root / "args" / "offline" / "evidence" / "eval_gate" / "latest.json"
+    )
     if not latest_ptr_path.exists():
         print(f"FAIL: missing {latest_ptr_path}", file=sys.stderr)
         return 2
@@ -112,7 +119,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     eval_mid = _infer_model_id(report)
     if eval_mid and eval_mid != promoted:
-        print(f"FAIL: model mismatch promoted={promoted} eval={eval_mid}", file=sys.stderr)
+        print(
+            f"FAIL: model mismatch promoted={promoted} eval={eval_mid}", file=sys.stderr
+        )
         return 2
 
     now = utc_now()

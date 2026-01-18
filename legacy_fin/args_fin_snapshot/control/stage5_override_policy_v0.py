@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple
 
 CONTROL_STATE_PATH_CANDIDATES: Tuple[Path, ...] = (
     Path("args") / "control" / "control_state.json",
@@ -19,8 +19,10 @@ STOP_FLAG_PATH_CANDIDATES: Tuple[Path, ...] = (
     Path("stop.flag"),
 )
 
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def _parse_iso_dt_utc(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
@@ -34,7 +36,10 @@ def _parse_iso_dt_utc(value: Any) -> Optional[datetime]:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
-def resolve_control_state_path(explicit_path: str | Path | None = None) -> Optional[Path]:
+
+def resolve_control_state_path(
+    explicit_path: str | Path | None = None,
+) -> Optional[Path]:
     if explicit_path is not None:
         p = Path(explicit_path)
         return p if p.exists() else None
@@ -50,10 +55,15 @@ def resolve_control_state_path(explicit_path: str | Path | None = None) -> Optio
             return p
     return None
 
-def detect_stop_flag(control_state: Mapping[str, Any] | None = None) -> tuple[bool, Optional[Path]]:
+
+def detect_stop_flag(
+    control_state: Mapping[str, Any] | None = None,
+) -> tuple[bool, Optional[Path]]:
     # 1) explicit path in control_state (optional)
     if control_state:
-        p_raw = control_state.get("stop_flag_path") or control_state.get("STOP_FLAG_PATH")
+        p_raw = control_state.get("stop_flag_path") or control_state.get(
+            "STOP_FLAG_PATH"
+        )
         if isinstance(p_raw, str) and p_raw.strip():
             p = Path(p_raw)
             if p.exists():
@@ -73,13 +83,18 @@ def detect_stop_flag(control_state: Mapping[str, Any] | None = None) -> tuple[bo
 
     return False, None
 
+
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
+
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     tmp.replace(path)
+
 
 def update_control_state_json(
     path: Path,
@@ -103,6 +118,7 @@ def update_control_state_json(
     _atomic_write_json(path, data)
     return True
 
+
 @dataclass(frozen=True, slots=True)
 class Stage5TestOverrideConfig:
     enabled: bool
@@ -117,7 +133,10 @@ class Stage5TestOverrideConfig:
             return True
         return _now_utc() < self.expires_at_utc
 
-def load_stage5_test_override_config(control_state: Mapping[str, Any]) -> Stage5TestOverrideConfig:
+
+def load_stage5_test_override_config(
+    control_state: Mapping[str, Any],
+) -> Stage5TestOverrideConfig:
     enabled = bool(control_state.get("stage5_test_override", False))
     autoreset = bool(control_state.get("stage5_test_override_autoreset", True))
 
@@ -134,7 +153,10 @@ def load_stage5_test_override_config(control_state: Mapping[str, Any]) -> Stage5
         expires_at_utc=expires_at_utc,
     )
 
-def try_autoreset_stage5_test_override(control_state_path: Optional[Path], *, reason: str) -> bool:
+
+def try_autoreset_stage5_test_override(
+    control_state_path: Optional[Path], *, reason: str
+) -> bool:
     """
     Best-effort. If file missing or already false -> returns False.
     Writes audit fields into control_state.json for traceability.

@@ -14,13 +14,25 @@ class TestTerminalInvariants(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
                 (repo / "runs").mkdir(parents=True, exist_ok=True)
-                cp = ControlPlane(global_mode="ONLY_EXITS", run_root="runs", cool_down_seconds=1)
+                cp = ControlPlane(
+                    global_mode="ONLY_EXITS", run_root="runs", cool_down_seconds=1
+                )
                 cp_path = repo / "control_plane.json"
                 cp.save(cp_path)
 
                 broker = FakeBroker(scenario=sc, positions={"AAPL": 2.0})
-                eng = Engine(repo_root=repo, run_id=f"r_{sc}", control_plane_path=cp_path, broker=broker)
-                eng.submit_intent(OrderIntent(intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)))
+                eng = Engine(
+                    repo_root=repo,
+                    run_id=f"r_{sc}",
+                    control_plane_path=cp_path,
+                    broker=broker,
+                )
+                eng.submit_intent(
+                    OrderIntent(
+                        intent_id="i1",
+                        order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0),
+                    )
+                )
 
                 for _ in range(60):
                     eng.step()
@@ -32,4 +44,12 @@ class TestTerminalInvariants(unittest.TestCase):
 
                 t = eng.state.tickets["i1"]
                 self.assertTrue(t.is_terminal())
-                self.assertIn(t.terminal, {TerminalState.DONE, TerminalState.FAILED, TerminalState.CANCELLED, TerminalState.FILLED})
+                self.assertIn(
+                    t.terminal,
+                    {
+                        TerminalState.DONE,
+                        TerminalState.FAILED,
+                        TerminalState.CANCELLED,
+                        TerminalState.FILLED,
+                    },
+                )

@@ -62,7 +62,13 @@ class _App(EWrapper, EClient):
     def nextValidId(self, orderId: int) -> None:
         self._next_valid_id_evt.set()
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         msg = f"reqId={reqId} code={errorCode} msg={errorString}"
         if advancedOrderRejectJson:
             msg += f" adv={advancedOrderRejectJson}"
@@ -93,10 +99,14 @@ class _App(EWrapper, EClient):
         with self._lock:
             self._status_by_oid[int(orderId)] = str(status or "")
 
-    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState) -> None:
+    def openOrder(
+        self, orderId: int, contract: Contract, order: Order, orderState: OrderState
+    ) -> None:
         oid = int(orderId)
         with self._lock:
-            status = self._status_by_oid.get(oid, "") or str(getattr(orderState, "status", "") or "")
+            status = self._status_by_oid.get(oid, "") or str(
+                getattr(orderState, "status", "") or ""
+            )
 
         row = OpenOrderRow(
             orderId=oid,
@@ -104,15 +114,15 @@ class _App(EWrapper, EClient):
             clientId=int(getattr(order, "clientId", 0) or 0),
             account=str(getattr(order, "account", "") or ""),
             status=str(status or ""),
-
             conId=int(getattr(contract, "conId", 0) or 0),
             symbol=str(getattr(contract, "symbol", "") or ""),
             localSymbol=str(getattr(contract, "localSymbol", "") or ""),
             secType=str(getattr(contract, "secType", "") or ""),
             currency=str(getattr(contract, "currency", "") or ""),
             exchange=str(getattr(contract, "exchange", "") or ""),
-            lastTradeDateOrContractMonth=str(getattr(contract, "lastTradeDateOrContractMonth", "") or ""),
-
+            lastTradeDateOrContractMonth=str(
+                getattr(contract, "lastTradeDateOrContractMonth", "") or ""
+            ),
             action=str(getattr(order, "action", "") or ""),
             totalQuantity=float(getattr(order, "totalQuantity", 0.0) or 0.0),
             orderType=str(getattr(order, "orderType", "") or ""),
@@ -141,7 +151,9 @@ def _dedupe(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def snapshot_open_orders(host: str, port: int, client_id: int, connect_timeout_s: float, timeout_s: float) -> Dict[str, Any]:
+def snapshot_open_orders(
+    host: str, port: int, client_id: int, connect_timeout_s: float, timeout_s: float
+) -> Dict[str, Any]:
     ts = _utc_now_iso()
     app = _App()
 

@@ -135,14 +135,21 @@ def main() -> None:
             "product_id": str(j.get("product_id") or "").strip(),
             "base_release_id": str(j.get("base_release_id") or "").strip(),
             "overlay_dir": norm_rel_path(str(j.get("overlay_dir") or "")),
-            "allowlist": [norm_rel_path(str(x)) for x in (j.get("allowlist") or []) if isinstance(x, str)],
+            "allowlist": [
+                norm_rel_path(str(x))
+                for x in (j.get("allowlist") or [])
+                if isinstance(x, str)
+            ],
         }
 
         outp = args.out.strip()
         if outp:
             op = Path(outp).resolve()
             op.parent.mkdir(parents=True, exist_ok=True)
-            op.write_text(json.dumps(norm, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            op.write_text(
+                json.dumps(norm, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
 
         code = RC_OK if len(errors) == 0 else RC_FAIL
         emit(

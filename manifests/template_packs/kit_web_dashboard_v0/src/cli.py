@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import os
@@ -20,8 +20,15 @@ def cmd_version(_args: argparse.Namespace) -> Dict[str, Any]:
 
 def cmd_selftest(_args: argparse.Namespace) -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
-    checks.append({"name": "ping", "ok": cmd_ping(argparse.Namespace()).get("ok") is True})
-    checks.append({"name": "version", "ok": isinstance(cmd_version(argparse.Namespace()).get("version"), str)})
+    checks.append(
+        {"name": "ping", "ok": cmd_ping(argparse.Namespace()).get("ok") is True}
+    )
+    checks.append(
+        {
+            "name": "version",
+            "ok": isinstance(cmd_version(argparse.Namespace()).get("version"), str),
+        }
+    )
     ok = all(bool(c["ok"]) for c in checks)
     return {"ok": ok, "cmd": "selftest", "checks": checks}
 

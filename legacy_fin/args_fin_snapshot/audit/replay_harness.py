@@ -72,7 +72,9 @@ def _build_ctx(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def replay_events(events_path: str, policy_path: str, max_mismatches: int = 5) -> Dict[str, Any]:
+def replay_events(
+    events_path: str, policy_path: str, max_mismatches: int = 5
+) -> Dict[str, Any]:
     policy = load_policy(policy_path)
 
     total = 0
@@ -95,7 +97,10 @@ def replay_events(events_path: str, policy_path: str, max_mismatches: int = 5) -
                     {
                         "line": line_no,
                         "event_id": event.get("event_id"),
-                        "expected": {"ma_decision": event.get("ma_decision"), "enforced_no_trade": None},
+                        "expected": {
+                            "ma_decision": event.get("ma_decision"),
+                            "enforced_no_trade": None,
+                        },
                         "actual": {"ma_decision": None, "enforced_no_trade": None},
                     }
                 )

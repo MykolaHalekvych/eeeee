@@ -1,12 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
+
 class ManifestError(RuntimeError):
     pass
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -17,12 +19,14 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except Exception as e:
         raise ManifestError(f"manifest parse error: {path} :: {type(e).__name__}: {e}")
 
+
 @dataclass(frozen=True)
 class Factory:
     factory_id: str
     kind: str
     description: str
     default_out_dir: str
+
 
 @dataclass(frozen=True)
 class Product:
@@ -31,6 +35,7 @@ class Product:
     version: str
     include_paths: List[str]
     runbook_template_path: str
+
 
 def load_factories(repo_root: Path) -> Dict[str, Factory]:
     p = repo_root / "manifests" / "factories.json"
@@ -57,6 +62,7 @@ def load_factories(repo_root: Path) -> Dict[str, Factory]:
             default_out_dir=str(it.get("default_out_dir", "dist")),
         )
     return out
+
 
 def load_product(repo_root: Path, product_id: str) -> Product:
     p = repo_root / "manifests" / "products" / f"{product_id}.json"

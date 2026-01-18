@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -36,7 +36,9 @@ def file_mtime_utc(p: Path) -> datetime:
     return datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
 
 
-def decide_deletions(pairs: List[Tuple[Path, Path]], keep_last: int, max_age_days: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def decide_deletions(
+    pairs: List[Tuple[Path, Path]], keep_last: int, max_age_days: int
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Keep strategy:
       - keep newest N zips always
@@ -45,46 +47,54 @@ def decide_deletions(pairs: List[Tuple[Path, Path]], keep_last: int, max_age_day
     items: List[Dict[str, Any]] = []
     for zp, hp in pairs:
         m = file_mtime_utc(zp)
-        items.append({
-            "zip": zp,
-            "hash": hp,
-            "mtime_utc": m,
-            "mtime_iso": m.isoformat().replace("+00:00", "Z"),
-        })
+        items.append(
+            {
+                "zip": zp,
+                "hash": hp,
+                "mtime_utc": m,
+                "mtime_iso": m.isoformat().replace("+00:00", "Z"),
+            }
+        )
 
     # newest first
     items_sorted = sorted(items, key=lambda x: x["mtime_utc"], reverse=True)
     keep = items_sorted[: max(0, keep_last)]
-    candidates = items_sorted[max(0, keep_last):]
+    candidates = items_sorted[max(0, keep_last) :]
 
     cutoff = utc_now() - timedelta(days=max_age_days)
     to_delete: List[Dict[str, Any]] = []
     to_keep: List[Dict[str, Any]] = []
 
     for x in keep:
-        to_keep.append({
-            "zip": str(x["zip"]),
-            "hash": str(x["hash"]),
-            "mtime_iso": x["mtime_iso"],
-            "reason": "keep_last",
-        })
+        to_keep.append(
+            {
+                "zip": str(x["zip"]),
+                "hash": str(x["hash"]),
+                "mtime_iso": x["mtime_iso"],
+                "reason": "keep_last",
+            }
+        )
 
     for x in candidates:
         if x["mtime_utc"] < cutoff:
-            to_delete.append({
-                "zip": str(x["zip"]),
-                "hash": str(x["hash"]),
-                "mtime_iso": x["mtime_iso"],
-                "reason": "older_than_cutoff",
-                "cutoff_iso": cutoff.isoformat().replace("+00:00", "Z"),
-            })
+            to_delete.append(
+                {
+                    "zip": str(x["zip"]),
+                    "hash": str(x["hash"]),
+                    "mtime_iso": x["mtime_iso"],
+                    "reason": "older_than_cutoff",
+                    "cutoff_iso": cutoff.isoformat().replace("+00:00", "Z"),
+                }
+            )
         else:
-            to_keep.append({
-                "zip": str(x["zip"]),
-                "hash": str(x["hash"]),
-                "mtime_iso": x["mtime_iso"],
-                "reason": "within_ttl",
-            })
+            to_keep.append(
+                {
+                    "zip": str(x["zip"]),
+                    "hash": str(x["hash"]),
+                    "mtime_iso": x["mtime_iso"],
+                    "reason": "within_ttl",
+                }
+            )
 
     return to_keep, to_delete
 
@@ -106,26 +116,35 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema": "housekeeping_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "housekeeping_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     releases_dir = (repo_root / Path(args.releases_dir)).resolve()
     if not releases_dir.exists():
-        dump({
-            "schema": "housekeeping_v0",
-            "ok": True,
-            "exit_code": 0,
-            "releases_dir": str(releases_dir),
-            "note": "no releases dir",
-            "dryrun": True,
-            "deleted": 0,
-        })
+        dump(
+            {
+                "schema": "housekeeping_v0",
+                "ok": True,
+                "exit_code": 0,
+                "releases_dir": str(releases_dir),
+                "note": "no releases dir",
+                "dryrun": True,
+                "deleted": 0,
+            }
+        )
         return EXIT_OK
 
     pairs = list_release_pairs(releases_dir)
     to_keep, to_delete = decide_deletions(pairs, args.keep_last, args.max_age_days)
 
-    dryrun = (str(args.confirm_delete).strip().upper() != "YES")
+    dryrun = str(args.confirm_delete).strip().upper() != "YES"
     deleted = 0
     errors: List[str] = []
 
@@ -143,21 +162,23 @@ def main() -> int:
     ok = len(errors) == 0
     code = EXIT_OK if ok else EXIT_INFRA
 
-    dump({
-        "schema": "housekeeping_v0",
-        "ok": ok,
-        "exit_code": code,
-        "releases_dir": str(releases_dir),
-        "dryrun": dryrun,
-        "policy": {
-            "keep_last": args.keep_last,
-            "max_age_days": args.max_age_days,
-        },
-        "kept": to_keep,
-        "planned_delete": to_delete,
-        "deleted": deleted,
-        "errors": errors[:10],
-    })
+    dump(
+        {
+            "schema": "housekeeping_v0",
+            "ok": ok,
+            "exit_code": code,
+            "releases_dir": str(releases_dir),
+            "dryrun": dryrun,
+            "policy": {
+                "keep_last": args.keep_last,
+                "max_age_days": args.max_age_days,
+            },
+            "kept": to_keep,
+            "planned_delete": to_delete,
+            "deleted": deleted,
+            "errors": errors[:10],
+        }
+    )
     return code
 
 

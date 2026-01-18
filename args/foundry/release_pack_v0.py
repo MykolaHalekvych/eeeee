@@ -64,6 +64,8 @@ def deterministic_write(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
     zi.date_time = (1980, 1, 1, 0, 0, 0)
     zi.compress_type = zipfile.ZIP_DEFLATED
     zf.writestr(zi, data, compress_type=zipfile.ZIP_DEFLATED)
+
+
 def zip_has_basename(zip_path: Path, wanted_base: str) -> bool:
     wl = wanted_base.lower()
     try:
@@ -76,11 +78,13 @@ def zip_has_basename(zip_path: Path, wanted_base: str) -> bool:
     except Exception:
         return False
     return False
+
+
 def emit_and_exit(payload: Dict[str, Any], code: int) -> int:
     payload["schema"] = payload.get("schema", SCHEMA)
     payload["ts_utc"] = payload.get("ts_utc", utc_ts())
     payload["exit_code"] = int(code)
-    payload["ok"] = (int(code) == 0)
+    payload["ok"] = int(code) == 0
     s = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     sys.stdout.write(s)
     sys.stdout.flush()
@@ -121,11 +125,17 @@ def _atomic_write(dst: Path, writer: Callable[[Path], None]) -> None:
 
 
 def main_inner() -> Tuple[Dict[str, Any], int]:
-    ap = argparse.ArgumentParser(description="Package EXE Pack v0 into dist/releases/<release_id>.zip")
+    ap = argparse.ArgumentParser(
+        description="Package EXE Pack v0 into dist/releases/<release_id>.zip"
+    )
     ap.add_argument("--repo", default=".")
     ap.add_argument("--product-id", required=True)
-    ap.add_argument("--product-dist", default=None, help="Override dist/<product_id> directory")
-    ap.add_argument("--releases-dir", default=None, help="Override dist/releases directory")
+    ap.add_argument(
+        "--product-dist", default=None, help="Override dist/<product_id> directory"
+    )
+    ap.add_argument(
+        "--releases-dir", default=None, help="Override dist/releases directory"
+    )
     ap.add_argument("--release-id", default=None, help="Optional explicit release_id")
     args = ap.parse_args()
 
@@ -138,8 +148,16 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     manifest = load_product_manifest(repo, product_id)
     version = str(manifest.get("version", "0.0.0"))
 
-    product_dist = Path(args.product_dist).resolve() if args.product_dist else (repo / "dist" / product_id)
-    releases_dir = Path(args.releases_dir).resolve() if args.releases_dir else (repo / "dist" / "releases")
+    product_dist = (
+        Path(args.product_dist).resolve()
+        if args.product_dist
+        else (repo / "dist" / product_id)
+    )
+    releases_dir = (
+        Path(args.releases_dir).resolve()
+        if args.releases_dir
+        else (repo / "dist" / "releases")
+    )
     releases_dir.mkdir(parents=True, exist_ok=True)
 
     required: List[str] = [
@@ -194,7 +212,12 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     # Idempotent mode (skip) unless forced
     skipped_existing = False
-    if (not force_repack) and release_zip.exists() and release_hashes.exists() and zip_has_basename(release_zip, "release_manifest_v1.json"):
+    if (
+        (not force_repack)
+        and release_zip.exists()
+        and release_hashes.exists()
+        and zip_has_basename(release_zip, "release_manifest_v1.json")
+    ):
         skipped_existing = True
         out = {
             "schema": SCHEMA,
@@ -238,10 +261,12 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
         included.append("release_manifest_v1.json")
 
     # ensure acceptance proof is inside release for product standard v1
-    if (product_dist / "acceptance_gate.json").exists() and "acceptance_gate.json" not in included:
+    if (
+        product_dist / "acceptance_gate.json"
+    ).exists() and "acceptance_gate.json" not in included:
         included.append("acceptance_gate.json")
 
-# Atomic write: zip (tmp -> replace)
+    # Atomic write: zip (tmp -> replace)
     def _write_zip(tmp_zip: Path) -> None:
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for name in included:
@@ -252,7 +277,9 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     zip_sha = sha256_file(release_zip)
 
-    file_sha256: Dict[str, str] = {name: sha256_file(product_dist / name) for name in included}
+    file_sha256: Dict[str, str] = {
+        name: sha256_file(product_dist / name) for name in included
+    }
 
     outer = {
         "schema": "release_hashes_v0",
@@ -310,7 +337,11 @@ def main() -> int:
         return emit_and_exit(payload, code)
     except Exception as e:  # noqa: BLE001
         code, kind = classify_exception(e)
-        err: Dict[str, Any] = {"kind": kind, "type": e.__class__.__name__, "message": str(e)}
+        err: Dict[str, Any] = {
+            "kind": kind,
+            "type": e.__class__.__name__,
+            "message": str(e),
+        }
         if isinstance(e, OSError):
             err["os_error"] = {
                 "errno": getattr(e, "errno", None),

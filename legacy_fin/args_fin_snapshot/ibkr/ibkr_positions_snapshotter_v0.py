@@ -5,7 +5,6 @@ import argparse
 import json
 import sys
 import threading
-import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +54,13 @@ class _App(EWrapper, EClient):
         self._connected_ok = True
         self._next_valid_id_evt.set()
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         msg = f"reqId={reqId} code={errorCode} msg={errorString}"
         if advancedOrderRejectJson:
             msg += f" adv={advancedOrderRejectJson}"
@@ -63,7 +68,9 @@ class _App(EWrapper, EClient):
             self.errors.append(msg)
 
     # ---- positions ----
-    def position(self, account: str, contract: Contract, pos: float, avgCost: float) -> None:
+    def position(
+        self, account: str, contract: Contract, pos: float, avgCost: float
+    ) -> None:
         row = PositionRow(
             account=str(account or ""),
             conId=int(getattr(contract, "conId", 0) or 0),
@@ -72,7 +79,9 @@ class _App(EWrapper, EClient):
             secType=str(getattr(contract, "secType", "") or ""),
             currency=str(getattr(contract, "currency", "") or ""),
             exchange=str(getattr(contract, "exchange", "") or ""),
-            lastTradeDateOrContractMonth=str(getattr(contract, "lastTradeDateOrContractMonth", "") or ""),
+            lastTradeDateOrContractMonth=str(
+                getattr(contract, "lastTradeDateOrContractMonth", "") or ""
+            ),
             position=float(pos or 0.0),
             avgCost=float(avgCost or 0.0),
         )

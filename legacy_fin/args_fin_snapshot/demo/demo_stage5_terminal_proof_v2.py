@@ -31,7 +31,9 @@ def main() -> int:
             base = Path(args.input_jsonl).stem
             tmp = repo / "args" / "data" / "_tmp"
             tmp.mkdir(parents=True, exist_ok=True)
-            args.cursor = str(tmp / f"stage5_terminal_proof_v2_fixture_{base}.cursor.json")
+            args.cursor = str(
+                tmp / f"stage5_terminal_proof_v2_fixture_{base}.cursor.json"
+            )
 
         if not args.out_root:
             out = repo / "args" / "_tmp" / "terminal_proofs_fixtures"

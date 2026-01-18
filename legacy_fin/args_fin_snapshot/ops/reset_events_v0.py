@@ -8,8 +8,10 @@ from typing import Any, Dict
 
 SCHEMA = "reset_event_v0"
 
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 def append_event(path: Path, kind: str, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

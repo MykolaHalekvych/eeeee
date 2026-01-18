@@ -14,7 +14,9 @@ def utc_now_iso() -> str:
 
 
 def canonical_json_dumps(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(
+        obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
 
 
 def sha256_hex(data: bytes) -> str:

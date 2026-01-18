@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 import yaml
 
@@ -48,7 +47,9 @@ def _flip_data_integrity_gate_to_allow(copy_path: Path) -> None:
             break
 
     if not hit:
-        raise ValueError("Rule data_integrity_gate not found in blocks.hard_gates.rules")
+        raise ValueError(
+            "Rule data_integrity_gate not found in blocks.hard_gates.rules"
+        )
 
     _save_yaml(copy_path, obj)
 
@@ -61,7 +62,9 @@ def main() -> int:
     print("NEGATIVE_TEST: reset copy-policy to baseline")
     _reset_copy(baseline, copy_path)
 
-    print("NEGATIVE_TEST: flip data_integrity_gate decision UNKNOWN->ALLOW in copy-policy")
+    print(
+        "NEGATIVE_TEST: flip data_integrity_gate decision UNKNOWN->ALLOW in copy-policy"
+    )
     _flip_data_integrity_gate_to_allow(copy_path)
 
     print("NEGATIVE_TEST: run meta_audit (expect FAIL + exit_code=2)")

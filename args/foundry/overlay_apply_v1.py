@@ -13,7 +13,12 @@ RC_OK = 0
 RC_FAIL = 1
 RC_INFRA = 2
 
-BANNED_TARGETS = {"app.exe", "hashes.json", "acceptance_gate.json", "release_manifest_v1.json"}
+BANNED_TARGETS = {
+    "app.exe",
+    "hashes.json",
+    "acceptance_gate.json",
+    "release_manifest_v1.json",
+}
 
 
 def utc_now_iso() -> str:
@@ -172,7 +177,9 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     if out_report is not None:
         out_report.parent.mkdir(parents=True, exist_ok=True)
-        out_report.write_text(json.dumps(rep, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        out_report.write_text(
+            json.dumps(rep, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+        )
 
     payload = {
         "schema": "overlay_apply_v1",

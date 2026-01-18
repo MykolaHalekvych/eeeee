@@ -15,7 +15,17 @@ RC_INFRA = 2
 PROFILES = {
     # Produced by scripts/run_suite_soak_v1.ps1 (final_report.json may omit ok/exit_code)
     "suite_soak_v1": {
-        "required": ["schema", "step", "repo", "run_id", "run_dir", "evidence_dir", "events_jsonl", "final_report_json", "summary"],
+        "required": [
+            "schema",
+            "step",
+            "repo",
+            "run_id",
+            "run_dir",
+            "evidence_dir",
+            "events_jsonl",
+            "final_report_json",
+            "summary",
+        ],
         "id_key": "run_id",
         "step_key": "step",
         "requires_ok_exit": False,
@@ -23,7 +33,18 @@ PROFILES = {
     },
     # Produced by scripts/run_family_test_suite_v1.ps1
     "family_test_suite_v1": {
-        "required": ["schema", "ts_utc", "repo", "ok", "exit_code", "suite_run_id", "suite_run_dir", "evidence_dir", "events_jsonl", "final_report_json"],
+        "required": [
+            "schema",
+            "ts_utc",
+            "repo",
+            "ok",
+            "exit_code",
+            "suite_run_id",
+            "suite_run_dir",
+            "evidence_dir",
+            "events_jsonl",
+            "final_report_json",
+        ],
         "id_key": "suite_run_id",
         "step_value": "family_suite",
         "requires_ok_exit": True,
@@ -31,7 +52,16 @@ PROFILES = {
     },
     # Produced by args.foundry build/release pipeline
     "factory_final_report_v1": {
-        "required": ["schema", "ok", "exit_code", "run_id", "run_dir", "evidence_dir", "events_jsonl", "final_report_json"],
+        "required": [
+            "schema",
+            "ok",
+            "exit_code",
+            "run_id",
+            "run_dir",
+            "evidence_dir",
+            "events_jsonl",
+            "final_report_json",
+        ],
         "id_key": "run_id",
         "step_value": "factory_final_report",
         "requires_ok_exit": True,
@@ -47,14 +77,17 @@ DEFAULT_PROFILE = {
     "derive_ok_exit_from_summary": False,
 }
 
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _safe_resolve(p: Path) -> Path:
     try:
         return p.resolve()
     except Exception:
         return p
+
 
 def _read_json_allow_utf8_bom(path: Path):
     """
@@ -64,9 +97,10 @@ def _read_json_allow_utf8_bom(path: Path):
     b = path.read_bytes()
     had_bom = b.startswith(codecs.BOM_UTF8)
     if had_bom:
-        b = b[len(codecs.BOM_UTF8):]
+        b = b[len(codecs.BOM_UTF8) :]
     text = b.decode("utf-8")
     return json.loads(text), had_bom
+
 
 def _derive_ok_exit_from_summary(summary: object):
     """
@@ -102,13 +136,20 @@ def _derive_ok_exit_from_summary(summary: object):
         return True, 0
     return False, 1
 
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run-dir", required=True, help="Path to args\\data\\runs\\<run_id>")
+    ap.add_argument(
+        "--run-dir", required=True, help="Path to args\\data\\runs\\<run_id>"
+    )
     ap.add_argument("--events-parse", choices=["YES", "NO"], default="YES")
     ap.add_argument("--max-events-lines", type=int, default=500)
-    ap.add_argument("--bom-strict", choices=["YES", "NO"], default="NO",
-                    help="If YES, treat UTF-8 BOM in JSON artifacts as contract FAIL.")
+    ap.add_argument(
+        "--bom-strict",
+        choices=["YES", "NO"],
+        default="NO",
+        help="If YES, treat UTF-8 BOM in JSON artifacts as contract FAIL.",
+    )
     args = ap.parse_args()
 
     run_dir = _safe_resolve(Path(args.run_dir))
@@ -179,9 +220,13 @@ def main() -> int:
     derived_run_id = None
     if exit_code == RC_OK and isinstance(final, dict):
         id_key = profile.get("id_key", "run_id")
-        derived_run_id = final.get(id_key) or final.get("run_id") or final.get("suite_run_id")
+        derived_run_id = (
+            final.get(id_key) or final.get("run_id") or final.get("suite_run_id")
+        )
         checks["derived_id_key"] = id_key
-        checks["derived_run_id"] = str(derived_run_id) if derived_run_id is not None else None
+        checks["derived_run_id"] = (
+            str(derived_run_id) if derived_run_id is not None else None
+        )
         checks["run_dir_name"] = run_dir.name
 
         if derived_run_id is None:
@@ -189,7 +234,9 @@ def main() -> int:
         else:
             # Compare run_dir name to derived run id (strict for our run layout)
             if str(derived_run_id) != run_dir.name:
-                set_fail(f"run_id_mismatch: derived_run_id={derived_run_id} run_dir.name={run_dir.name}")
+                set_fail(
+                    f"run_id_mismatch: derived_run_id={derived_run_id} run_dir.name={run_dir.name}"
+                )
 
     # Step derivation (optional)
     if exit_code == RC_OK and isinstance(final, dict):
@@ -217,7 +264,7 @@ def main() -> int:
             if not isinstance(ok, bool):
                 set_fail(f"invalid_ok_type: {type(ok).__name__}")
             if exit_code == RC_OK:
-                expected_ok = (rc == 0)
+                expected_ok = rc == 0
                 if ok != expected_ok:
                     set_fail(f"ok_exit_code_inconsistent: ok={ok} exit_code={rc}")
         else:
@@ -238,7 +285,11 @@ def main() -> int:
 
     # Evidence dir existence
     if exit_code == RC_OK and isinstance(final, dict):
-        ev_path = evidence_dir_default if not declared_evidence else Path(str(declared_evidence))
+        ev_path = (
+            evidence_dir_default
+            if not declared_evidence
+            else Path(str(declared_evidence))
+        )
         ev_path = _safe_resolve(ev_path)
         checks["evidence_dir"] = str(ev_path)
 
@@ -253,7 +304,9 @@ def main() -> int:
 
     # Events file existence + optional parse
     if exit_code == RC_OK and isinstance(final, dict):
-        evs_path = events_path_default if not declared_events else Path(str(declared_events))
+        evs_path = (
+            events_path_default if not declared_events else Path(str(declared_events))
+        )
         evs_path = _safe_resolve(evs_path)
         checks["events_jsonl"] = str(evs_path)
 
@@ -314,7 +367,9 @@ def main() -> int:
         df = _safe_resolve(Path(str(declared_final)))
         checks["final_report_json_declared"] = str(df)
         if df != _safe_resolve(final_path):
-            set_fail(f"final_report_json_path_mismatch: declared={df} actual={_safe_resolve(final_path)}")
+            set_fail(
+                f"final_report_json_path_mismatch: declared={df} actual={_safe_resolve(final_path)}"
+            )
 
     out = {
         "schema": "contract_gate_v1",
@@ -328,6 +383,7 @@ def main() -> int:
 
     sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
     return exit_code
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

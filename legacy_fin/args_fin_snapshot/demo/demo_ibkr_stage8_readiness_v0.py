@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -49,7 +48,11 @@ def _ledger_get_state(ledger_path: Path, send_key: str) -> Optional[str]:
     if not isinstance(obj, dict):
         return None
     items = obj.get("items")
-    if isinstance(items, dict) and send_key in items and isinstance(items[send_key], dict):
+    if (
+        isinstance(items, dict)
+        and send_key in items
+        and isinstance(items[send_key], dict)
+    ):
         return items[send_key].get("state")
     return None
 
@@ -110,35 +113,43 @@ def main() -> None:
         _write_json(execution_mode_path, {"mode": "DRY_RUN"})
         _write_json(control_state_path, {**base_control_state, "simulate": False})
 
-        _write_json(LOGS_DIR / f"run_report_{run_id_a}_paper.json", {
-            "run_id": run_id_a,
-            "risk_envelope": {"mode": "ALLOW_NEW_ENTRIES"},
-        })
-        _write_jsonl(DATA_DIR / f"orders_sendplan_{run_id_a}.jsonl", [
+        _write_json(
+            LOGS_DIR / f"run_report_{run_id_a}_paper.json",
             {
-                "kind": "SENDPLAN_ORDER",
-                "idempotency_key": idem_a,
-                "contract": {
-                    "symbol": "MHG",
-                    "secType": "FUT",
-                    "exchange": "COMEX",
-                    "currency": "USD",
-                },
-                "order": {
-                    "action": "BUY",
-                    "orderType": "MKT",
-                    "totalQuantity": 1,
-                    "tif": "DAY",
-                    "transmit": False,
-                },
-            }
-        ])
+                "run_id": run_id_a,
+                "risk_envelope": {"mode": "ALLOW_NEW_ENTRIES"},
+            },
+        )
+        _write_jsonl(
+            DATA_DIR / f"orders_sendplan_{run_id_a}.jsonl",
+            [
+                {
+                    "kind": "SENDPLAN_ORDER",
+                    "idempotency_key": idem_a,
+                    "contract": {
+                        "symbol": "MHG",
+                        "secType": "FUT",
+                        "exchange": "COMEX",
+                        "currency": "USD",
+                    },
+                    "order": {
+                        "action": "BUY",
+                        "orderType": "MKT",
+                        "totalQuantity": 1,
+                        "tif": "DAY",
+                        "transmit": False,
+                    },
+                }
+            ],
+        )
 
         _run_sender(run_id_a)
         st_a = _ledger_get_state(demo_ledger, sk_a)
         if st_a is None:
             _print_ledger_keys(demo_ledger)
-        assert st_a in {"SENT_SIM", "SENT_REAL"}, f"Scenario A expected SENT_SIM (or SENT_REAL), got {st_a}"
+        assert st_a in {"SENT_SIM", "SENT_REAL"}, (
+            f"Scenario A expected SENT_SIM (or SENT_REAL), got {st_a}"
+        )
         print(f"[OK] Scenario A: {sk_a} => {st_a}")
 
         # Dedup A (same run_id + idempotency_key)
@@ -158,19 +169,36 @@ def main() -> None:
         _write_json(execution_mode_path, {"mode": "EXIT_ONLY"})
         _write_json(control_state_path, {**base_control_state, "simulate": False})
 
-        _write_json(LOGS_DIR / f"run_report_{run_id_b}_paper.json", {
-            "run_id": run_id_b,
-            "risk_envelope": {"mode": "ALLOW_NEW_ENTRIES"},
-        })
-        _write_jsonl(DATA_DIR / f"orders_sendplan_{run_id_b}.jsonl", [
+        _write_json(
+            LOGS_DIR / f"run_report_{run_id_b}_paper.json",
             {
-                "kind": "SENDPLAN_ORDER",
-                "idempotency_key": idem_b,
-                "contract": {"symbol": "MHG", "secType": "FUT", "exchange": "COMEX", "currency": "USD"},
-                "order": {"action": "BUY", "orderType": "MKT", "totalQuantity": 1, "tif": "DAY", "transmit": False},
-                # намеренно без intent/meta.intent => считается ENTRY => должен быть blocked в EXIT_ONLY
-            }
-        ])
+                "run_id": run_id_b,
+                "risk_envelope": {"mode": "ALLOW_NEW_ENTRIES"},
+            },
+        )
+        _write_jsonl(
+            DATA_DIR / f"orders_sendplan_{run_id_b}.jsonl",
+            [
+                {
+                    "kind": "SENDPLAN_ORDER",
+                    "idempotency_key": idem_b,
+                    "contract": {
+                        "symbol": "MHG",
+                        "secType": "FUT",
+                        "exchange": "COMEX",
+                        "currency": "USD",
+                    },
+                    "order": {
+                        "action": "BUY",
+                        "orderType": "MKT",
+                        "totalQuantity": 1,
+                        "tif": "DAY",
+                        "transmit": False,
+                    },
+                    # намеренно без intent/meta.intent => считается ENTRY => должен быть blocked в EXIT_ONLY
+                }
+            ],
+        )
 
         _run_sender(run_id_b)
         st_b = _ledger_get_state(demo_ledger, sk_b)
@@ -188,18 +216,35 @@ def main() -> None:
         _write_json(execution_mode_path, {"mode": "FULL"})
         _write_json(control_state_path, {**base_control_state, "simulate": False})
 
-        _write_json(LOGS_DIR / f"run_report_{run_id_c}_paper.json", {
-            "run_id": run_id_c,
-            "risk_envelope": {"mode": "NO_TRADE"},
-        })
-        _write_jsonl(DATA_DIR / f"orders_sendplan_{run_id_c}.jsonl", [
+        _write_json(
+            LOGS_DIR / f"run_report_{run_id_c}_paper.json",
             {
-                "kind": "SENDPLAN_ORDER",
-                "idempotency_key": idem_c,
-                "contract": {"symbol": "MHG", "secType": "FUT", "exchange": "COMEX", "currency": "USD"},
-                "order": {"action": "BUY", "orderType": "MKT", "totalQuantity": 1, "tif": "DAY", "transmit": False},
-            }
-        ])
+                "run_id": run_id_c,
+                "risk_envelope": {"mode": "NO_TRADE"},
+            },
+        )
+        _write_jsonl(
+            DATA_DIR / f"orders_sendplan_{run_id_c}.jsonl",
+            [
+                {
+                    "kind": "SENDPLAN_ORDER",
+                    "idempotency_key": idem_c,
+                    "contract": {
+                        "symbol": "MHG",
+                        "secType": "FUT",
+                        "exchange": "COMEX",
+                        "currency": "USD",
+                    },
+                    "order": {
+                        "action": "BUY",
+                        "orderType": "MKT",
+                        "totalQuantity": 1,
+                        "tif": "DAY",
+                        "transmit": False,
+                    },
+                }
+            ],
+        )
 
         _run_sender(run_id_c)
         st_c = _ledger_get_state(demo_ledger, sk_c)

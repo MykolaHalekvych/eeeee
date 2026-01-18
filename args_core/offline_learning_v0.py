@@ -15,6 +15,7 @@ from .common_v0 import atomic_write_json, sha256_text, utc_now_iso
 # Utils
 # -----------------------
 
+
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
@@ -46,6 +47,7 @@ def _read_last_jsonl_record(path: Path) -> Optional[Dict[str, Any]]:
 
 def _file_sha256(path: Path) -> str:
     import hashlib
+
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
@@ -128,6 +130,7 @@ def _ticket_stats(state: Dict[str, Any]) -> Dict[str, int]:
 # Dataset builder
 # -----------------------
 
+
 def build_dataset(
     *,
     runs_root: Path,
@@ -184,7 +187,17 @@ def build_dataset(
         # Label strategy (MVP but meaningful):
         # "good run" if reconcile>=0.99, forbidden=0, no last_error, not stop/safe.
         # (stop/safe are not "bad", but we exclude them from "clean" label)
-        label = 1 if (rr >= 0.99 and forbidden == 0 and err_flag == 0 and stop_flag == 0 and safe_mode == 0) else 0
+        label = (
+            1
+            if (
+                rr >= 0.99
+                and forbidden == 0
+                and err_flag == 0
+                and stop_flag == 0
+                and safe_mode == 0
+            )
+            else 0
+        )
 
         row = {
             "run_id": run_id,
@@ -205,12 +218,33 @@ def build_dataset(
         rows.append(row)
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(rows[0].keys()) if rows else [
-        "run_id", "reconcile", "events_seen", "forbidden", "dedup_skips", "error_flag",
-        "stop_flag", "safe_mode", "broker_connected", "place_calls", "cancel_calls", "replace_calls",
-        "tickets_total", "tickets_terminal", "tickets_done", "tickets_failed", "tickets_cancelled", "tickets_filled",
-        "tickets_acked", "tickets_partial", "label"
-    ]
+    fieldnames = (
+        list(rows[0].keys())
+        if rows
+        else [
+            "run_id",
+            "reconcile",
+            "events_seen",
+            "forbidden",
+            "dedup_skips",
+            "error_flag",
+            "stop_flag",
+            "safe_mode",
+            "broker_connected",
+            "place_calls",
+            "cancel_calls",
+            "replace_calls",
+            "tickets_total",
+            "tickets_terminal",
+            "tickets_done",
+            "tickets_failed",
+            "tickets_cancelled",
+            "tickets_filled",
+            "tickets_acked",
+            "tickets_partial",
+            "label",
+        ]
+    )
     with open(out_csv, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -257,6 +291,7 @@ def build_dataset(
 # Simple deterministic baseline model
 # -----------------------
 
+
 @dataclass
 class LinearModel:
     features: List[str]
@@ -282,7 +317,13 @@ def train_model(
     features = meta.get("features") if isinstance(meta, dict) else None
     if not isinstance(features, list) or not features:
         # fallback
-        features = ["reconcile", "events_seen", "forbidden", "dedup_skips", "error_flag"]
+        features = [
+            "reconcile",
+            "events_seen",
+            "forbidden",
+            "dedup_skips",
+            "error_flag",
+        ]
 
     data: List[Dict[str, Any]] = []
     with open(dataset_csv, "r", encoding="utf-8") as f:
@@ -302,24 +343,32 @@ def train_model(
     pos = [d for d in data if d["label"] == 1]
     neg = [d for d in data if d["label"] == 0]
     if len(pos) == 0 or len(neg) == 0:
-        report = {"ok": False, "reason": "need_both_classes", "pos": len(pos), "neg": len(neg)}
+        report = {
+            "ok": False,
+            "reason": "need_both_classes",
+            "pos": len(pos),
+            "neg": len(neg),
+        }
         # Evidence
         ev_dir = evidence_root / "eval_gate"
         _ensure_dir(ev_dir)
         report_path = ev_dir / f"{_ts_tag()}_eval_gate_report.json"
-        atomic_write_json(report_path, {
-            "schema": "eval_gate_report_v1",
-            "ts_utc": utc_now_iso(),
-            "decision": "FAIL",
-            "exit_code": 2,
-            "reason": "need_both_classes",
-            "pos": len(pos),
-            "neg": len(neg),
-            "dataset": str(dataset_csv),
-            "dataset_sha256": _file_sha256(dataset_csv),
-            "features": features,
-            "threshold_acc": float(eval_threshold_acc),
-        })
+        atomic_write_json(
+            report_path,
+            {
+                "schema": "eval_gate_report_v1",
+                "ts_utc": utc_now_iso(),
+                "decision": "FAIL",
+                "exit_code": 2,
+                "reason": "need_both_classes",
+                "pos": len(pos),
+                "neg": len(neg),
+                "dataset": str(dataset_csv),
+                "dataset_sha256": _file_sha256(dataset_csv),
+                "features": features,
+                "threshold_acc": float(eval_threshold_acc),
+            },
+        )
         return 2, {"ok": False, **report, "evidence_report": str(report_path)}
 
     def mean(ds: List[Dict[str, Any]]) -> List[float]:
@@ -358,7 +407,11 @@ def train_model(
     code_sha = _file_sha256(Path(__file__))
     data_sha = _file_sha256(dataset_csv)
     config = {"eval_threshold_acc": float(eval_threshold_acc), "features": features}
-    model_id = sha256_text(json.dumps({"code": code_sha, "data": data_sha, "config": config}, sort_keys=True))[:12]
+    model_id = sha256_text(
+        json.dumps(
+            {"code": code_sha, "data": data_sha, "config": config}, sort_keys=True
+        )
+    )[:12]
 
     out_dir = models_dir / model_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -414,23 +467,33 @@ def train_model(
     _ensure_dir(ev_dir)
     report_path = ev_dir / f"{_ts_tag()}_eval_gate_report.json"
     decision = "PASS" if exit_code == 0 else "FAIL"
-    atomic_write_json(report_path, {
-        "schema": "eval_gate_report_v1",
-        "ts_utc": utc_now_iso(),
-        "decision": decision,
-        "exit_code": exit_code,
-        "threshold_acc": float(eval_threshold_acc),
-        "observed_acc": acc,
-        "confusion": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
-        "dataset": str(dataset_csv),
-        "dataset_sha256": data_sha,
-        "code_sha256": code_sha,
-        "model_id": model_id,
-        "manifest_path": str(out_dir / "manifest.json"),
-        "why": "PASS iff accuracy >= threshold_acc",
-    })
+    atomic_write_json(
+        report_path,
+        {
+            "schema": "eval_gate_report_v1",
+            "ts_utc": utc_now_iso(),
+            "decision": decision,
+            "exit_code": exit_code,
+            "threshold_acc": float(eval_threshold_acc),
+            "observed_acc": acc,
+            "confusion": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
+            "dataset": str(dataset_csv),
+            "dataset_sha256": data_sha,
+            "code_sha256": code_sha,
+            "model_id": model_id,
+            "manifest_path": str(out_dir / "manifest.json"),
+            "why": "PASS iff accuracy >= threshold_acc",
+        },
+    )
 
-    report = {"ok": True, "model_id": model_id, "accuracy": acc, "exit_code": exit_code, "out_dir": str(out_dir), "evidence_report": str(report_path)}
+    report = {
+        "ok": True,
+        "model_id": model_id,
+        "accuracy": acc,
+        "exit_code": exit_code,
+        "out_dir": str(out_dir),
+        "evidence_report": str(report_path),
+    }
     return exit_code, report
 
 
@@ -452,16 +515,24 @@ def promote_model(
         ev_dir = evidence_root / "promote"
         _ensure_dir(ev_dir)
         report_path = ev_dir / f"{_ts_tag()}_promote_report.json"
-        atomic_write_json(report_path, {
-            "schema": "promote_report_v1",
-            "ts_utc": utc_now_iso(),
+        atomic_write_json(
+            report_path,
+            {
+                "schema": "promote_report_v1",
+                "ts_utc": utc_now_iso(),
+                "ok": False,
+                "reason": "model_id_not_in_registry",
+                "model_id": model_id,
+                "control_plane": str(control_plane_path),
+                "registry": str(models_dir / "registry.json"),
+            },
+        )
+        return {
             "ok": False,
             "reason": "model_id_not_in_registry",
             "model_id": model_id,
-            "control_plane": str(control_plane_path),
-            "registry": str(models_dir / "registry.json"),
-        })
-        return {"ok": False, "reason": "model_id_not_in_registry", "model_id": model_id, "evidence_report": str(report_path)}
+            "evidence_report": str(report_path),
+        }
 
     old = cp.get("as_model_version")
     cp["as_model_version"] = model_id
@@ -471,23 +542,34 @@ def promote_model(
     ev_dir = evidence_root / "promote"
     _ensure_dir(ev_dir)
     report_path = ev_dir / f"{_ts_tag()}_promote_report.json"
-    atomic_write_json(report_path, {
-        "schema": "promote_report_v1",
-        "ts_utc": utc_now_iso(),
-        "ok": True,
-        "old_as_model_version": old,
-        "new_as_model_version": model_id,
-        "control_plane": str(control_plane_path),
-        "model_manifest": models[model_id].get("paths", {}).get("model") if isinstance(models[model_id], dict) else None,
-        "registry": str(models_dir / "registry.json"),
-    })
+    atomic_write_json(
+        report_path,
+        {
+            "schema": "promote_report_v1",
+            "ts_utc": utc_now_iso(),
+            "ok": True,
+            "old_as_model_version": old,
+            "new_as_model_version": model_id,
+            "control_plane": str(control_plane_path),
+            "model_manifest": models[model_id].get("paths", {}).get("model")
+            if isinstance(models[model_id], dict)
+            else None,
+            "registry": str(models_dir / "registry.json"),
+        },
+    )
 
-    return {"ok": True, "control_plane": str(control_plane_path), "as_model_version": model_id, "evidence_report": str(report_path)}
+    return {
+        "ok": True,
+        "control_plane": str(control_plane_path),
+        "as_model_version": model_id,
+        "evidence_report": str(report_path),
+    }
 
 
 # -----------------------
 # CLI
 # -----------------------
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()

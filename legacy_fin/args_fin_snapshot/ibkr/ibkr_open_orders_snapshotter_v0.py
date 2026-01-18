@@ -1,9 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,8 +149,12 @@ class _SnapshotApp:
             def openOrderEnd(self) -> None:  # noqa: N802
                 self._outer._on_open_order_end()
 
-            def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:  # noqa: N802
-                self._outer._on_error(reqId, errorCode, errorString, advancedOrderRejectJson)
+            def error(
+                self, reqId, errorCode, errorString, advancedOrderRejectJson=""
+            ) -> None:  # noqa: N802
+                self._outer._on_error(
+                    reqId, errorCode, errorString, advancedOrderRejectJson
+                )
 
         self._conn = conn
         self._app = App(self)
@@ -165,7 +168,9 @@ class _SnapshotApp:
         self._errors: list[Dict[str, Any]] = []
 
     def connect(self) -> None:
-        self._app.connect(self._conn.host, int(self._conn.port), int(self._conn.client_id))
+        self._app.connect(
+            self._conn.host, int(self._conn.port), int(self._conn.client_id)
+        )
         self._thread = threading.Thread(target=self._app.run, daemon=True)
         self._thread.start()
         if not self._next_id_ev.wait(timeout=self._conn.timeout_s):
@@ -180,7 +185,9 @@ class _SnapshotApp:
     def _on_next_valid_id(self, order_id: int) -> None:
         self._next_id_ev.set()
 
-    def _on_open_order(self, order_id: int, contract: Any, order: Any, order_state: Any) -> None:
+    def _on_open_order(
+        self, order_id: int, contract: Any, order: Any, order_state: Any
+    ) -> None:
         evt = {
             "kind": "IBKR_OPEN_ORDER",
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -196,7 +203,9 @@ class _SnapshotApp:
     def _on_open_order_end(self) -> None:
         self._end_ev.set()
 
-    def _on_error(self, req_id: Any, error_code: Any, error_str: Any, advanced: Any) -> None:
+    def _on_error(
+        self, req_id: Any, error_code: Any, error_str: Any, advanced: Any
+    ) -> None:
         payload: Dict[str, Any] = {
             "kind": "IBKR_ERROR",
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -222,7 +231,11 @@ class _SnapshotApp:
 
         # wait for openOrderEnd (or timeout)
         if not self._end_ev.wait(timeout=wait_s):
-            return {"ok": False, "event": "timeout_waiting_openOrderEnd", "wait_s": wait_s}
+            return {
+                "ok": False,
+                "event": "timeout_waiting_openOrderEnd",
+                "wait_s": wait_s,
+            }
 
         with self._lock:
             orders = list(self._orders)
@@ -237,7 +250,12 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=7497)
     ap.add_argument("--client-id", type=int, default=11)
     ap.add_argument("--timeout-s", type=float, default=15.0)
-    ap.add_argument("--wait-s", type=float, default=5.0, help="How long to wait for openOrderEnd after reqAllOpenOrders")
+    ap.add_argument(
+        "--wait-s",
+        type=float,
+        default=5.0,
+        help="How long to wait for openOrderEnd after reqAllOpenOrders",
+    )
     ap.add_argument("--out", default="args/data/ibkr_open_orders_live.jsonl")
     args = ap.parse_args()
 
@@ -247,7 +265,12 @@ def main() -> int:
         out = repo / out
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = IbkrConn(host=str(args.host), port=int(args.port), client_id=int(args.client_id), timeout_s=float(args.timeout_s))
+    conn = IbkrConn(
+        host=str(args.host),
+        port=int(args.port),
+        client_id=int(args.client_id),
+        timeout_s=float(args.timeout_s),
+    )
     app = _SnapshotApp(conn)
 
     ts = _iso_utc_now()
@@ -266,7 +289,12 @@ def main() -> int:
                 "schema_version": SNAPSHOT_SCHEMA_VERSION,
                 "ts": ts,
                 "source": SCHEMA_VERSION,
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id, "timeout_s": conn.timeout_s},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                    "timeout_s": conn.timeout_s,
+                },
             },
         )
 
@@ -302,8 +330,12 @@ def main() -> int:
         "ok": bool(res.get("ok")),
         "schema_version": SCHEMA_VERSION,
         "out_path": str(out),
-        "orders": len(res.get("orders", [])) if isinstance(res.get("orders"), list) else 0,
-        "errors": len(res.get("errors", [])) if isinstance(res.get("errors"), list) else 0,
+        "orders": len(res.get("orders", []))
+        if isinstance(res.get("orders"), list)
+        else 0,
+        "errors": len(res.get("errors", []))
+        if isinstance(res.get("errors"), list)
+        else 0,
         "result": {k: res.get(k) for k in ("ok", "event", "wait_s") if k in res},
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

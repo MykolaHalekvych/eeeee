@@ -1,5 +1,7 @@
 from __future__ import annotations
-import argparse, json, threading, time
+import argparse
+import json
+import threading
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Tuple
 
@@ -47,13 +49,27 @@ class App(EWrapper, EClient):
     def error(self, reqId: int, errorCode: int, errorString: str) -> None:
         self.errors.append((reqId, errorCode, errorString))
 
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId,
-                    parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+    def orderStatus(
+        self,
+        orderId,
+        status,
+        filled,
+        remaining,
+        avgFillPrice,
+        permId,
+        parentId,
+        lastFillPrice,
+        clientId,
+        whyHeld,
+        mktCapPrice,
+    ):
         with self._lock:
             if whyHeld:
                 self._whyHeld_by_orderId[int(orderId)] = str(whyHeld)
 
-    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState) -> None:
+    def openOrder(
+        self, orderId: int, contract: Contract, order: Order, orderState
+    ) -> None:
         permId = int(getattr(order, "permId", 0) or 0)
         clientId = int(getattr(order, "clientId", 0) or 0)
         sym = str(getattr(contract, "symbol", "") or "")
@@ -65,7 +81,20 @@ class App(EWrapper, EClient):
         status = str(getattr(orderState, "status", "") or "")
         why = self._whyHeld_by_orderId.get(int(orderId), "")
         self.recs.append(
-            OrderRec(self._open_tag, int(orderId), permId, clientId, sym, secType, exch, act, otype, tif, status, why)
+            OrderRec(
+                self._open_tag,
+                int(orderId),
+                permId,
+                clientId,
+                sym,
+                secType,
+                exch,
+                act,
+                otype,
+                tif,
+                status,
+                why,
+            )
         )
 
     def openOrderEnd(self) -> None:
@@ -83,7 +112,19 @@ class App(EWrapper, EClient):
         tif = str(getattr(order, "tif", "") or "")
         status = str(getattr(orderState, "status", "") or "")
         self.recs.append(
-            OrderRec("completed", int(orderId), permId, clientId, sym, secType, exch, act, otype, tif, status)
+            OrderRec(
+                "completed",
+                int(orderId),
+                permId,
+                clientId,
+                sym,
+                secType,
+                exch,
+                act,
+                otype,
+                tif,
+                status,
+            )
         )
 
     def completedOrdersEnd(self) -> None:
@@ -97,7 +138,11 @@ def main() -> int:
     ap.add_argument("--client-id", type=int, default=77)
     ap.add_argument("--order-id", type=int, required=True)
     ap.add_argument("--timeout", type=float, default=12.0)
-    ap.add_argument("--include-manual", action="store_true", help="CompletedOrders: include manual too (apiOnly=False)")
+    ap.add_argument(
+        "--include-manual",
+        action="store_true",
+        help="CompletedOrders: include manual too (apiOnly=False)",
+    )
     args = ap.parse_args()
 
     app = App()

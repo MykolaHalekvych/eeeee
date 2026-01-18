@@ -75,7 +75,7 @@ def check_release_zip(release_zip: Path) -> Dict[str, Any]:
                 try:
                     mj = read_json_bytes(z.read("release_manifest_v1.json"))
                     manifest_schema = str(mj.get("schema") or "")
-                    manifest_ok = (manifest_schema == "release_manifest_v1")
+                    manifest_ok = manifest_schema == "release_manifest_v1"
                     if not manifest_ok:
                         errors.append(f"manifest_schema_invalid:{manifest_schema}")
                 except Exception as e:
@@ -100,7 +100,11 @@ def check_release_zip(release_zip: Path) -> Dict[str, Any]:
         "exit_code": code,
         "missing": missing,
         "errors": errors,
-        "manifest": {"present": manifest_present, "ok": manifest_ok, "schema": manifest_schema},
+        "manifest": {
+            "present": manifest_present,
+            "ok": manifest_ok,
+            "schema": manifest_schema,
+        },
         "required": sorted(REQUIRED_FILES),
     }
 
@@ -120,7 +124,10 @@ def main() -> None:
         if outp:
             op = Path(outp)
             op.parent.mkdir(parents=True, exist_ok=True)
-            op.write_text(json.dumps(rep, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            op.write_text(
+                json.dumps(rep, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
 
         emit(
             {

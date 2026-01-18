@@ -20,7 +20,12 @@ STDOUT_MODE = "win_writefile_or_oswrite_v2"
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _precheck_port_in_use(host: str, port: int) -> bool:
@@ -144,7 +149,9 @@ def make_handler(state: _State) -> type[BaseHTTPRequestHandler]:
             return
 
         def _send_json(self, code: int, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            body = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -264,7 +271,9 @@ def cmd_help() -> int:
     return 0
 
 
-def watch_stop_flag(stop_flag: str, httpd: ThreadingHTTPServer, stop_event: threading.Event) -> None:
+def watch_stop_flag(
+    stop_flag: str, httpd: ThreadingHTTPServer, stop_event: threading.Event
+) -> None:
     while not stop_event.is_set():
         if os.path.exists(stop_flag):
             break
@@ -277,10 +286,28 @@ def watch_stop_flag(stop_flag: str, httpd: ThreadingHTTPServer, stop_event: thre
 
 def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
     if not stop_flag:
-        emit_one_json(summary("server_contract_v0.startup", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="STOP_FLAG_REQUIRED"))
+        emit_one_json(
+            summary(
+                "server_contract_v0.startup",
+                False,
+                1,
+                "FAIL_BAD_ARGS",
+                "FAIL_BAD_ARGS",
+                detail="STOP_FLAG_REQUIRED",
+            )
+        )
         return 1
     if port <= 0 or port > 65535:
-        emit_one_json(summary("server_contract_v0.startup", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="PORT_RANGE"))
+        emit_one_json(
+            summary(
+                "server_contract_v0.startup",
+                False,
+                1,
+                "FAIL_BAD_ARGS",
+                "FAIL_BAD_ARGS",
+                detail="PORT_RANGE",
+            )
+        )
         return 1
 
     if _precheck_port_in_use(host, port):
@@ -306,7 +333,17 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
     except OSError as e:
         winerror = getattr(e, "winerror", None)
         if winerror == 10048:
-            emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_FAILED", "INFRA_BIND_FAILED", host=host, port=port))
+            emit_one_json(
+                summary(
+                    "server_contract_v0.startup",
+                    False,
+                    2,
+                    "INFRA_BIND_FAILED",
+                    "INFRA_BIND_FAILED",
+                    host=host,
+                    port=port,
+                )
+            )
             return 2
         emit_one_json(
             summary(
@@ -323,7 +360,18 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
         )
         return 2
     except Exception as e:
-        emit_one_json(summary("server_contract_v0.startup", False, 2, "INFRA_BIND_ERROR", "INFRA_BIND_ERROR", host=host, port=port, err=str(e)))
+        emit_one_json(
+            summary(
+                "server_contract_v0.startup",
+                False,
+                2,
+                "INFRA_BIND_ERROR",
+                "INFRA_BIND_ERROR",
+                host=host,
+                port=port,
+                err=str(e),
+            )
+        )
         return 2
 
     stop_event = threading.Event()
@@ -334,7 +382,9 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
         state.set_ready(True)
 
     threading.Thread(target=ready_worker, daemon=True).start()
-    threading.Thread(target=watch_stop_flag, args=(stop_flag, httpd, stop_event), daemon=True).start()
+    threading.Thread(
+        target=watch_stop_flag, args=(stop_flag, httpd, stop_event), daemon=True
+    ).start()
 
     def shutdown_now() -> None:
         if stop_event.is_set():
@@ -362,7 +412,10 @@ def cmd_serve(host: str, port: int, stop_flag: str, ready_after_ms: int) -> int:
             host=host,
             port=port,
             stop_flag=stop_flag,
-            urls={"health": f"http://{host}:{port}/health", "ready": f"http://{host}:{port}/ready"},
+            urls={
+                "health": f"http://{host}:{port}/health",
+                "ready": f"http://{host}:{port}/ready",
+            },
         )
     )
 
@@ -423,12 +476,32 @@ def main(argv: list[str] | None = None) -> int:
                 i += 2
                 continue
 
-            emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_FLAG", flag=a))
+            emit_one_json(
+                summary(
+                    "server_contract_v0.cli",
+                    False,
+                    1,
+                    "FAIL_BAD_ARGS",
+                    "FAIL_BAD_ARGS",
+                    detail="UNKNOWN_FLAG",
+                    flag=a,
+                )
+            )
             return 1
 
         return cmd_serve(host, port, stop_flag, ready_after_ms)
 
-    emit_one_json(summary("server_contract_v0.cli", False, 1, "FAIL_BAD_ARGS", "FAIL_BAD_ARGS", detail="UNKNOWN_COMMAND", command=cmd))
+    emit_one_json(
+        summary(
+            "server_contract_v0.cli",
+            False,
+            1,
+            "FAIL_BAD_ARGS",
+            "FAIL_BAD_ARGS",
+            detail="UNKNOWN_COMMAND",
+            command=cmd,
+        )
+    )
     return 1
 
 

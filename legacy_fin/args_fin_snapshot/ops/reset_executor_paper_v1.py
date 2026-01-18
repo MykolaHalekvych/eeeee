@@ -38,7 +38,7 @@ SCHEMA = "reset_executor_paper_v1"
 
 # Codes
 INFO_CODES = {2104, 2106, 2158}  # farm connections, etc
-WARN_CODES = {399}               # "will not be placed until ..." (accepted, not failure)
+WARN_CODES = {399}  # "will not be placed until ..." (accepted, not failure)
 
 
 def _utc_now_iso() -> str:
@@ -178,7 +178,9 @@ def _safe_cancel_order(app: Any, order_id: int) -> None:
         app.cancelOrder(order_id, "")
 
 
-def _classify_order_errors(errs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _classify_order_errors(
+    errs: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Split IBKR error callback records for a specific orderId into:
       - warnings (e.g., 399)
@@ -204,6 +206,7 @@ class _App(EWrapper, EClient):
       - capture per-order error/status/openOrder
       - allow waiting for first callback for a placed order
     """
+
     def __init__(self) -> None:
         EClient.__init__(self, self)
         self._next_valid_id_evt = threading.Event()
@@ -225,7 +228,13 @@ class _App(EWrapper, EClient):
         with self._cv:
             self._cv.notify_all()
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         rec: Dict[str, Any] = {
             "reqId": int(reqId),
             "code": int(errorCode),
@@ -238,7 +247,9 @@ class _App(EWrapper, EClient):
             if int(reqId) > 0:
                 self.order_errors.setdefault(int(reqId), []).append(rec)
             else:
-                self.sys_msgs.append(f"reqId={reqId} code={errorCode} msg={errorString}")
+                self.sys_msgs.append(
+                    f"reqId={reqId} code={errorCode} msg={errorString}"
+                )
             self._cv.notify_all()
 
     def orderStatus(
@@ -330,9 +341,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--connect-timeout-s", type=float, default=8.0)
     ap.add_argument("--confirm-paper", action="store_true")
 
-    ap.add_argument("--listen-after-place-s", type=float, default=2.5, help="P1.3: wait for callbacks after placeOrder")
+    ap.add_argument(
+        "--listen-after-place-s",
+        type=float,
+        default=2.5,
+        help="P1.3: wait for callbacks after placeOrder",
+    )
     ap.add_argument("--out", default=str(DATA_DIR / "reset_exec_report_v1.json"))
-    ap.add_argument("--preview-out", default=str(DATA_DIR / "reset_exec_preview_v1.json"))
+    ap.add_argument(
+        "--preview-out", default=str(DATA_DIR / "reset_exec_preview_v1.json")
+    )
 
     args = ap.parse_args(argv)
     ts = _utc_now_iso()
@@ -370,8 +388,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         ledger = load_ledger(ledger_path)
 
-        manual_cancel_required = [it for it in items if it.get("kind") == "MANUAL_CANCEL_REQUIRED"]
-        cancel_items = [it for it in items if it.get("kind") == "CANCEL_ORDER" and int(it.get("orderId") or 0) > 0]
+        manual_cancel_required = [
+            it for it in items if it.get("kind") == "MANUAL_CANCEL_REQUIRED"
+        ]
+        cancel_items = [
+            it
+            for it in items
+            if it.get("kind") == "CANCEL_ORDER" and int(it.get("orderId") or 0) > 0
+        ]
         close_items = [it for it in items if it.get("kind") == "CLOSE_POSITION"]
 
         preview = {
@@ -410,7 +434,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             k = build_action_key(it, plan_hash)
             planned_keys.append(k)
             prev = get_entry(ledger, k)
-            if prev and _u(prev.get("state")) in {"SENT", "ACK", "FILLED", "REJECTED", "CANCELLED"}:
+            if prev and _u(prev.get("state")) in {
+                "SENT",
+                "ACK",
+                "FILLED",
+                "REJECTED",
+                "CANCELLED",
+            }:
                 already_sent += 1
                 continue
 
@@ -432,10 +462,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
 
         save_ledger(ledger_path, ledger)
-        append_event(events_path, "RESET_PLANNED", {"plan_hash": plan_hash, "items_total": len(items)})
+        append_event(
+            events_path,
+            "RESET_PLANNED",
+            {"plan_hash": plan_hash, "items_total": len(items)},
+        )
 
         # Hard block by default
-        can_execute = (execution_mode == "PAPER") and enable_paper and bool(args.confirm_paper)
+        can_execute = (
+            (execution_mode == "PAPER") and enable_paper and bool(args.confirm_paper)
+        )
         if not can_execute:
             out = {
                 "schema": SCHEMA,
@@ -453,7 +489,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ledger_already_sent_count": already_sent,
             }
             _write_json(Path(args.out), out)
-            append_event(events_path, "RESET_BLOCKED", {"reason": "PAPER_EXECUTION_NOT_ENABLED", "plan_hash": plan_hash})
+            append_event(
+                events_path,
+                "RESET_BLOCKED",
+                {"reason": "PAPER_EXECUTION_NOT_ENABLED", "plan_hash": plan_hash},
+            )
             sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
             return 0
 
@@ -466,10 +506,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "exit_code": 2,
                 "executed": False,
                 "error": f"global_mode_not_only_exits: {global_mode}",
-                "written": {"preview": str(Path(args.preview_out)), "ledger": str(ledger_path), "events": str(events_path)},
+                "written": {
+                    "preview": str(Path(args.preview_out)),
+                    "ledger": str(ledger_path),
+                    "events": str(events_path),
+                },
             }
             _write_json(Path(args.out), out)
-            append_event(events_path, "RESET_BLOCKED", {"reason": "GLOBAL_MODE_NOT_ONLY_EXITS", "plan_hash": plan_hash})
+            append_event(
+                events_path,
+                "RESET_BLOCKED",
+                {"reason": "GLOBAL_MODE_NOT_ONLY_EXITS", "plan_hash": plan_hash},
+            )
             sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
             return 2
 
@@ -483,7 +531,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     kind=str(it.get("kind") or ""),
                     state="BLOCKED",
                     ts_utc=ts,
-                    details={"reason": "MANUAL_CANCEL_REQUIRED_PRESENT", "plan_hash": plan_hash},
+                    details={
+                        "reason": "MANUAL_CANCEL_REQUIRED_PRESENT",
+                        "plan_hash": plan_hash,
+                    },
                 )
             save_ledger(ledger_path, ledger)
 
@@ -495,10 +546,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "executed": False,
                 "error": "MANUAL_CANCEL_REQUIRED_PRESENT: cannot proceed until manual orders are cleared or filled",
                 "manual_cancel_required": manual_cancel_required,
-                "written": {"preview": str(Path(args.preview_out)), "ledger": str(ledger_path), "events": str(events_path)},
+                "written": {
+                    "preview": str(Path(args.preview_out)),
+                    "ledger": str(ledger_path),
+                    "events": str(events_path),
+                },
             }
             _write_json(Path(args.out), out)
-            append_event(events_path, "RESET_BLOCKED", {"reason": "MANUAL_CANCEL_REQUIRED_PRESENT", "plan_hash": plan_hash})
+            append_event(
+                events_path,
+                "RESET_BLOCKED",
+                {"reason": "MANUAL_CANCEL_REQUIRED_PRESENT", "plan_hash": plan_hash},
+            )
             sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
             return 1
 
@@ -516,10 +575,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "exit_code": 2,
                 "error": f"connect_failed: {type(e).__name__}: {e}",
                 "executed": False,
-                "written": {"preview": str(Path(args.preview_out)), "ledger": str(ledger_path), "events": str(events_path)},
+                "written": {
+                    "preview": str(Path(args.preview_out)),
+                    "ledger": str(ledger_path),
+                    "events": str(events_path),
+                },
             }
             _write_json(Path(args.out), out)
-            append_event(events_path, "RESET_EXECUTE_FAIL", {"reason": "CONNECT_FAILED", "plan_hash": plan_hash})
+            append_event(
+                events_path,
+                "RESET_EXECUTE_FAIL",
+                {"reason": "CONNECT_FAILED", "plan_hash": plan_hash},
+            )
             sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
             return 2
 
@@ -538,10 +605,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "exit_code": 2,
                 "error": "handshake_timeout: no nextValidId",
                 "executed": False,
-                "written": {"preview": str(Path(args.preview_out)), "ledger": str(ledger_path), "events": str(events_path)},
+                "written": {
+                    "preview": str(Path(args.preview_out)),
+                    "ledger": str(ledger_path),
+                    "events": str(events_path),
+                },
             }
             _write_json(Path(args.out), out)
-            append_event(events_path, "RESET_EXECUTE_FAIL", {"reason": "HANDSHAKE_TIMEOUT", "plan_hash": plan_hash})
+            append_event(
+                events_path,
+                "RESET_EXECUTE_FAIL",
+                {"reason": "HANDSHAKE_TIMEOUT", "plan_hash": plan_hash},
+            )
             sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
             return 2
 
@@ -555,28 +630,70 @@ def main(argv: Optional[List[str]] = None) -> int:
             k = build_action_key(it, plan_hash)
             prev = get_entry(ledger, k)
             if prev and _u(prev.get("state")) in {"SENT", "ACK", "CANCELLED"}:
-                actions.append({"kind": "CANCEL_ORDER", "skipped": True, "reason": "IDEMPOTENT_ALREADY_SENT", "key": k})
-                append_event(events_path, "ORDER_SKIP", {"kind": "CANCEL_ORDER", "reason": "ALREADY_SENT", "key": k})
+                actions.append(
+                    {
+                        "kind": "CANCEL_ORDER",
+                        "skipped": True,
+                        "reason": "IDEMPOTENT_ALREADY_SENT",
+                        "key": k,
+                    }
+                )
+                append_event(
+                    events_path,
+                    "ORDER_SKIP",
+                    {"kind": "CANCEL_ORDER", "reason": "ALREADY_SENT", "key": k},
+                )
                 continue
 
             oid = int(it.get("orderId") or 0)
             if oid <= 0:
                 _ledger_upsert_monotonic(
-                    ledger, key=k, kind="CANCEL_ORDER", state="SKIPPED", ts_utc=ts,
-                    details={"reason": "INVALID_ORDER_ID", "plan_hash": plan_hash}
+                    ledger,
+                    key=k,
+                    kind="CANCEL_ORDER",
+                    state="SKIPPED",
+                    ts_utc=ts,
+                    details={"reason": "INVALID_ORDER_ID", "plan_hash": plan_hash},
                 )
-                actions.append({"kind": "CANCEL_ORDER", "skipped": True, "reason": "INVALID_ORDER_ID", "key": k})
-                append_event(events_path, "ORDER_SKIP", {"kind": "CANCEL_ORDER", "reason": "INVALID_ORDER_ID", "key": k})
+                actions.append(
+                    {
+                        "kind": "CANCEL_ORDER",
+                        "skipped": True,
+                        "reason": "INVALID_ORDER_ID",
+                        "key": k,
+                    }
+                )
+                append_event(
+                    events_path,
+                    "ORDER_SKIP",
+                    {"kind": "CANCEL_ORDER", "reason": "INVALID_ORDER_ID", "key": k},
+                )
                 continue
 
             _safe_cancel_order(app, oid)
 
             _ledger_upsert_monotonic(
-                ledger, key=k, kind="CANCEL_ORDER", state="SENT", ts_utc=ts,
-                details={"orderId": oid, "plan_hash": plan_hash}
+                ledger,
+                key=k,
+                kind="CANCEL_ORDER",
+                state="SENT",
+                ts_utc=ts,
+                details={"orderId": oid, "plan_hash": plan_hash},
             )
-            actions.append({"kind": "CANCEL_ORDER", "orderId": oid, "symbol": it.get("symbol"), "permId": int(it.get("permId") or 0), "key": k})
-            append_event(events_path, "ORDER_SENT", {"kind": "CANCEL_ORDER", "orderId": oid, "key": k})
+            actions.append(
+                {
+                    "kind": "CANCEL_ORDER",
+                    "orderId": oid,
+                    "symbol": it.get("symbol"),
+                    "permId": int(it.get("permId") or 0),
+                    "key": k,
+                }
+            )
+            append_event(
+                events_path,
+                "ORDER_SENT",
+                {"kind": "CANCEL_ORDER", "orderId": oid, "key": k},
+            )
             time.sleep(0.15)
 
         # Phase 1: close positions (idempotent) + P1.3 callbacks
@@ -584,18 +701,44 @@ def main(argv: Optional[List[str]] = None) -> int:
             k = build_action_key(it, plan_hash)
             prev = get_entry(ledger, k)
             if prev and _u(prev.get("state")) in {"SENT", "ACK", "FILLED"}:
-                actions.append({"kind": "CLOSE_POSITION", "skipped": True, "reason": "IDEMPOTENT_ALREADY_SENT", "key": k})
-                append_event(events_path, "ORDER_SKIP", {"kind": "CLOSE_POSITION", "reason": "ALREADY_SENT", "key": k})
+                actions.append(
+                    {
+                        "kind": "CLOSE_POSITION",
+                        "skipped": True,
+                        "reason": "IDEMPOTENT_ALREADY_SENT",
+                        "key": k,
+                    }
+                )
+                append_event(
+                    events_path,
+                    "ORDER_SKIP",
+                    {"kind": "CLOSE_POSITION", "reason": "ALREADY_SENT", "key": k},
+                )
                 continue
 
             qty = float(it.get("qty") or 0.0)
             if qty <= 0:
                 _ledger_upsert_monotonic(
-                    ledger, key=k, kind="CLOSE_POSITION", state="SKIPPED", ts_utc=ts,
-                    details={"reason": "ZERO_QTY", "plan_hash": plan_hash}
+                    ledger,
+                    key=k,
+                    kind="CLOSE_POSITION",
+                    state="SKIPPED",
+                    ts_utc=ts,
+                    details={"reason": "ZERO_QTY", "plan_hash": plan_hash},
                 )
-                actions.append({"kind": "CLOSE_POSITION", "skipped": True, "reason": "ZERO_QTY", "key": k})
-                append_event(events_path, "ORDER_SKIP", {"kind": "CLOSE_POSITION", "reason": "ZERO_QTY", "key": k})
+                actions.append(
+                    {
+                        "kind": "CLOSE_POSITION",
+                        "skipped": True,
+                        "reason": "ZERO_QTY",
+                        "key": k,
+                    }
+                )
+                append_event(
+                    events_path,
+                    "ORDER_SKIP",
+                    {"kind": "CLOSE_POSITION", "reason": "ZERO_QTY", "key": k},
+                )
                 continue
 
             contract = _build_contract_from_item(it)
@@ -611,10 +754,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             next_oid += 1
 
             app.placeOrder(oid, contract, order)
-            append_event(events_path, "ORDER_SENT", {"kind": "CLOSE_POSITION", "orderId": oid, "action": order.action, "qty": qty, "key": k, "sanitized": san})
+            append_event(
+                events_path,
+                "ORDER_SENT",
+                {
+                    "kind": "CLOSE_POSITION",
+                    "orderId": oid,
+                    "action": order.action,
+                    "qty": qty,
+                    "key": k,
+                    "sanitized": san,
+                },
+            )
 
             # P1.3: listen for callbacks (openOrder/orderStatus/error)
-            snap = app.wait_first_signal(oid, timeout_s=float(args.listen_after_place_s))
+            snap = app.wait_first_signal(
+                oid, timeout_s=float(args.listen_after_place_s)
+            )
             errs = snap.get("errors") or []
             warns, fails = _classify_order_errors(errs)
 
@@ -629,14 +785,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             # update events
             if warns:
                 warnings_all.extend(warns)
-                append_event(events_path, "ORDER_WARNING", {"orderId": oid, "key": k, "warnings": warns})
+                append_event(
+                    events_path,
+                    "ORDER_WARNING",
+                    {"orderId": oid, "key": k, "warnings": warns},
+                )
             if fails:
                 failures.extend(fails)
-                append_event(events_path, "ORDER_ERROR", {"orderId": oid, "key": k, "errors": fails})
+                append_event(
+                    events_path,
+                    "ORDER_ERROR",
+                    {"orderId": oid, "key": k, "errors": fails},
+                )
             if openo:
-                append_event(events_path, "OPEN_ORDER", {"orderId": oid, "key": k, "openOrder": openo})
+                append_event(
+                    events_path,
+                    "OPEN_ORDER",
+                    {"orderId": oid, "key": k, "openOrder": openo},
+                )
             if status:
-                append_event(events_path, "ORDER_STATUS", {"orderId": oid, "key": k, "orderStatus": status})
+                append_event(
+                    events_path,
+                    "ORDER_STATUS",
+                    {"orderId": oid, "key": k, "orderStatus": status},
+                )
 
             # ledger state
             if fails:
@@ -687,7 +859,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
 
         save_ledger(ledger_path, ledger)
-        append_event(events_path, "RESET_EXECUTE_DONE", {"plan_hash": plan_hash, "actions": len(actions)})
+        append_event(
+            events_path,
+            "RESET_EXECUTE_DONE",
+            {"plan_hash": plan_hash, "actions": len(actions)},
+        )
 
         ok = True
         exit_code = 0
@@ -736,7 +912,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             _write_json(Path(args.out), out)
         except Exception:
             pass
-        append_event(Path(args.events), "RESET_EXECUTE_FAIL", {"reason": "EXCEPTION", "error": str(e)})
+        append_event(
+            Path(args.events),
+            "RESET_EXECUTE_FAIL",
+            {"reason": "EXCEPTION", "error": str(e)},
+        )
         sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
         return 2
     finally:

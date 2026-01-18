@@ -19,7 +19,6 @@ ibkr_resolve_manual_order_v0.py
 from __future__ import annotations
 
 import argparse
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -71,7 +70,9 @@ class IBApp(EWrapper, EClient):
         # NOTE: reqId can be -1 / 0 for system messages; keep anyway.
         self.errors.append((reqId, errorCode, errorString))
 
-    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState) -> None:
+    def openOrder(
+        self, orderId: int, contract: Contract, order: Order, orderState
+    ) -> None:
         # orderState.status often has current status
         perm_id = int(getattr(order, "permId", 0) or 0)
         client_id = int(getattr(order, "clientId", 0) or 0)
@@ -150,18 +151,33 @@ def _safe_call_global_cancel(app: IBApp) -> None:
         app.reqGlobalCancel()
     except TypeError:
         # Some bindings may require an OrderCancel object; not handled here.
-        raise RuntimeError("reqGlobalCancel() signature mismatch in this ibapi version.")
+        raise RuntimeError(
+            "reqGlobalCancel() signature mismatch in this ibapi version."
+        )
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=7497)
-    p.add_argument("--client-id", type=int, default=0, help="Для bind ручных ордеров должен быть 0")
-    p.add_argument("--perm-id", type=int, required=True, help="permId ордера (из твоих логов/снапшота)")
+    p.add_argument(
+        "--client-id", type=int, default=0, help="Для bind ручных ордеров должен быть 0"
+    )
+    p.add_argument(
+        "--perm-id",
+        type=int,
+        required=True,
+        help="permId ордера (из твоих логов/снапшота)",
+    )
     p.add_argument("--timeout", type=float, default=10.0)
-    p.add_argument("--confirm", action="store_true", help="Без этого флага ничего не отменяется")
-    p.add_argument("--global-cancel", action="store_true", help="Отменить ВСЕ открытые ордера (опаснее)")
+    p.add_argument(
+        "--confirm", action="store_true", help="Без этого флага ничего не отменяется"
+    )
+    p.add_argument(
+        "--global-cancel",
+        action="store_true",
+        help="Отменить ВСЕ открытые ордера (опаснее)",
+    )
     args = p.parse_args()
 
     app = IBApp()
@@ -170,7 +186,9 @@ def main() -> int:
     t.start()
 
     if not app.wait_connected(timeout_s=args.timeout):
-        print("[ERR] Не дождались nextValidId. Проверь TWS/Gateway, порт, API settings.")
+        print(
+            "[ERR] Не дождались nextValidId. Проверь TWS/Gateway, порт, API settings."
+        )
         try:
             app.disconnect()
         except Exception:
@@ -182,7 +200,9 @@ def main() -> int:
     app._open_orders_event.clear()
     app.reqOpenOrders()
     if not app.wait_open_orders(timeout_s=args.timeout):
-        print("[WARN] openOrderEnd не пришёл за таймаут; продолжаем с тем, что успели получить.")
+        print(
+            "[WARN] openOrderEnd не пришёл за таймаут; продолжаем с тем, что успели получить."
+        )
 
     target = app.open_orders.get(args.perm_id)
     print(f"[INFO] Найдено open orders (permId->info): {len(app.open_orders)}")
@@ -194,10 +214,14 @@ def main() -> int:
             f"tif={target.tif} qty={target.total_qty} status={target.status}"
         )
     else:
-        print(f"[INFO] Ордер с permId={args.perm_id} не найден среди open orders этого clientId.")
+        print(
+            f"[INFO] Ордер с permId={args.perm_id} не найден среди open orders этого clientId."
+        )
         print("       Если он виден в TWS, но не пришёл сюда, попробуй:")
         print("       - убедиться что подключение именно с clientId=0")
-        print("       - повторить запуск, либо использовать --global-cancel (с --confirm)")
+        print(
+            "       - повторить запуск, либо использовать --global-cancel (с --confirm)"
+        )
         try:
             app.disconnect()
         except Exception:
@@ -207,7 +231,9 @@ def main() -> int:
     if not args.confirm:
         print("[SAFE] --confirm не задан. Ничего не отменяю.")
         print("       Для отмены конкретного ордера: добавь --confirm")
-        print("       Для глобальной отмены всех ордеров: добавь --global-cancel --confirm")
+        print(
+            "       Для глобальной отмены всех ордеров: добавь --global-cancel --confirm"
+        )
         try:
             app.disconnect()
         except Exception:
@@ -227,10 +253,14 @@ def main() -> int:
         return 0
 
     if target.order_id == 0:
-        print("[ERR] После bind'а orderId всё ещё 0 -> индивидуально отменить через API нельзя.")
+        print(
+            "[ERR] После bind'а orderId всё ещё 0 -> индивидуально отменить через API нельзя."
+        )
         print("      Варианты:")
         print("      1) Отмени в TWS UI")
-        print("      2) Запусти этот же скрипт с --global-cancel --confirm (отменит ВСЕ open orders)")
+        print(
+            "      2) Запусти этот же скрипт с --global-cancel --confirm (отменит ВСЕ open orders)"
+        )
         try:
             app.disconnect()
         except Exception:

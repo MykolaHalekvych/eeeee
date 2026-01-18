@@ -66,7 +66,9 @@ def git_is_dirty(repo_root: Path) -> bool | None:
     return bool(out.strip())
 
 
-def find_repo_root(start_dir: Path, guard_filename: str = DEFAULT_GUARD_FILENAME) -> Path:
+def find_repo_root(
+    start_dir: Path, guard_filename: str = DEFAULT_GUARD_FILENAME
+) -> Path:
     cur = start_dir.resolve()
     for candidate in [cur, *cur.parents]:
         if (candidate / guard_filename).is_file():
@@ -249,7 +251,9 @@ def finalize(
 
     events_path = run_dir / "events.jsonl"
     events_before_end = _iter_events(events_path)
-    step_events_before_end = [e for e in events_before_end if e.get("event") in STEP_EVENTS]
+    step_events_before_end = [
+        e for e in events_before_end if e.get("event") in STEP_EVENTS
+    ]
 
     if overall_status is None:
         overall_status = _infer_overall_status(step_events_before_end)
@@ -390,7 +394,11 @@ def main(argv: list[str] | None = None) -> int:
             run_dir,
             "START",
             "OK",
-            data={"run_id": str(args.run_id), "product": args.product, "factory": args.factory},
+            data={
+                "run_id": str(args.run_id),
+                "product": args.product,
+                "factory": args.factory,
+            },
         )
         return 0
 

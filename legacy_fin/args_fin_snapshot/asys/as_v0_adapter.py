@@ -29,6 +29,7 @@ THIN_BOOK_Z = -1.0
 _EXPIRY_CACHE: Optional[str] = None
 _ROLL_FLAGS_CACHE: Optional[Dict[str, Any]] = None
 
+
 def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any]]:
     p = data_dir / "position_state_v0.json"
     if not p.exists():
@@ -39,6 +40,7 @@ def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
+
 
 def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
     """
@@ -65,11 +67,21 @@ def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
 
         cand = None
         if isinstance(obj, dict):
-            cand = obj.get("lastTradeDateOrContractMonth") or obj.get("expiry") or obj.get("expiry_yyyymmdd")
+            cand = (
+                obj.get("lastTradeDateOrContractMonth")
+                or obj.get("expiry")
+                or obj.get("expiry_yyyymmdd")
+            )
             if not cand:
-                nested = obj.get("contract") or obj.get("contract_identity") or obj.get("resolved_contract")
+                nested = (
+                    obj.get("contract")
+                    or obj.get("contract_identity")
+                    or obj.get("resolved_contract")
+                )
                 if isinstance(nested, dict):
-                    cand = nested.get("lastTradeDateOrContractMonth") or nested.get("expiry")
+                    cand = nested.get("lastTradeDateOrContractMonth") or nested.get(
+                        "expiry"
+                    )
 
         if cand:
             s = str(cand).strip()
@@ -78,6 +90,8 @@ def _read_contract_expiry_yyyymmdd(data_dir: Path = DATA_DIR) -> Optional[str]:
                 return m.group(1)
 
     return None
+
+
 def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any]]:
     p = data_dir / "position_state_v0.json"
     if not p.exists():
@@ -88,6 +102,7 @@ def _read_position_state_v0(data_dir: Path = DATA_DIR) -> Optional[Dict[str, Any
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
+
 
 def _compute_roll_flags(expiry_yyyymmdd: Optional[str]) -> Dict[str, Any]:
     if not expiry_yyyymmdd:
@@ -187,7 +202,12 @@ def _minutes_to_weekly_close(ts_utc: Optional[datetime]) -> Optional[int]:
         return None
 
     wd = ts_utc.weekday()
-    close_dt = ts_utc.replace(hour=WEEKLY_CLOSE_HOUR_UTC, minute=WEEKLY_CLOSE_MINUTE_UTC, second=0, microsecond=0)
+    close_dt = ts_utc.replace(
+        hour=WEEKLY_CLOSE_HOUR_UTC,
+        minute=WEEKLY_CLOSE_MINUTE_UTC,
+        second=0,
+        microsecond=0,
+    )
     # align to Friday of current week
     close_dt = close_dt + timedelta(days=(WEEKLY_CLOSE_WEEKDAY - wd))
     # if already past, take next week
@@ -204,7 +224,12 @@ def _compute_session_flags(ts_utc: Optional[datetime]) -> Dict[str, Any]:
     Conservative: weekends treated as "holiday/closed" except Sunday >= 22:00 UTC.
     """
     if ts_utc is None:
-        return {"is_rth": None, "is_globex": None, "minutes_to_close": None, "is_holiday": None}
+        return {
+            "is_rth": None,
+            "is_globex": None,
+            "minutes_to_close": None,
+            "is_holiday": None,
+        }
 
     wd = ts_utc.weekday()  # Mon=0 ... Sun=6
 
@@ -246,7 +271,7 @@ def _volume_stats(bars: List[Bar5m], window: int = VOL_WINDOW) -> Dict[str, Any]
 
     mean = sum(seq) / len(seq)
     var = sum((x - mean) ** 2 for x in seq) / max(1, (len(seq) - 1))
-    std = var ** 0.5
+    std = var**0.5
     if std <= 1e-9:
         return {"vol_mean": mean, "vol_std": std, "vol_z": 0.0}
 
@@ -370,6 +395,7 @@ def derive_ma_input_from_bar(
     )
 
     return ma_input
+
 
 def parse_bar_row(row: Dict[str, str]) -> Bar5m:
     """

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # -----------------------------
 # UNATTENDED ELIGIBILITY RULES
 # -----------------------------
-AUTOMATION_DENY_SYMBOLS = {"HG"}          # physical delivery => NOT unattended
+AUTOMATION_DENY_SYMBOLS = {"HG"}  # physical delivery => NOT unattended
 AUTOMATION_ALLOW_SYMBOLS = {"MHG", "QC"}  # intended for unattended
 
 ROLL_WINDOW_TRADING_DAYS_DEFAULT = 7
@@ -34,7 +34,12 @@ def is_automation_allowed(symbol: str) -> bool:
 
 
 def utc_now_str() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _get_primary_exch(obj: Any) -> Optional[str]:
@@ -51,7 +56,9 @@ def _repo_root() -> Path:
 def _write_json_atomic(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
     tmp.replace(path)
 
 
@@ -122,7 +129,9 @@ def _trading_days_between(start_date: datetime.date, end_date: datetime.date) ->
     return n
 
 
-def _trading_days_to_expiry(cd: Any, now_utc: Optional[datetime] = None) -> Optional[int]:
+def _trading_days_to_expiry(
+    cd: Any, now_utc: Optional[datetime] = None
+) -> Optional[int]:
     now = now_utc or datetime.now(timezone.utc)
     c = getattr(cd, "contract", None)
     d = _parse_last_trade_date(getattr(c, "lastTradeDateOrContractMonth", None))
@@ -189,7 +198,10 @@ def select_front_month(
     strict: bool = True,
 ) -> Optional[Any]:
     cd, _ = select_front_month_reason(
-        details, now_utc=now_utc, roll_window_days=int(roll_window_days), strict=bool(strict)
+        details,
+        now_utc=now_utc,
+        roll_window_days=int(roll_window_days),
+        strict=bool(strict),
     )
     return cd
 
@@ -229,16 +241,29 @@ def evaluate_eligibility_and_select(
     sym = _sym_u(symbol)
 
     if is_automation_denied(sym):
-        return EligibilityResult(False, "BROKER_POLICY_PHYSICAL_DELIVERY", sym, int(roll_window_trading_days), None)
+        return EligibilityResult(
+            False,
+            "BROKER_POLICY_PHYSICAL_DELIVERY",
+            sym,
+            int(roll_window_trading_days),
+            None,
+        )
 
     if not is_automation_allowed(sym):
-        return EligibilityResult(False, "SYMBOL_NOT_ALLOWLISTED", sym, int(roll_window_trading_days), None)
+        return EligibilityResult(
+            False, "SYMBOL_NOT_ALLOWLISTED", sym, int(roll_window_trading_days), None
+        )
 
     cd, reason = select_front_month_reason(
-        details, now_utc=now_utc, roll_window_days=int(roll_window_trading_days), strict=True
+        details,
+        now_utc=now_utc,
+        roll_window_days=int(roll_window_trading_days),
+        strict=True,
     )
     if cd is None:
-        return EligibilityResult(False, reason, sym, int(roll_window_trading_days), None)
+        return EligibilityResult(
+            False, reason, sym, int(roll_window_trading_days), None
+        )
 
     return EligibilityResult(True, reason, sym, int(roll_window_trading_days), cd)
 
@@ -310,7 +335,9 @@ def contract_to_dict(c: Any) -> Dict[str, Any]:
         "primaryExchange": _get_primary_exch(c),
         "currency": getattr(c, "currency", None),
         "multiplier": getattr(c, "multiplier", None),
-        "lastTradeDateOrContractMonth": getattr(c, "lastTradeDateOrContractMonth", None),
+        "lastTradeDateOrContractMonth": getattr(
+            c, "lastTradeDateOrContractMonth", None
+        ),
         "tradingClass": getattr(c, "tradingClass", None),
     }
 
@@ -374,10 +401,24 @@ def load_ibkr_connection(path: Optional[str] = None) -> IbkrConn:
     except Exception:
         return IbkrConn()
 
-    host = _coalesce(raw.get("host"), raw.get("Host"), raw.get("hostname"), raw.get("ip"), "127.0.0.1")
+    host = _coalesce(
+        raw.get("host"),
+        raw.get("Host"),
+        raw.get("hostname"),
+        raw.get("ip"),
+        "127.0.0.1",
+    )
     port = _coalesce(raw.get("port"), raw.get("Port"), 7497)
-    client_id = _coalesce(raw.get("client_id"), raw.get("clientId"), raw.get("clientID"), raw.get("ClientId"), 11)
-    timeout_s = _coalesce(raw.get("timeout_s"), raw.get("timeoutS"), raw.get("timeout"), 20.0)
+    client_id = _coalesce(
+        raw.get("client_id"),
+        raw.get("clientId"),
+        raw.get("clientID"),
+        raw.get("ClientId"),
+        11,
+    )
+    timeout_s = _coalesce(
+        raw.get("timeout_s"), raw.get("timeoutS"), raw.get("timeout"), 20.0
+    )
     wait_s = _coalesce(raw.get("wait_s"), raw.get("waitS"), raw.get("wait"), 8.0)
 
     return IbkrConn(
@@ -391,7 +432,13 @@ def load_ibkr_connection(path: Optional[str] = None) -> IbkrConn:
 
 def load_ibkr_connection_dict(path: Optional[str] = None) -> Dict[str, Any]:
     c = load_ibkr_connection(path)
-    return {"host": c.host, "port": c.port, "client_id": c.client_id, "timeout_s": c.timeout_s, "wait_s": c.wait_s}
+    return {
+        "host": c.host,
+        "port": c.port,
+        "client_id": c.client_id,
+        "timeout_s": c.timeout_s,
+        "wait_s": c.wait_s,
+    }
 
 
 # -----------------------------
@@ -417,7 +464,9 @@ class _CDApp:
                 self._outer._on_contract_details_end()
 
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):  # noqa: N802
-                self._outer._on_error(reqId, errorCode, errorString, advancedOrderRejectJson)
+                self._outer._on_error(
+                    reqId, errorCode, errorString, advancedOrderRejectJson
+                )
 
         self._conn = conn
         self._app = App(self)
@@ -438,7 +487,9 @@ class _CDApp:
     def _on_contract_details_end(self) -> None:
         self._end_ev.set()
 
-    def _on_error(self, reqId: Any, errorCode: Any, errorString: Any, advanced: Any) -> None:
+    def _on_error(
+        self, reqId: Any, errorCode: Any, errorString: Any, advanced: Any
+    ) -> None:
         self.errors.append(
             {
                 "req_id": reqId,
@@ -449,7 +500,9 @@ class _CDApp:
         )
 
     def connect(self) -> None:
-        self._app.connect(self._conn.host, int(self._conn.port), int(self._conn.client_id))
+        self._app.connect(
+            self._conn.host, int(self._conn.port), int(self._conn.client_id)
+        )
         self._thread = threading.Thread(target=self._app.run, daemon=True)
         self._thread.start()
         if not self._ready_ev.wait(timeout=float(self._conn.timeout_s)):
@@ -517,16 +570,34 @@ def resolve_copper_contract_unattended(
     out_meta = out_dir / f"ibkr_{sym.lower()}_contract_v1.meta.json"
 
     if is_automation_denied(sym):
-        meta = EligibilityResult(False, "BROKER_POLICY_PHYSICAL_DELIVERY", sym, int(roll_window_trading_days), None).to_meta()
+        meta = EligibilityResult(
+            False,
+            "BROKER_POLICY_PHYSICAL_DELIVERY",
+            sym,
+            int(roll_window_trading_days),
+            None,
+        ).to_meta()
         _write_json_atomic(out_meta, meta)
         _write_json_atomic(out_contract, {})
-        return {"ok": False, "meta_path": str(out_meta), "contract_path": str(out_contract), "meta": meta}
+        return {
+            "ok": False,
+            "meta_path": str(out_meta),
+            "contract_path": str(out_contract),
+            "meta": meta,
+        }
 
     if not is_automation_allowed(sym):
-        meta = EligibilityResult(False, "SYMBOL_NOT_ALLOWLISTED", sym, int(roll_window_trading_days), None).to_meta()
+        meta = EligibilityResult(
+            False, "SYMBOL_NOT_ALLOWLISTED", sym, int(roll_window_trading_days), None
+        ).to_meta()
         _write_json_atomic(out_meta, meta)
         _write_json_atomic(out_contract, {})
-        return {"ok": False, "meta_path": str(out_meta), "contract_path": str(out_contract), "meta": meta}
+        return {
+            "ok": False,
+            "meta_path": str(out_meta),
+            "contract_path": str(out_contract),
+            "meta": meta,
+        }
 
     from ibapi.contract import Contract  # type: ignore
 
@@ -552,17 +623,31 @@ def resolve_copper_contract_unattended(
 
         if not elig.ok or elig.selected_cd is None:
             _write_json_atomic(out_contract, {})
-            return {"ok": False, "meta_path": str(out_meta), "contract_path": str(out_contract), "meta": meta}
+            return {
+                "ok": False,
+                "meta_path": str(out_meta),
+                "contract_path": str(out_contract),
+                "meta": meta,
+            }
 
         contract_dict = contract_to_dict(getattr(elig.selected_cd, "contract", None))
         _write_json_atomic(out_contract, contract_dict)
-        return {"ok": True, "meta_path": str(out_meta), "contract_path": str(out_contract), "meta": meta, "contract": contract_dict}
+        return {
+            "ok": True,
+            "meta_path": str(out_meta),
+            "contract_path": str(out_contract),
+            "meta": meta,
+            "contract": contract_dict,
+        }
     finally:
         app.disconnect()
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="ibkr_contract_resolver_v1", description="Resolve unattended-safe copper futures contract (MHG/QC). HG is denied.")
+    ap = argparse.ArgumentParser(
+        prog="ibkr_contract_resolver_v1",
+        description="Resolve unattended-safe copper futures contract (MHG/QC). HG is denied.",
+    )
     ap.add_argument("--symbol", required=True, help="MHG or QC (HG will be denied)")
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
@@ -573,8 +658,12 @@ def main() -> int:
     ap.add_argument("--sec-type", default="FUT")
     ap.add_argument("--exchange", default="COMEX")
     ap.add_argument("--currency", default="USD")
-    ap.add_argument("--roll-window-trading-days", type=int, default=ROLL_WINDOW_TRADING_DAYS_DEFAULT)
-    ap.add_argument("--conn-json", default="", help="Optional path to ibkr_connection_*.json")
+    ap.add_argument(
+        "--roll-window-trading-days", type=int, default=ROLL_WINDOW_TRADING_DAYS_DEFAULT
+    )
+    ap.add_argument(
+        "--conn-json", default="", help="Optional path to ibkr_connection_*.json"
+    )
 
     a = ap.parse_args()
 

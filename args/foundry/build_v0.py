@@ -1,4 +1,3 @@
-﻿
 from __future__ import annotations
 
 import argparse
@@ -82,7 +81,9 @@ def expand_patterns(repo_root: Path, patterns: List[str]) -> List[Path]:
     return uniq
 
 
-def policy_check_build(cp: Dict[str, Any], product_id: str, factory_id: str) -> Tuple[bool, List[str]]:
+def policy_check_build(
+    cp: Dict[str, Any], product_id: str, factory_id: str
+) -> Tuple[bool, List[str]]:
     blocked: List[str] = []
     engine = cp.get("engine", {}) if isinstance(cp, dict) else {}
     perms = engine.get("permissions", {}) if isinstance(engine, dict) else {}
@@ -93,9 +94,17 @@ def policy_check_build(cp: Dict[str, Any], product_id: str, factory_id: str) -> 
 
     products = allow.get("products", [])
     factories = allow.get("factories", [])
-    if not isinstance(products, list) or len(products) == 0 or product_id not in products:
+    if (
+        not isinstance(products, list)
+        or len(products) == 0
+        or product_id not in products
+    ):
         blocked.append("product_not_in_allowlist")
-    if not isinstance(factories, list) or len(factories) == 0 or factory_id not in factories:
+    if (
+        not isinstance(factories, list)
+        or len(factories) == 0
+        or factory_id not in factories
+    ):
         blocked.append("factory_not_in_allowlist")
 
     return (len(blocked) == 0), blocked
@@ -149,7 +158,9 @@ def write_evidence(
     lines.append("")
     lines.append("## Policy summary (deterministic)")
     lines.append("```json")
-    lines.append(json.dumps(policy_summary, ensure_ascii=False, indent=2, sort_keys=True))
+    lines.append(
+        json.dumps(policy_summary, ensure_ascii=False, indent=2, sort_keys=True)
+    )
     lines.append("```")
     lines.append("")
     lines.append("## Payload files included")
@@ -171,7 +182,14 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     # Load control plane
@@ -192,7 +210,14 @@ def main() -> int:
     # Policy must allow build
     ok_policy, blocked_by = policy_check_build(cp, args.product, args.factory)
     if not ok_policy:
-        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "blocked_by": blocked_by})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "blocked_by": blocked_by,
+            }
+        )
         return EXIT_INFRA
 
     # Load manifests
@@ -202,7 +227,14 @@ def main() -> int:
             raise ManifestError(f"unknown factory_id: {args.factory}")
         product = load_product(repo_root, args.product)
     except ManifestError as e:
-        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     # Run quality gate (M4) — must PASS before build
@@ -226,9 +258,18 @@ def main() -> int:
             raise RuntimeError("payload include_paths matched 0 files")
         rb_src = repo_root / product.runbook_template_path
         if not rb_src.exists():
-            raise RuntimeError(f"missing runbook template: {product.runbook_template_path}")
+            raise RuntimeError(
+                f"missing runbook template: {product.runbook_template_path}"
+            )
     except Exception as e:
-        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_EVAL_FAIL, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_EVAL_FAIL,
+                "error": str(e),
+            }
+        )
         return EXIT_EVAL_FAIL
 
     included_rel = [normalize_rel(p.relative_to(repo_root)) for p in files]
@@ -250,7 +291,14 @@ def main() -> int:
     try:
         copy_runbook_bytes(repo_root, product.runbook_template_path, runbook_path)
     except Exception as e:
-        dump({"schema": "foundry_build_v0", "ok": False, "exit_code": EXIT_EVAL_FAIL, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_build_v0",
+                "ok": False,
+                "exit_code": EXIT_EVAL_FAIL,
+                "error": str(e),
+            }
+        )
         return EXIT_EVAL_FAIL
 
     # 2) bundle.zip (deterministic)
@@ -280,7 +328,10 @@ def main() -> int:
         },
     }
     hashes_path = out_dir / "hashes.json"
-    hashes_path.write_text(json.dumps(hashes, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    hashes_path.write_text(
+        json.dumps(hashes, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     dump(
         {

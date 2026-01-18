@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA = "demo_terminal_proof_pack_v1c"
+
 
 def _run(repo: Path, mod_args: List[str], timeout_s: int) -> Tuple[int, str, str]:
     p = subprocess.run(
@@ -19,6 +20,7 @@ def _run(repo: Path, mod_args: List[str], timeout_s: int) -> Tuple[int, str, str
     )
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
+
 def _safe_parse_json(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
@@ -27,6 +29,7 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
         return json.loads(text)
     except Exception as e:
         return {"_parse_error": repr(e), "_stdout_head": text[:800]}
+
 
 def _extract_evidence_dir(obj: Any) -> Optional[Path]:
     if not isinstance(obj, dict):
@@ -45,6 +48,7 @@ def _extract_evidence_dir(obj: Any) -> Optional[Path]:
             if isinstance(ed2, str) and ed2:
                 return Path(ed2)
     return None
+
 
 def _detect_ib_code_399(evidence_dir: Path) -> Optional[Dict[str, Any]]:
     # Look for ib_events.jsonl written by terminal_scenarios
@@ -78,6 +82,7 @@ def _detect_ib_code_399(evidence_dir: Path) -> Optional[Dict[str, Any]]:
             break
     return found
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--repo", default=".", help="Repo root")
@@ -99,7 +104,9 @@ def main() -> int:
     scenario_json = _safe_parse_json(out0)
 
     evidence_dir = _extract_evidence_dir(scenario_json)
-    blocked_399 = _detect_ib_code_399(evidence_dir) if (rc0 != 0 and evidence_dir) else None
+    blocked_399 = (
+        _detect_ib_code_399(evidence_dir) if (rc0 != 0 and evidence_dir) else None
+    )
 
     result: Dict[str, Any] = {
         "schema": SCHEMA,
@@ -126,7 +133,7 @@ def main() -> int:
 
     # If we skip baseline work, just return classification
     if args.no_postflight_baseline:
-        result["ok"] = (rc0 == 0)
+        result["ok"] = rc0 == 0
         print(json.dumps(result, ensure_ascii=False))
         if blocked_399:
             return 2
@@ -137,48 +144,73 @@ def main() -> int:
         repo,
         [
             "args.ops.baseline_check_v1",
-            "--repo", str(repo),
-            "--timeout-s", str(args.baseline_timeout_s),
-            "--wait-s", str(args.baseline_wait_s),
+            "--repo",
+            str(repo),
+            "--timeout-s",
+            str(args.baseline_timeout_s),
+            "--wait-s",
+            str(args.baseline_wait_s),
         ],
         timeout_s=max(20, args.baseline_timeout_s + 25),
     )
     baseline_json = _safe_parse_json(out_b)
-    result["baseline"] = {"rc": rc_b, "json": baseline_json, "stderr_tail": (err_b or "")[-1200:]}
+    result["baseline"] = {
+        "rc": rc_b,
+        "json": baseline_json,
+        "stderr_tail": (err_b or "")[-1200:],
+    }
 
     # 3) Optional baseline clean (cancel-only, gated)
     cleanup_attempted = False
     baseline_after = None
     if (not args.no_postflight_clean) and isinstance(baseline_json, dict):
         oo = baseline_json.get("open_orders")
-        if isinstance(oo, dict) and isinstance(oo.get("count"), int) and oo["count"] > 0:
+        if (
+            isinstance(oo, dict)
+            and isinstance(oo.get("count"), int)
+            and oo["count"] > 0
+        ):
             cleanup_attempted = True
             rc_c, out_c, err_c = _run(
                 repo,
                 [
                     "args.ops.baseline_cleaner_v1",
-                    "--repo", str(repo),
-                    "--timeout-s", str(args.baseline_timeout_s),
-                    "--wait-s", str(args.baseline_wait_s),
+                    "--repo",
+                    str(repo),
+                    "--timeout-s",
+                    str(args.baseline_timeout_s),
+                    "--wait-s",
+                    str(args.baseline_wait_s),
                 ],
                 timeout_s=max(30, args.baseline_timeout_s + 45),
             )
             cleanup_json = _safe_parse_json(out_c)
-            result["cleanup"] = {"rc": rc_c, "json": cleanup_json, "stderr_tail": (err_c or "")[-1200:]}
+            result["cleanup"] = {
+                "rc": rc_c,
+                "json": cleanup_json,
+                "stderr_tail": (err_c or "")[-1200:],
+            }
 
             # Re-check baseline after cleanup attempt
             rc_b2, out_b2, err_b2 = _run(
                 repo,
                 [
                     "args.ops.baseline_check_v1",
-                    "--repo", str(repo),
-                    "--timeout-s", str(args.baseline_timeout_s),
-                    "--wait-s", str(args.baseline_wait_s),
+                    "--repo",
+                    str(repo),
+                    "--timeout-s",
+                    str(args.baseline_timeout_s),
+                    "--wait-s",
+                    str(args.baseline_wait_s),
                 ],
                 timeout_s=max(20, args.baseline_timeout_s + 25),
             )
             baseline_after = _safe_parse_json(out_b2)
-            result["baseline_after_cleanup"] = {"rc": rc_b2, "json": baseline_after, "stderr_tail": (err_b2 or "")[-1200:]}
+            result["baseline_after_cleanup"] = {
+                "rc": rc_b2,
+                "json": baseline_after,
+                "stderr_tail": (err_b2 or "")[-1200:],
+            }
 
     # Decide baseline cleanliness
     def _baseline_count_and_status(bj: Any) -> Tuple[Optional[int], Optional[str]]:
@@ -187,7 +219,9 @@ def main() -> int:
         oo = bj.get("open_orders")
         if not isinstance(oo, dict):
             return None, None
-        return oo.get("count") if isinstance(oo.get("count"), int) else None, oo.get("status")
+        return oo.get("count") if isinstance(oo.get("count"), int) else None, oo.get(
+            "status"
+        )
 
     bj_final = baseline_after if baseline_after is not None else baseline_json
     bcount, bstatus = _baseline_count_and_status(bj_final)
@@ -209,12 +243,15 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         return 1
 
-    result["ok"] = (rc0 == 0)
+    result["ok"] = rc0 == 0
     if rc0 != 0 and cleanup_attempted:
-        result["notes"].append("Scenario failed/blocked; cleanup attempted as best-effort.")
+        result["notes"].append(
+            "Scenario failed/blocked; cleanup attempted as best-effort."
+        )
 
     print(json.dumps(result, ensure_ascii=False))
     return rc0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

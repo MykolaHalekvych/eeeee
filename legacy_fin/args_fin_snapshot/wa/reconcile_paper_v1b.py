@@ -11,18 +11,25 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 SCHEMA_VERSION = "reconcile_paper_v1b"
 
-INFO_CODES = {2104, 2106, 2158}   # IBKR “farm connection OK” style info
-WARN_CODES = {399}                # IBKR warning (e.g., outside trading hours)
+INFO_CODES = {2104, 2106, 2158}  # IBKR “farm connection OK” style info
+WARN_CODES = {399}  # IBKR warning (e.g., outside trading hours)
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _atomic_write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
     tmp.replace(path)
 
 
@@ -94,7 +101,13 @@ def _bucket_ibkr_errors(exec_rows: List[Dict[str, Any]]) -> CodeBuckets:
             # unknown code → treat as error
             err += 1
             if len(err_s) < 8:
-                err_s.append({"code": r.get("code"), "msg": r.get("msg"), "reqId": r.get("reqId")})
+                err_s.append(
+                    {
+                        "code": r.get("code"),
+                        "msg": r.get("msg"),
+                        "reqId": r.get("reqId"),
+                    }
+                )
             continue
 
         if code in INFO_CODES:
@@ -104,17 +117,38 @@ def _bucket_ibkr_errors(exec_rows: List[Dict[str, Any]]) -> CodeBuckets:
         elif code in WARN_CODES:
             warn += 1
             if len(warn_s) < 8:
-                warn_s.append({"code": code, "msg": r.get("msg"), "order_id": r.get("order_id") or r.get("reqId")})
+                warn_s.append(
+                    {
+                        "code": code,
+                        "msg": r.get("msg"),
+                        "order_id": r.get("order_id") or r.get("reqId"),
+                    }
+                )
         else:
             err += 1
             if len(err_s) < 8:
-                err_s.append({"code": code, "msg": r.get("msg"), "order_id": r.get("order_id") or r.get("reqId")})
+                err_s.append(
+                    {
+                        "code": code,
+                        "msg": r.get("msg"),
+                        "order_id": r.get("order_id") or r.get("reqId"),
+                    }
+                )
 
-    return CodeBuckets(info=info, warn=warn, error=err, info_samples=info_s, warn_samples=warn_s, error_samples=err_s)
+    return CodeBuckets(
+        info=info,
+        warn=warn,
+        error=err,
+        info_samples=info_s,
+        warn_samples=warn_s,
+        error_samples=err_s,
+    )
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Reconcile v1B: match runtime SUBMITTED vs IBKR open orders / executions; filter info codes.")
+    ap = argparse.ArgumentParser(
+        description="Reconcile v1B: match runtime SUBMITTED vs IBKR open orders / executions; filter info codes."
+    )
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--data-dir", default="")
     ap.add_argument("--open-orders-path", default="ibkr_open_orders_stage5.jsonl")
@@ -131,8 +165,16 @@ def main() -> int:
     sent_path = data_dir / f"sent_orders_{run_id}.jsonl"
     exec_path = data_dir / f"orders_exec_{run_id}.jsonl"
     open_orders_path = data_dir / str(a.open_orders_path)
-    positions_path = Path(a.positions_path) if a.positions_path else (data_dir / f"ibkr_positions_{run_id}.jsonl")
-    executions_path = Path(a.executions_path) if a.executions_path else (data_dir / f"ibkr_executions_{run_id}.jsonl")
+    positions_path = (
+        Path(a.positions_path)
+        if a.positions_path
+        else (data_dir / f"ibkr_positions_{run_id}.jsonl")
+    )
+    executions_path = (
+        Path(a.executions_path)
+        if a.executions_path
+        else (data_dir / f"ibkr_executions_{run_id}.jsonl")
+    )
 
     # Load
     sent_rows, sent_stats = _read_jsonl(sent_path)
@@ -142,7 +184,12 @@ def main() -> int:
     exe_rows, exe_stats = _read_jsonl(executions_path)
 
     # Submitted from runtime exec log
-    submitted = [r for r in exec_rows if str(r.get("kind") or "") == "EXEC_EVENT" and str(r.get("status") or "").upper() == "SUBMITTED"]
+    submitted = [
+        r
+        for r in exec_rows
+        if str(r.get("kind") or "") == "EXEC_EVENT"
+        and str(r.get("status") or "").upper() == "SUBMITTED"
+    ]
     submitted_ids: Set[int] = set()
     sendkey_to_orders: Dict[str, Set[int]] = {}
 
@@ -198,18 +245,29 @@ def main() -> int:
     matched_snapshot = len(submitted_ids.intersection(snapshot_open_ids))
     matched_execs = len(submitted_ids.intersection(exec_fill_ids))
 
-    matched_any_ids = submitted_ids.intersection(runtime_seen_ids.union(snapshot_open_ids).union(exec_fill_ids))
+    matched_any_ids = submitted_ids.intersection(
+        runtime_seen_ids.union(snapshot_open_ids).union(exec_fill_ids)
+    )
     dangling = sorted(list(submitted_ids.difference(matched_any_ids)))
 
     # Detect cancel_all intent in runtime exec log
-    cancel_all_sent = any(str(r.get("kind") or "") == "EXEC_EVENT" and str(r.get("status") or "").upper() == "CANCEL_ALL_SENT" for r in exec_rows)
-    cancel_all_sim = any(str(r.get("kind") or "") == "EXEC_EVENT" and str(r.get("status") or "").upper() == "CANCEL_ALL_SIM" for r in exec_rows)
+    cancel_all_sent = any(
+        str(r.get("kind") or "") == "EXEC_EVENT"
+        and str(r.get("status") or "").upper() == "CANCEL_ALL_SENT"
+        for r in exec_rows
+    )
+    cancel_all_sim = any(
+        str(r.get("kind") or "") == "EXEC_EVENT"
+        and str(r.get("status") or "").upper() == "CANCEL_ALL_SIM"
+        for r in exec_rows
+    )
 
     # Error buckets (filter info)
     buckets = _bucket_ibkr_errors(exec_rows)
 
     # Ratios
     submitted_n = len(submitted_ids)
+
     def _ratio(x: int, n: int) -> float:
         return float(x) / float(n) if n > 0 else 0.0
 
@@ -277,7 +335,9 @@ def main() -> int:
         },
         "idempotency": {
             "duplicates": duplicates,
-            "send_keys_with_multiple_order_ids": [sk for sk, s in sendkey_to_orders.items() if len(s) > 1][:20],
+            "send_keys_with_multiple_order_ids": [
+                sk for sk, s in sendkey_to_orders.items() if len(s) > 1
+            ][:20],
         },
         "cancel_all": {
             "cancel_all_sent": bool(cancel_all_sent),
@@ -295,9 +355,18 @@ def main() -> int:
         "notes": notes,
     }
 
-    out_path = Path(a.out) if str(a.out).strip() else (data_dir / f"reconcile_report_{run_id}_v1b.json")
+    out_path = (
+        Path(a.out)
+        if str(a.out).strip()
+        else (data_dir / f"reconcile_report_{run_id}_v1b.json")
+    )
     _atomic_write_json(out_path, report)
-    print(json.dumps({"ok": True, "status": status, "out_path": str(out_path)}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"ok": True, "status": status, "out_path": str(out_path)},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

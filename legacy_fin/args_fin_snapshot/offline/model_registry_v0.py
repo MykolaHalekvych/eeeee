@@ -4,7 +4,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 from args.offline.audit_log_v0 import AuditLog
 from args.offline.evidence_history_v0 import atomic_write_json, sha256_file
@@ -22,7 +22,12 @@ AUDIT_KIND = "model_registry_audit_v1"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _read_json_first_obj(path: Path) -> Dict[str, Any]:
@@ -39,7 +44,11 @@ def _read_json_first_obj(path: Path) -> Dict[str, Any]:
 def _latest_model_dir() -> Path:
     if not MODELS_DIR.exists():
         raise FileNotFoundError(f"models dir missing: {MODELS_DIR}")
-    cands = [p for p in MODELS_DIR.iterdir() if p.is_dir() and (p / "model_manifest.json").exists()]
+    cands = [
+        p
+        for p in MODELS_DIR.iterdir()
+        if p.is_dir() and (p / "model_manifest.json").exists()
+    ]
     if not cands:
         raise FileNotFoundError("no model_manifest.json under args/offline/models")
     cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -48,7 +57,11 @@ def _latest_model_dir() -> Path:
 
 def _load_registry() -> Dict[str, Any]:
     if not REGISTRY_PATH.exists():
-        return {"schema": "model_registry_v0", "updated_at_utc": _utc_now_z(), "models": []}
+        return {
+            "schema": "model_registry_v0",
+            "updated_at_utc": _utc_now_z(),
+            "models": [],
+        }
     obj = _read_json_first_obj(REGISTRY_PATH)
     if not isinstance(obj.get("models"), list):
         obj["models"] = []
@@ -71,7 +84,11 @@ def _upsert_model(reg: Dict[str, Any], rec: Dict[str, Any]) -> None:
 
 
 def _promote_write(model_id: str) -> Dict[str, Any]:
-    obj = {"schema": "as_model_version_v0", "as_model_version": str(model_id), "set_at_utc": _utc_now_z()}
+    obj = {
+        "schema": "as_model_version_v0",
+        "as_model_version": str(model_id),
+        "set_at_utc": _utc_now_z(),
+    }
     atomic_write_json(AS_MODEL_VERSION_PATH, obj)
     return obj
 
@@ -91,7 +108,13 @@ def _resolve_model_id(mm: Dict[str, Any], model_dir: Path) -> str:
     return name
 
 
-def _build_record(model_id: str, model_dir: Path, mm: Dict[str, Any], eg: Dict[str, Any], promoted_obj: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _build_record(
+    model_id: str,
+    model_dir: Path,
+    mm: Dict[str, Any],
+    eg: Dict[str, Any],
+    promoted_obj: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     rec: Dict[str, Any] = {
         "model_id": model_id,
         "model_dir": str(model_dir),
@@ -101,23 +124,45 @@ def _build_record(model_id: str, model_dir: Path, mm: Dict[str, Any], eg: Dict[s
         "code_sha256": mm.get("code_sha256"),
         "eval_ok": _bool_eval_ok(eg),
         "eval_fails": eg.get("fails") if isinstance(eg.get("fails"), dict) else {},
-        "eval_warnings": eg.get("warnings") if isinstance(eg.get("warnings"), dict) else {},
+        "eval_warnings": eg.get("warnings")
+        if isinstance(eg.get("warnings"), dict)
+        else {},
         "eval_report_path": str((model_dir / "eval_gate_report.json")),
         "promoted": bool(promoted_obj is not None),
-        "promoted_at_utc": (promoted_obj.get("set_at_utc") if isinstance(promoted_obj, dict) else None),
+        "promoted_at_utc": (
+            promoted_obj.get("set_at_utc") if isinstance(promoted_obj, dict) else None
+        ),
     }
     return rec
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser("model_registry_v0")
-    ap.add_argument("--model", default="", help="Model dir name under args/offline/models (default: latest)")
-    ap.add_argument("--promote", action="store_true", help="Promote model if eval_gate ok -> write args/data/as_model_version.json")
+    ap.add_argument(
+        "--model",
+        default="",
+        help="Model dir name under args/offline/models (default: latest)",
+    )
+    ap.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote model if eval_gate ok -> write args/data/as_model_version.json",
+    )
 
     # Audit controls (Stage 8.5)
-    ap.add_argument("--audit-path", default=str(AUDIT_PATH_DEFAULT), help="Append-only audit JSONL path")
-    ap.add_argument("--no-audit", action="store_true", help="Disable audit trail (NOT recommended)")
-    ap.add_argument("--verify-audit", action="store_true", help="Verify audit log hash-chain and exit")
+    ap.add_argument(
+        "--audit-path",
+        default=str(AUDIT_PATH_DEFAULT),
+        help="Append-only audit JSONL path",
+    )
+    ap.add_argument(
+        "--no-audit", action="store_true", help="Disable audit trail (NOT recommended)"
+    )
+    ap.add_argument(
+        "--verify-audit",
+        action="store_true",
+        help="Verify audit log hash-chain and exit",
+    )
 
     args = ap.parse_args(argv)
 
@@ -150,7 +195,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     audit = AuditLog(audit_path, kind=AUDIT_KIND)
 
     try:
-        model_dir = (MODELS_DIR / args.model.strip()) if args.model.strip() else _latest_model_dir()
+        model_dir = (
+            (MODELS_DIR / args.model.strip())
+            if args.model.strip()
+            else _latest_model_dir()
+        )
 
         mm_path = model_dir / "model_manifest.json"
         eg_path = model_dir / "eval_gate_report.json"
@@ -159,7 +208,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if eg_path.exists():
             eg = _read_json_first_obj(eg_path)
         else:
-            eg = {"schema": "eval_gate_v0", "ok": False, "fails": {"missing_eval": "NO_EVAL_REPORT"}}
+            eg = {
+                "schema": "eval_gate_v0",
+                "ok": False,
+                "fails": {"missing_eval": "NO_EVAL_REPORT"},
+            }
 
         model_id = _resolve_model_id(mm, model_dir)
 

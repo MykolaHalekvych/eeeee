@@ -23,7 +23,9 @@ def read_json_utf8sig(path: Path) -> Any:
 
 def write_json_no_bom(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -110,7 +112,10 @@ def build_release_manifest_v1(
                 "runbook.md": maybe_file_entry(runbook_md),
                 "evidence.md": maybe_file_entry(evidence_md),
                 "config.example.json": maybe_file_entry(config_example),
-                "release_manifest_v1.json": {"path": "release_manifest_v1.json", "present": True},
+                "release_manifest_v1.json": {
+                    "path": "release_manifest_v1.json",
+                    "present": True,
+                },
             },
         },
         "errors": errors,

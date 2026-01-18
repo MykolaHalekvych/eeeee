@@ -17,8 +17,15 @@ def utc_ts() -> str:
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> dict[str, Any]:
-    p = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, check=False)
-    return {"cmd": cmd, "rc": p.returncode, "stdout": p.stdout or "", "stderr": p.stderr or ""}
+    p = subprocess.run(
+        cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, check=False
+    )
+    return {
+        "cmd": cmd,
+        "rc": p.returncode,
+        "stdout": p.stdout or "",
+        "stderr": p.stderr or "",
+    }
 
 
 def py_compile_tree(root: Path) -> dict[str, Any]:
@@ -31,7 +38,11 @@ def py_compile_tree(root: Path) -> dict[str, Any]:
             py_compile.compile(str(f), doraise=True)
         except Exception as e:  # noqa: BLE001
             errors.append({"file": str(f), "error": repr(e)})
-    return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
+    return {
+        "files": [str(p) for p in py_files],
+        "errors": errors,
+        "ok": len(errors) == 0,
+    }
 
 
 def main() -> int:
@@ -49,7 +60,14 @@ def main() -> int:
 
     ok = bool(checks["py_compile"]["ok"]) and checks["ruff"]["rc"] == 0
 
-    out = {"schema": SCHEMA, "ok": ok, "exit_code": 0 if ok else 1, "ts_utc": utc_ts(), "workspace": str(ws), "checks": checks}
+    out = {
+        "schema": SCHEMA,
+        "ok": ok,
+        "exit_code": 0 if ok else 1,
+        "ts_utc": utc_ts(),
+        "workspace": str(ws),
+        "checks": checks,
+    }
     print(json.dumps(out, ensure_ascii=False))
     return out["exit_code"]
 

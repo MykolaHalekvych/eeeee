@@ -39,7 +39,12 @@ OPS_EVENTS_PATH = LOGS_DIR / "ops_events.jsonl"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _parse_utc_ts(s: Any) -> Optional[datetime]:
@@ -93,7 +98,11 @@ def _latest_run_report_paper() -> Optional[Path]:
         return None
     cand: List[Path] = []
     for p in LOGS_DIR.iterdir():
-        if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json"):
+        if (
+            p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
+        ):
             cand.append(p)
     if not cand:
         return None
@@ -189,7 +198,9 @@ def _load_ops_cfg(control_state: Optional[Dict[str, Any]]) -> OpsCfg:
         max_v=86400,
     )
     steal_stale = _as_bool(ops.get("steal_stale_lock"), False)
-    default_step_timeout_s = _as_int(ops.get("step_timeout_s", 900), 900, min_v=1, max_v=86400)
+    default_step_timeout_s = _as_int(
+        ops.get("step_timeout_s", 900), 900, min_v=1, max_v=86400
+    )
 
     steps_raw = ops.get("steps")
     steps: List[StepCfg] = []
@@ -204,11 +215,26 @@ def _load_ops_cfg(control_state: Optional[Dict[str, Any]]) -> OpsCfg:
             cmd = [str(x) for x in cmd_raw if str(x).strip()]
             if not cmd:
                 continue
-            timeout_s = _as_int(sr.get("timeout_s", default_step_timeout_s), default_step_timeout_s, min_v=1, max_v=86400)
+            timeout_s = _as_int(
+                sr.get("timeout_s", default_step_timeout_s),
+                default_step_timeout_s,
+                min_v=1,
+                max_v=86400,
+            )
             allow_fail = _as_bool(sr.get("allow_fail"), False)
             cwd = sr.get("cwd")
-            cwd_s = str(cwd) if isinstance(cwd, (str, Path)) and str(cwd).strip() else None
-            steps.append(StepCfg(name=name, cmd=cmd, timeout_s=timeout_s, allow_fail=allow_fail, cwd=cwd_s))
+            cwd_s = (
+                str(cwd) if isinstance(cwd, (str, Path)) and str(cwd).strip() else None
+            )
+            steps.append(
+                StepCfg(
+                    name=name,
+                    cmd=cmd,
+                    timeout_s=timeout_s,
+                    allow_fail=allow_fail,
+                    cwd=cwd_s,
+                )
+            )
 
     return OpsCfg(
         enabled=enabled,
@@ -227,6 +253,7 @@ class LockHandle:
     Lockfile is JSON with:
       owner_pid, owner_host, acquired_at_utc, heartbeat_at_utc, expires_at_utc
     """
+
     path: Path
     ttl_s: int
     steal_stale: bool
@@ -257,7 +284,9 @@ class LockHandle:
 
         if os.name == "nt":
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, 0, pid
+            )
             if handle:
                 ctypes.windll.kernel32.CloseHandle(handle)
                 return True
@@ -280,14 +309,24 @@ class LockHandle:
 
         now = datetime.now(timezone.utc)
         expires = now.timestamp() + float(self.ttl_s)
-        expires_at_utc = datetime.fromtimestamp(expires, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        expires_at_utc = (
+            datetime.fromtimestamp(expires, tz=timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         info = self._lock_info(expires_at_utc=expires_at_utc)
 
         for _ in range(3):
             try:
                 fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 try:
-                    os.write(fd, (json.dumps(info, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+                    os.write(
+                        fd,
+                        (json.dumps(info, ensure_ascii=False, indent=2) + "\n").encode(
+                            "utf-8"
+                        ),
+                    )
                 finally:
                     os.close(fd)
                 self.acquired = True
@@ -314,7 +353,11 @@ class LockHandle:
                 if not self.steal_stale:
                     return False, "LOCKED_STALE_NO_STEAL", existing
 
-                ex_pid = int(existing.get("owner_pid") or 0) if str(existing.get("owner_pid") or "").isdigit() else 0
+                ex_pid = (
+                    int(existing.get("owner_pid") or 0)
+                    if str(existing.get("owner_pid") or "").isdigit()
+                    else 0
+                )
                 alive = self._is_pid_alive(ex_pid) if ex_pid else None
                 if alive is not False:
                     # Unknown / alive => refuse to steal (safe).
@@ -338,13 +381,23 @@ class LockHandle:
             return
         try:
             expires = datetime.now(timezone.utc).timestamp() + float(self.ttl_s)
-            expires_at_utc = datetime.fromtimestamp(expires, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            expires_at_utc = (
+                datetime.fromtimestamp(expires, tz=timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             info = _read_json_dict(self.path) or {}
             if int(info.get("owner_pid") or -1) != int(self.owner_pid):
                 return
             info["heartbeat_at_utc"] = _utc_now_z()
             info["expires_at_utc"] = expires_at_utc
-            _atomic_write_json(self.path, info if isinstance(info, dict) else self._lock_info(expires_at_utc=expires_at_utc))
+            _atomic_write_json(
+                self.path,
+                info
+                if isinstance(info, dict)
+                else self._lock_info(expires_at_utc=expires_at_utc),
+            )
         except Exception:
             return
 
@@ -365,7 +418,9 @@ def _stop_requested() -> bool:
     return STOP_FLAG_PATH.exists()
 
 
-def _substitute_cmd(cmd: List[str], *, run_id: Optional[str], report_path: Optional[Path]) -> List[str]:
+def _substitute_cmd(
+    cmd: List[str], *, run_id: Optional[str], report_path: Optional[Path]
+) -> List[str]:
     out: List[str] = []
     for part in cmd:
         s = str(part)
@@ -642,10 +697,23 @@ def _run_cycle(cfg: OpsCfg, lock: LockHandle) -> Tuple[Dict[str, Any], str]:
 
         _append_jsonl(
             OPS_EVENTS_PATH,
-            {"kind": "OPS_EVENT", "event": "STEP_START", "ts": _utc_now_z(), "cycle_id": cycle_id, "step": step.name},
+            {
+                "kind": "OPS_EVENT",
+                "event": "STEP_START",
+                "ts": _utc_now_z(),
+                "cycle_id": cycle_id,
+                "step": step.name,
+            },
         )
 
-        r = _run_step(cycle_id=cycle_id, step_i=i, step=step, lock=lock, run_id=run_id, report_path=report)
+        r = _run_step(
+            cycle_id=cycle_id,
+            step_i=i,
+            step=step,
+            lock=lock,
+            run_id=run_id,
+            report_path=report,
+        )
         steps_out.append(r)
 
         _append_jsonl(
@@ -663,14 +731,25 @@ def _run_cycle(cfg: OpsCfg, lock: LockHandle) -> Tuple[Dict[str, Any], str]:
         )
 
         st = str(r.get("status") or "")
-        step_ok = (st == "OK") or st.startswith("SKIPPED") or (st == "STOPPED_BY_STOP_FLAG")
+        step_ok = (
+            (st == "OK") or st.startswith("SKIPPED") or (st == "STOPPED_BY_STOP_FLAG")
+        )
         if (not step_ok) and (not bool(r.get("allow_fail"))):
             overall_ok = False
 
     ended = _utc_now_z()
     duration_s = round(time.time() - t0, 3)
 
-    _append_jsonl(OPS_EVENTS_PATH, {"kind": "OPS_EVENT", "event": "CYCLE_END", "ts": ended, "cycle_id": cycle_id, "ok": bool(overall_ok)})
+    _append_jsonl(
+        OPS_EVENTS_PATH,
+        {
+            "kind": "OPS_EVENT",
+            "event": "CYCLE_END",
+            "ts": ended,
+            "cycle_id": cycle_id,
+            "ok": bool(overall_ok),
+        },
+    )
 
     cycle = {
         "cycle_id": cycle_id,
@@ -690,11 +769,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="auto_loop_v1",
         description="ARGS Stage7 Ops Loop (lock/TTL, stop.flag, ops_health.json)",
     )
-    ap.add_argument("--once", action="store_true", help="Run exactly one cycle and exit.")
-    ap.add_argument("--force", action="store_true", help="Run even if control_state.ops_loop.enabled is false/missing.")
-    ap.add_argument("--interval-s", type=int, default=None, help="Override interval_s (seconds).")
-    ap.add_argument("--lock-ttl-s", type=int, default=None, help="Override lock_ttl_s (seconds).")
-    ap.add_argument("--steal-stale-lock", action="store_true", help="Allow stealing stale lockfile (dangerous).")
+    ap.add_argument(
+        "--once", action="store_true", help="Run exactly one cycle and exit."
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if control_state.ops_loop.enabled is false/missing.",
+    )
+    ap.add_argument(
+        "--interval-s", type=int, default=None, help="Override interval_s (seconds)."
+    )
+    ap.add_argument(
+        "--lock-ttl-s", type=int, default=None, help="Override lock_ttl_s (seconds)."
+    )
+    ap.add_argument(
+        "--steal-stale-lock",
+        action="store_true",
+        help="Allow stealing stale lockfile (dangerous).",
+    )
     args = ap.parse_args(argv)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -717,7 +810,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         _update_health(
             status="DISABLED",
             cfg=cfg,
-            lock_status={"path": str(LOCK_PATH), "acquired": False, "reason": "DISABLED"},
+            lock_status={
+                "path": str(LOCK_PATH),
+                "acquired": False,
+                "reason": "DISABLED",
+            },
             cycle=None,
             error=None,
         )
@@ -727,27 +824,57 @@ def main(argv: Optional[List[str]] = None) -> int:
         _update_health(
             status="STOPPED",
             cfg=cfg,
-            lock_status={"path": str(LOCK_PATH), "acquired": False, "reason": "STOP_FLAG"},
+            lock_status={
+                "path": str(LOCK_PATH),
+                "acquired": False,
+                "reason": "STOP_FLAG",
+            },
             cycle=None,
             error=None,
         )
         return 5
 
-    lock = LockHandle(path=LOCK_PATH, ttl_s=cfg.lock_ttl_s, steal_stale=cfg.steal_stale_lock)
+    lock = LockHandle(
+        path=LOCK_PATH, ttl_s=cfg.lock_ttl_s, steal_stale=cfg.steal_stale_lock
+    )
 
     ok, why, info = lock.acquire()
     if not ok:
-        _append_jsonl(OPS_EVENTS_PATH, {"kind": "OPS_EVENT", "event": "LOCK_DENIED", "ts": _utc_now_z(), "reason": why, "lock": info})
+        _append_jsonl(
+            OPS_EVENTS_PATH,
+            {
+                "kind": "OPS_EVENT",
+                "event": "LOCK_DENIED",
+                "ts": _utc_now_z(),
+                "reason": why,
+                "lock": info,
+            },
+        )
         _update_health(
             status="LOCKED",
             cfg=cfg,
-            lock_status={"path": str(lock.path), "acquired": False, "reason": why, "lock": info},
+            lock_status={
+                "path": str(lock.path),
+                "acquired": False,
+                "reason": why,
+                "lock": info,
+            },
             cycle=None,
             error={"reason": why},
         )
         return 3
 
-    _append_jsonl(OPS_EVENTS_PATH, {"kind": "OPS_EVENT", "event": "LOCK_ACQUIRED", "ts": _utc_now_z(), "lock_path": str(lock.path), "owner_pid": lock.owner_pid, "ttl_s": cfg.lock_ttl_s})
+    _append_jsonl(
+        OPS_EVENTS_PATH,
+        {
+            "kind": "OPS_EVENT",
+            "event": "LOCK_ACQUIRED",
+            "ts": _utc_now_z(),
+            "lock_path": str(lock.path),
+            "owner_pid": lock.owner_pid,
+            "ttl_s": cfg.lock_ttl_s,
+        },
+    )
 
     try:
         while True:
@@ -757,18 +884,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             if _stop_requested():
                 status = "STOPPED"
 
-            lock_status = {"path": str(lock.path), "acquired": True, "owner_pid": lock.owner_pid}
+            lock_status = {
+                "path": str(lock.path),
+                "acquired": True,
+                "owner_pid": lock.owner_pid,
+            }
 
             err = None
             if status == "ERROR":
                 bad = None
                 for s in cycle.get("steps") or []:
-                    if str(s.get("status") or "") in {"ERROR", "TIMEOUT"} and not bool(s.get("allow_fail")):
+                    if str(s.get("status") or "") in {"ERROR", "TIMEOUT"} and not bool(
+                        s.get("allow_fail")
+                    ):
                         bad = s
                         break
-                err = {"reason": "CYCLE_ERROR", "step": bad} if bad else {"reason": "CYCLE_ERROR"}
+                err = (
+                    {"reason": "CYCLE_ERROR", "step": bad}
+                    if bad
+                    else {"reason": "CYCLE_ERROR"}
+                )
 
-            _update_health(status=status, cfg=cfg, lock_status=lock_status, cycle=cycle, error=err)
+            _update_health(
+                status=status, cfg=cfg, lock_status=lock_status, cycle=cycle, error=err
+            )
 
             if cfg.once:
                 return 0 if status == "OK" else 6
@@ -787,7 +926,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     finally:
         lock.release()
-        _append_jsonl(OPS_EVENTS_PATH, {"kind": "OPS_EVENT", "event": "LOCK_RELEASED", "ts": _utc_now_z(), "lock_path": str(lock.path), "owner_pid": lock.owner_pid})
+        _append_jsonl(
+            OPS_EVENTS_PATH,
+            {
+                "kind": "OPS_EVENT",
+                "event": "LOCK_RELEASED",
+                "ts": _utc_now_z(),
+                "lock_path": str(lock.path),
+                "owner_pid": lock.owner_pid,
+            },
+        )
 
 
 if __name__ == "__main__":

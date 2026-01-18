@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Utilities
 # -------------------------
 
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -94,6 +95,7 @@ def iso_max(a: str, b: str) -> str:
 # Ring buffer with fast "has"
 # -------------------------
 
+
 @dataclass
 class Ring:
     max_items: int
@@ -115,8 +117,8 @@ class Ring:
         self.items.append(s)
         self._set.add(s)
         if len(self.items) > self.max_items:
-            drop = self.items[:-self.max_items]
-            self.items = self.items[-self.max_items:]
+            drop = self.items[: -self.max_items]
+            self.items = self.items[-self.max_items :]
             for d in drop:
                 self._set.discard(d)
 
@@ -133,6 +135,7 @@ class Ring:
 # Per-order aggregated state
 # -------------------------
 
+
 @dataclass
 class OrderState:
     order_key: str
@@ -144,7 +147,9 @@ class OrderState:
     total_qty_last: Optional[float] = None
     filled_last: Optional[float] = None
     remaining_last: Optional[float] = None
-    execs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # exec_key -> {qty, price, ts, execId}
+    execs: Dict[str, Dict[str, Any]] = field(
+        default_factory=dict
+    )  # exec_key -> {qty, price, ts, execId}
     terminal: Optional[Dict[str, Any]] = None  # {type, ts_utc, finalized, reason}
     anomalies: List[str] = field(default_factory=list)
 
@@ -161,14 +166,24 @@ class OrderState:
 # Event normalization
 # -------------------------
 
+
 def detect_kind(obj: Dict[str, Any]) -> str:
     if get_any(obj, ("execid", "execId", "executionid", "executionId")) is not None:
         return "EXECUTION"
-    if get_any(obj, ("errorcode", "errorCode", "code")) is not None and get_any(obj, ("errormsg", "errorMsg", "message", "msg")) is not None:
+    if (
+        get_any(obj, ("errorcode", "errorCode", "code")) is not None
+        and get_any(obj, ("errormsg", "errorMsg", "message", "msg")) is not None
+    ):
         return "ERROR"
-    if get_any(obj, ("status",)) is not None and get_any(obj, ("orderid", "orderId", "permid", "permId")) is not None:
+    if (
+        get_any(obj, ("status",)) is not None
+        and get_any(obj, ("orderid", "orderId", "permid", "permId")) is not None
+    ):
         return "ORDER_STATUS"
-    if get_any(obj, ("openorder", "openOrder", "order", "contract")) is not None and get_any(obj, ("orderid", "orderId", "permid", "permId")) is not None:
+    if (
+        get_any(obj, ("openorder", "openOrder", "order", "contract")) is not None
+        and get_any(obj, ("orderid", "orderId", "permid", "permId")) is not None
+    ):
         return "OPEN_ORDER"
     return "UNKNOWN"
 
@@ -182,7 +197,10 @@ def normalize_event(obj: Dict[str, Any], ingest_ts_utc: str) -> Dict[str, Any]:
         ts_utc = ingest_ts_utc
         ts_inferred = True
 
-    symbol = str_or_none(get_any(obj, ("symbol", "localsymbol", "localSymbol", "ticker"))) or "UNKNOWN"
+    symbol = (
+        str_or_none(get_any(obj, ("symbol", "localsymbol", "localSymbol", "ticker")))
+        or "UNKNOWN"
+    )
     account = str_or_none(get_any(obj, ("account", "acct"))) or None
 
     order_id = int_or_none(get_any(obj, ("orderid", "orderId")))
@@ -192,11 +210,19 @@ def normalize_event(obj: Dict[str, Any], ingest_ts_utc: str) -> Dict[str, Any]:
 
     status = str_or_none(get_any(obj, ("status",)))
     total_qty = float_or_none(get_any(obj, ("totalqty", "totalQty", "quantity", "qty")))
-    filled = float_or_none(get_any(obj, ("filled", "filledqty", "filledQty", "cumqty", "cumQty")))
-    remaining = float_or_none(get_any(obj, ("remaining", "remainingqty", "remainingQty")))
+    filled = float_or_none(
+        get_any(obj, ("filled", "filledqty", "filledQty", "cumqty", "cumQty"))
+    )
+    remaining = float_or_none(
+        get_any(obj, ("remaining", "remainingqty", "remainingQty"))
+    )
 
     exec_id = str_or_none(get_any(obj, ("execid", "execId")))
-    exec_qty = float_or_none(get_any(obj, ("execqty", "execQty", "lastfillqty", "lastFillQty", "shares", "qty")))
+    exec_qty = float_or_none(
+        get_any(
+            obj, ("execqty", "execQty", "lastfillqty", "lastFillQty", "shares", "qty")
+        )
+    )
     exec_price = float_or_none(get_any(obj, ("execprice", "execPrice", "price")))
 
     error_code = int_or_none(get_any(obj, ("errorcode", "errorCode", "code")))
@@ -226,7 +252,13 @@ def normalize_event(obj: Dict[str, Any], ingest_ts_utc: str) -> Dict[str, Any]:
     else:
         h = sha1_hex(
             json.dumps(
-                {"symbol": symbol, "order_key": order_key, "qty": exec_qty, "price": exec_price, "ts": ts_utc},
+                {
+                    "symbol": symbol,
+                    "order_key": order_key,
+                    "qty": exec_qty,
+                    "price": exec_price,
+                    "ts": ts_utc,
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -262,6 +294,7 @@ def normalize_event(obj: Dict[str, Any], ingest_ts_utc: str) -> Dict[str, Any]:
 # Terminal signal detection
 # -------------------------
 
+
 def is_reject_event(ev: Dict[str, Any]) -> bool:
     st = ev.get("status") or ""
     st_l = st.lower() if isinstance(st, str) else ""
@@ -271,7 +304,12 @@ def is_reject_event(ev: Dict[str, Any]) -> bool:
     if ev.get("kind") == "ERROR" and ev.get("errorCode") is not None:
         msg = ev.get("errorMsg") or ""
         msg_l = msg.lower() if isinstance(msg, str) else ""
-        if "reject" in msg_l or "rejected" in msg_l or "denied" in msg_l or "not accepted" in msg_l:
+        if (
+            "reject" in msg_l
+            or "rejected" in msg_l
+            or "denied" in msg_l
+            or "not accepted" in msg_l
+        ):
             return True
     return False
 
@@ -299,6 +337,7 @@ def is_fill_event(ev: Dict[str, Any]) -> bool:
 # JSON helpers
 # -------------------------
 
+
 def load_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -317,6 +356,7 @@ def save_json(path: Path, obj: Dict[str, Any]) -> None:
 # Main
 # -------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -325,13 +365,27 @@ def main() -> int:
     ap.add_argument("--out-root", default="")
     ap.add_argument("--max-orders", type=int, default=500)
     ap.add_argument("--ring-size", type=int, default=20000)
-    ap.add_argument("--enrichment-window-sec", type=int, default=60)  # reserved for v2.2
+    ap.add_argument(
+        "--enrichment-window-sec", type=int, default=60
+    )  # reserved for v2.2
     args = ap.parse_args()
 
     repo = Path(args.repo)
-    in_jsonl = Path(args.input_jsonl) if args.input_jsonl else (repo / "args" / "data" / "ibkr_events_live.jsonl")
-    cursor_path = Path(args.cursor) if args.cursor else (repo / "args" / "data" / "stage5_terminal_proof_v2.cursor.json")
-    out_root = Path(args.out_root) if args.out_root else (repo / "args" / "stage5_terminal_proofs_v2")
+    in_jsonl = (
+        Path(args.input_jsonl)
+        if args.input_jsonl
+        else (repo / "args" / "data" / "ibkr_events_live.jsonl")
+    )
+    cursor_path = (
+        Path(args.cursor)
+        if args.cursor
+        else (repo / "args" / "data" / "stage5_terminal_proof_v2.cursor.json")
+    )
+    out_root = (
+        Path(args.out_root)
+        if args.out_root
+        else (repo / "args" / "stage5_terminal_proofs_v2")
+    )
 
     ingest_ts = utc_now_iso()
     warns: List[str] = []
@@ -358,7 +412,11 @@ def main() -> int:
     try:
         st = in_jsonl.stat()
         size = int(st.st_size)
-        mtime_utc = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        mtime_utc = (
+            datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     except Exception as e:
         out = {
             "schema": "stage5_terminal_proof_pack_v2_summary",
@@ -375,9 +433,13 @@ def main() -> int:
         warns.append("watermark_reset_truncation_detected")
         last_off = 0
 
-    recent_exec = Ring.from_list(max_items=args.ring_size, items=list(cur.get("recent_exec_keys") or []))
+    recent_exec = Ring.from_list(
+        max_items=args.ring_size, items=list(cur.get("recent_exec_keys") or [])
+    )
     # HARD RULE: only one terminal per order_key, so this tracks order_key only.
-    terminal_emitted = Ring.from_list(max_items=args.ring_size, items=list(cur.get("terminal_emitted_keys") or []))
+    terminal_emitted = Ring.from_list(
+        max_items=args.ring_size, items=list(cur.get("terminal_emitted_keys") or [])
+    )
 
     # Rehydrate bounded orders
     orders_raw = cur.get("orders") or {}
@@ -401,7 +463,9 @@ def main() -> int:
         except Exception:
             continue
 
-    out_dir = out_root / (ingest_ts.replace(":", "").replace("-", "").replace(".", "") + "_terminal")
+    out_dir = out_root / (
+        ingest_ts.replace(":", "").replace("-", "").replace(".", "") + "_terminal"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     raw_hash_seen: set[str] = set()
@@ -515,7 +579,9 @@ def main() -> int:
         if stt.terminal is not None and bool(stt.terminal.get("finalized", False)):
             existing = str(stt.terminal.get("type") or "UNKNOWN")
             if terminal_type != existing:
-                stt.anomalies.append(f"late_terminal_signal:{terminal_type}_after_{existing}")
+                stt.anomalies.append(
+                    f"late_terminal_signal:{terminal_type}_after_{existing}"
+                )
                 dropped_terminal += 1
             continue
 
@@ -524,13 +590,17 @@ def main() -> int:
             dropped_terminal += 1
             # keep anomaly if we see another terminal signal later
             if stt.terminal is None:
-                stt.anomalies.append(f"terminal_seen_but_emitted_before:{terminal_type}")
+                stt.anomalies.append(
+                    f"terminal_seen_but_emitted_before:{terminal_type}"
+                )
             continue
 
         cum_exec = stt.cum_qty_from_execs()
 
         # High-severity anomaly: reject after any fill/exec
-        if terminal_type == "REJECT" and (cum_exec > 0.0 or (stt.filled_last or 0.0) > 0.0):
+        if terminal_type == "REJECT" and (
+            cum_exec > 0.0 or (stt.filled_last or 0.0) > 0.0
+        ):
             stt.anomalies.append("reject_after_fill_or_exec")
 
         # Race marker (not fatal by itself)
@@ -632,14 +702,28 @@ def main() -> int:
             "size": int(wm.get("size") or 0),
             "mtime_utc": wm.get("mtime_utc"),
         },
-        "watermark_after": {"offset": int(new_off), "size": size, "mtime_utc": mtime_utc},
+        "watermark_after": {
+            "offset": int(new_off),
+            "size": size,
+            "mtime_utc": mtime_utc,
+        },
         "processed": {"lines": processed_lines, "events": processed_events},
-        "dedup": {"dropped_raw": dropped_raw, "dropped_exec": dropped_exec, "dropped_terminal": dropped_terminal},
+        "dedup": {
+            "dropped_raw": dropped_raw,
+            "dropped_exec": dropped_exec,
+            "dropped_terminal": dropped_terminal,
+        },
         "terminal_counts": {
             "new_terminal_events": len(new_terminal_events),
-            "fills": sum(1 for x in new_terminal_events if x["terminal_type"] == "FILL"),
-            "cancels": sum(1 for x in new_terminal_events if x["terminal_type"] == "CANCEL"),
-            "rejects": sum(1 for x in new_terminal_events if x["terminal_type"] == "REJECT"),
+            "fills": sum(
+                1 for x in new_terminal_events if x["terminal_type"] == "FILL"
+            ),
+            "cancels": sum(
+                1 for x in new_terminal_events if x["terminal_type"] == "CANCEL"
+            ),
+            "rejects": sum(
+                1 for x in new_terminal_events if x["terminal_type"] == "REJECT"
+            ),
         },
         "warns": warns,
         "anomalies": anomalies_top,

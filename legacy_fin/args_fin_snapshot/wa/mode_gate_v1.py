@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
@@ -11,7 +10,14 @@ KIND_EXIT = "INTENT_EXIT"
 KIND_REDUCE = "INTENT_REDUCE"
 KIND_TAKE_PROFIT = "INTENT_TAKE_PROFIT"
 
-_ALLOWED_KINDS = {KIND_NONE, KIND_CANCEL_ALL, KIND_ENTRY, KIND_EXIT, KIND_REDUCE, KIND_TAKE_PROFIT}
+_ALLOWED_KINDS = {
+    KIND_NONE,
+    KIND_CANCEL_ALL,
+    KIND_ENTRY,
+    KIND_EXIT,
+    KIND_REDUCE,
+    KIND_TAKE_PROFIT,
+}
 
 MODE_ALLOW = "ALLOW_NEW_ENTRIES"
 MODE_ONLY_EXITS = "ONLY_EXITS"
@@ -145,9 +151,17 @@ def gate_kind(kind: str, mode: str) -> Tuple[str, Optional[str]]:
     return KIND_NONE, f"unknown_kind:{k}"
 
 
-def apply_mode_gate_to_intent(intent: Dict[str, Any], mode: str, position_size: float) -> Dict[str, Any]:
+def apply_mode_gate_to_intent(
+    intent: Dict[str, Any], mode: str, position_size: float
+) -> Dict[str, Any]:
     if not isinstance(intent, dict):
-        return {"kind": KIND_NONE, "kind_raw": str(intent), "gate_reason": "intent_not_dict", "mode": MODE_NO_TRADE, "position_size": 0.0}
+        return {
+            "kind": KIND_NONE,
+            "kind_raw": str(intent),
+            "gate_reason": "intent_not_dict",
+            "mode": MODE_NO_TRADE,
+            "position_size": 0.0,
+        }
 
     kind, raw = _extract_kind(intent)
 
@@ -166,7 +180,9 @@ def apply_mode_gate_to_intent(intent: Dict[str, Any], mode: str, position_size: 
     return intent
 
 
-def apply_mode_gate_from_report(intent: Dict[str, Any], run_report: Dict[str, Any]) -> Dict[str, Any]:
+def apply_mode_gate_from_report(
+    intent: Dict[str, Any], run_report: Dict[str, Any]
+) -> Dict[str, Any]:
     if not isinstance(run_report, dict):
         run_report = {}
     mode = extract_mode(run_report)

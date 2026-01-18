@@ -1,4 +1,3 @@
-
 # args/ops/ops_health_v1.py
 # JSON-only health gate for ops loop.
 # Exit codes:
@@ -60,7 +59,9 @@ def _stdout_json(obj: Any) -> None:
 
 def _write_json_utf8(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _read_json_utf8_sig(path: Path) -> Any:
@@ -223,7 +224,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     out_path = Path(args.out)
     cp_path = Path(args.control_plane)
 
-    stop_flag_ops = (DATA_DIR / "stop.flag").exists()   # ops pause flag
+    stop_flag_ops = (DATA_DIR / "stop.flag").exists()  # ops pause flag
     stop_flag_exec = (LOGS_DIR / "stop.flag").exists()  # execution/proofs arming flag
 
     out: dict[str, Any] = {
@@ -255,7 +256,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         execution_mode = str(cp.get("execution_mode") or "")
         enable_paper_execution = bool(cp.get("enable_paper_execution", False))
 
-        execution_armed = (_u(execution_mode) == "PAPER") and enable_paper_execution and stop_flag_exec
+        execution_armed = (
+            (_u(execution_mode) == "PAPER")
+            and enable_paper_execution
+            and stop_flag_exec
+        )
 
         # Snapshots (read-only)
         pos = snapshot_positions(
@@ -310,9 +315,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
         # Baseline (strict): positions==0 and open_orders==0 (non-terminal)
-        pos_nonzero_total = sum(1 for r in pos_rows if abs(_as_float(r.get("position"))) > 1e-9)
+        pos_nonzero_total = sum(
+            1 for r in pos_rows if abs(_as_float(r.get("position"))) > 1e-9
+        )
         open_orders_total = sum(
-            1 for r in oo_rows if not _is_terminal_order_status(str(r.get("status") or ""))
+            1
+            for r in oo_rows
+            if not _is_terminal_order_status(str(r.get("status") or ""))
         )
         baseline_flat = (pos_nonzero_total == 0) and (open_orders_total == 0)
 
@@ -353,13 +362,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "Manual/untracked orders detected (orderId<=0). Cancel/adjust in TWS or wait for fill; API may not manage them."
             )
         if "FORBIDDEN_ORDERS_PRESENT_ONLY_EXITS" in reasons:
-            suggested_actions.append("Forbidden BUY orders present while ONLY_EXITS. Cancel immediately in TWS.")
+            suggested_actions.append(
+                "Forbidden BUY orders present while ONLY_EXITS. Cancel immediately in TWS."
+            )
         if "PAPER_ARMED_BUT_OWNERSHIP_GATE_FAIL" in reasons:
-            suggested_actions.append("Disable PAPER execution until ownership gate PASS (baseline/ownership cleanup).")
+            suggested_actions.append(
+                "Disable PAPER execution until ownership gate PASS (baseline/ownership cleanup)."
+            )
         if "STOP_FLAG_PRESENT_OPS" in reasons:
-            suggested_actions.append("ops stop.flag present: ops loop is intentionally paused; remove args/data/stop.flag to resume.")
+            suggested_actions.append(
+                "ops stop.flag present: ops loop is intentionally paused; remove args/data/stop.flag to resume."
+            )
         if "STOP_FLAG_PRESENT_EXEC" in reasons:
-            suggested_actions.append("exec stop.flag present: proofs/execution are armed; remove args/logs/stop.flag when safe.")
+            suggested_actions.append(
+                "exec stop.flag present: proofs/execution are armed; remove args/logs/stop.flag when safe."
+            )
 
         out.update(
             {

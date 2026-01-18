@@ -42,12 +42,14 @@ def main() -> int:
     if errors:
         print("")
         print("IBKR errors (may still be OK if details exist):")
-        for (reqId, code, msg) in errors[:8]:
+        for reqId, code, msg in errors[:8]:
             print(f"- reqId={reqId} code={code} msg={msg}")
 
     if not details:
         print("")
-        print("No contract details returned. Ensure TWS/IB Gateway is running and API port is correct.")
+        print(
+            "No contract details returned. Ensure TWS/IB Gateway is running and API port is correct."
+        )
         return 2
 
     rows = [contract_details_to_dict(cd) for cd in details]
@@ -56,20 +58,29 @@ def main() -> int:
     picked = select_front_month(details)
     if picked is None:
         print("")
-        print("Could not select front-month (no parseable lastTradeDateOrContractMonth).")
+        print(
+            "Could not select front-month (no parseable lastTradeDateOrContractMonth)."
+        )
         return 3
 
     picked_row = contract_details_to_dict(picked)
 
     payload = {
         "resolved_at_utc": utc_now_str(),
-        "query": {"secType": "FUT", "symbol": "HG", "exchange": "COMEX", "currency": "USD"},
+        "query": {
+            "secType": "FUT",
+            "symbol": "HG",
+            "exchange": "COMEX",
+            "currency": "USD",
+        },
         "selection": {"method": "front_month_by_lastTradeDateOrContractMonth"},
         "picked": picked_row,
         "candidates_count": len(rows),
     }
 
-    OUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print("")
     print(f"OK: wrote {OUT_PATH}")
     print(

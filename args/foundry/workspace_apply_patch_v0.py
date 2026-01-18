@@ -81,7 +81,9 @@ def atomic_write_json(path: Path, obj: dict, pretty: bool = True) -> None:
     atomic_write_text(path, text)
 
 
-def append_event(events_path: Path, run_id: str, kind: str, data: dict | None = None) -> None:
+def append_event(
+    events_path: Path, run_id: str, kind: str, data: dict | None = None
+) -> None:
     ev = {
         "schema": "event_v0",
         "ts_utc": utc_ts(),
@@ -95,7 +97,9 @@ def append_event(events_path: Path, run_id: str, kind: str, data: dict | None = 
         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
 
-def resolve_template_source(repo: Path, kit_id: str, product_id: str) -> tuple[dict, Path | None]:
+def resolve_template_source(
+    repo: Path, kit_id: str, product_id: str
+) -> tuple[dict, Path | None]:
     # Priority:
     # 1) manifests/template_packs/<kit_id>
     # 2) templates/<product_id>
@@ -121,11 +125,15 @@ def classify_exception(e: Exception) -> tuple[int, str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Create workspace from template and apply codegen patch JSON (standard runner)")
+    ap = argparse.ArgumentParser(
+        description="Create workspace from template and apply codegen patch JSON (standard runner)"
+    )
     ap.add_argument("--repo", default=".")
     ap.add_argument("--product-id", required=True)
     ap.add_argument("--run-id", required=True)
-    ap.add_argument("--codegen", required=True, help="runs/<run_id>/codegen_output.json")
+    ap.add_argument(
+        "--codegen", required=True, help="runs/<run_id>/codegen_output.json"
+    )
     ap.add_argument("--workspaces-dir", default=None)
     args = ap.parse_args()
 
@@ -151,14 +159,18 @@ def main() -> int:
     ws_root: Path | None = None
     codegen_path: Path | None = None
 
-    append_event(events_path, run_id, "start", {"repo": str(repo), "product_id": product_id})
+    append_event(
+        events_path, run_id, "start", {"repo": str(repo), "product_id": product_id}
+    )
 
     try:
         # Require product manifest to exist (product identity)
         manifest_path = repo / "manifests" / "products" / f"{product_id}.json"
         if not manifest_path.exists():
             raise FileNotFoundError(f"product manifest not found: {manifest_path}")
-        _ = read_json_utf8sig(manifest_path)  # not used for template selection anymore, but validates existence
+        _ = read_json_utf8sig(
+            manifest_path
+        )  # not used for template selection anymore, but validates existence
 
         # Require job_request.json (security + kit_id)
         jr_path = run_dir / "job_request.json"
@@ -169,39 +181,70 @@ def main() -> int:
         kit_id = str(jr.get("kit_id") or "")
         jr_product = str(jr.get("product_id") or "")
         if jr_product and jr_product != product_id:
-            raise ValueError(f"job_request.product_id mismatch: {jr_product} != {product_id}")
+            raise ValueError(
+                f"job_request.product_id mismatch: {jr_product} != {product_id}"
+            )
 
         apaths = jr.get("allowed_paths")
         if apaths is not None:
-            if not isinstance(apaths, list) or not all(isinstance(x, str) for x in apaths):
-                raise ValueError("job_request.allowed_paths must be an array of strings")
+            if not isinstance(apaths, list) or not all(
+                isinstance(x, str) for x in apaths
+            ):
+                raise ValueError(
+                    "job_request.allowed_paths must be an array of strings"
+                )
             allowed_paths = apaths
 
             allowed_paths_norm = set()
             for x in apaths:
-                y = x.replace('\\', '/')
-                if y.startswith('./'):
+                y = x.replace("\\", "/")
+                if y.startswith("./"):
                     y = y[2:]
                 allowed_paths_norm.add(y)
-        append_event(events_path, run_id, "loaded_job_request", {"kit_id": kit_id, "allowed_paths": allowed_paths is not None})
+        append_event(
+            events_path,
+            run_id,
+            "loaded_job_request",
+            {"kit_id": kit_id, "allowed_paths": allowed_paths is not None},
+        )
 
         # Resolve template source (P4)
-        template_source, template_root = resolve_template_source(repo, kit_id, product_id)
+        template_source, template_root = resolve_template_source(
+            repo, kit_id, product_id
+        )
 
         # Evidence: always record template_source selection
         atomic_write_json(
             template_source_path,
-            {"schema": "template_source_v1", "ts_utc": utc_ts(), "run_id": run_id, "kit_id": kit_id, "product_id": product_id, "template_source": template_source},
+            {
+                "schema": "template_source_v1",
+                "ts_utc": utc_ts(),
+                "run_id": run_id,
+                "kit_id": kit_id,
+                "product_id": product_id,
+                "template_source": template_source,
+            },
             pretty=True,
         )
 
         if template_root is None:
-            raise ValueError(f"template_source_missing: kit_id={kit_id} product_id={product_id}")
+            raise ValueError(
+                f"template_source_missing: kit_id={kit_id} product_id={product_id}"
+            )
 
-        append_event(events_path, run_id, "template_source_resolved", {"template_source": template_source})
+        append_event(
+            events_path,
+            run_id,
+            "template_source_resolved",
+            {"template_source": template_source},
+        )
 
         # Workspace root
-        workspaces_dir = Path(args.workspaces_dir).resolve() if args.workspaces_dir else (repo / "args" / "data" / "workspaces")
+        workspaces_dir = (
+            Path(args.workspaces_dir).resolve()
+            if args.workspaces_dir
+            else (repo / "args" / "data" / "workspaces")
+        )
         ws_root = (workspaces_dir / run_id / "workspace").resolve()
 
         # Reset workspace
@@ -211,7 +254,9 @@ def main() -> int:
 
         # Copy template -> workspace
         shutil.copytree(template_root, ws_root)
-        append_event(events_path, run_id, "workspace_created", {"workspace": str(ws_root)})
+        append_event(
+            events_path, run_id, "workspace_created", {"workspace": str(ws_root)}
+        )
 
         # Resolve codegen path
         codegen_path = Path(args.codegen)
@@ -251,7 +296,9 @@ def main() -> int:
             try:
                 full.relative_to(ws_root_resolved)
             except Exception as e:
-                raise ValueError(f"resolved path escapes workspace root: {rel_s}") from e
+                raise ValueError(
+                    f"resolved path escapes workspace root: {rel_s}"
+                ) from e
 
             content = op.get("content", "")
             if not isinstance(content, str):

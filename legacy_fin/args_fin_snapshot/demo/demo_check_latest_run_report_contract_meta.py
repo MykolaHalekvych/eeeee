@@ -20,17 +20,27 @@ def _pick_latest_report() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
     reports = sorted(
-        [p for p in LOGS_DIR.iterdir() if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")],
+        [
+            p
+            for p in LOGS_DIR.iterdir()
+            if p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
+        ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
     return reports[0] if reports else None
 
 
-def _dig_contract(rr: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _dig_contract(
+    rr: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     inputs = rr.get("inputs") if isinstance(rr.get("inputs"), dict) else {}
     csv_meta_path = inputs.get("csv_meta_path")
-    csv_meta = inputs.get("csv_meta") if isinstance(inputs.get("csv_meta"), dict) else None
+    csv_meta = (
+        inputs.get("csv_meta") if isinstance(inputs.get("csv_meta"), dict) else None
+    )
 
     conid = None
     local = None

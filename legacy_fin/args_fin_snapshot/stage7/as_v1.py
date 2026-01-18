@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Utils
 # -------------------------
 
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -46,7 +47,9 @@ def _safe_read_text(path: Path) -> Tuple[Optional[str], Optional[str]]:
         return None, f"read_failed:{e}"
 
 
-def load_json_retry(path: Path, tries: int = 6, sleep_sec: float = 0.05) -> Tuple[Optional[Any], Optional[str]]:
+def load_json_retry(
+    path: Path, tries: int = 6, sleep_sec: float = 0.05
+) -> Tuple[Optional[Any], Optional[str]]:
     if not path.exists():
         return None, "missing"
 
@@ -88,7 +91,18 @@ def find_status_carrier(obj: Any, max_depth: int = 5) -> Optional[Dict[str, Any]
         seen.add(id(d))
 
         keys = {str(k).lower() for k in d.keys()}
-        if any(k in keys for k in ("status", "ok", "exit_code", "mode", "risk_envelope", "envelope", "execution_mode")):
+        if any(
+            k in keys
+            for k in (
+                "status",
+                "ok",
+                "exit_code",
+                "mode",
+                "risk_envelope",
+                "envelope",
+                "execution_mode",
+            )
+        ):
             return d
 
         if depth >= max_depth:
@@ -173,6 +187,7 @@ def _symbol_match(sym: str, symbol: str, local_symbol: str) -> bool:
 # Control plane
 # -------------------------
 
+
 def get_control_plane_mode(cp: Any) -> Tuple[str, List[str]]:
     warns: List[str] = []
     if not isinstance(cp, dict):
@@ -196,7 +211,9 @@ def get_control_plane_mode(cp: Any) -> Tuple[str, List[str]]:
         chosen = risk_mode
 
     if global_mode in allowed and risk_mode in allowed and global_mode != risk_mode:
-        warns.append(f"control_plane_mode_conflict:global_mode={global_mode}:risk_envelope.mode={risk_mode}")
+        warns.append(
+            f"control_plane_mode_conflict:global_mode={global_mode}:risk_envelope.mode={risk_mode}"
+        )
 
     if chosen == "UNKNOWN":
         warns.append("mode_unknown")
@@ -219,6 +236,7 @@ def get_control_plane_execution_mode(cp: Any) -> str:
 # FSM
 # -------------------------
 
+
 @dataclass
 class FSMState:
     state: str = "WAIT"
@@ -235,7 +253,14 @@ def in_cooldown(now_utc: str, cooldown_until_utc: Optional[str]) -> bool:
         return False
 
 
-def transition(now_utc: str, fsm: FSMState, pos_qty: float, open_orders: int, intent_type: str, cooldown_sec: int) -> FSMState:
+def transition(
+    now_utc: str,
+    fsm: FSMState,
+    pos_qty: float,
+    open_orders: int,
+    intent_type: str,
+    cooldown_sec: int,
+) -> FSMState:
     s = fsm.state
 
     if open_orders > 0 and s in ("WAIT", "ARMED"):
@@ -288,17 +313,22 @@ def transition(now_utc: str, fsm: FSMState, pos_qty: float, open_orders: int, in
 # Reconcile: resolve snapshot paths from report (v1/v2)
 # -------------------------
 
+
 def resolve_positions_snapshot_path(repo: Path, reconcile_obj: Any) -> Optional[Path]:
     if not isinstance(reconcile_obj, dict):
         return None
-    p = _nested_get(reconcile_obj, ["positions", "out_path"]) or _nested_get(reconcile_obj, ["positions", "outPath"])
+    p = _nested_get(reconcile_obj, ["positions", "out_path"]) or _nested_get(
+        reconcile_obj, ["positions", "outPath"]
+    )
     return _as_path(repo, p)
 
 
 def resolve_open_orders_snapshot_path(repo: Path, reconcile_obj: Any) -> Optional[Path]:
     if not isinstance(reconcile_obj, dict):
         return None
-    p = _nested_get(reconcile_obj, ["open_orders", "jsonl_path"]) or _nested_get(reconcile_obj, ["open_orders", "jsonlPath"])
+    p = _nested_get(reconcile_obj, ["open_orders", "jsonl_path"]) or _nested_get(
+        reconcile_obj, ["open_orders", "jsonlPath"]
+    )
     return _as_path(repo, p)
 
 
@@ -365,6 +395,7 @@ def count_open_orders_from_jsonl(path: Path, sym: str, max_lines: int = 5000) ->
 # Signals
 # -------------------------
 
+
 def load_signals(signals_obj: Any) -> Dict[str, Any]:
     if not isinstance(signals_obj, dict):
         return {}
@@ -430,19 +461,40 @@ def pick_intent(
             reason.append("tp_signal")
             if not gate_ok:
                 return "NONE", None, 0, confidence, reason, blocked_by
-            return "TP", ("SELL" if pos_qty > 0 else "BUY"), max(1, min(qty, abs(int(pos_qty)))), confidence, reason, blocked_by
+            return (
+                "TP",
+                ("SELL" if pos_qty > 0 else "BUY"),
+                max(1, min(qty, abs(int(pos_qty)))),
+                confidence,
+                reason,
+                blocked_by,
+            )
 
         if reduce:
             reason.append("reduce_signal")
             if not gate_ok:
                 return "NONE", None, 0, confidence, reason, blocked_by
-            return "REDUCE", ("SELL" if pos_qty > 0 else "BUY"), max(1, min(qty, abs(int(pos_qty)))), confidence, reason, blocked_by
+            return (
+                "REDUCE",
+                ("SELL" if pos_qty > 0 else "BUY"),
+                max(1, min(qty, abs(int(pos_qty)))),
+                confidence,
+                reason,
+                blocked_by,
+            )
 
         if exit_:
             reason.append("exit_signal")
             if not gate_ok:
                 return "NONE", None, 0, confidence, reason, blocked_by
-            return "EXIT", ("SELL" if pos_qty > 0 else "BUY"), max(1, abs(int(pos_qty))), confidence, reason, blocked_by
+            return (
+                "EXIT",
+                ("SELL" if pos_qty > 0 else "BUY"),
+                max(1, abs(int(pos_qty))),
+                confidence,
+                reason,
+                blocked_by,
+            )
 
         return "NONE", None, 0, confidence, ["in_position_no_exit_signal"], blocked_by
 
@@ -467,6 +519,7 @@ def pick_intent(
 # Main
 # -------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -479,17 +532,21 @@ def main() -> int:
 
     universe = [x.strip() for x in args.universe.split(",") if x.strip()] or ["MHG"]
 
-    soak_path = first_existing([
-        repo / "args" / "data" / "ops_soak_gate.json",
-        repo / "args" / "data" / "ops_soak_gate_latest.json",
-        repo / "args" / "data" / "ops_soak_gate_v1.json",
-    ])
+    soak_path = first_existing(
+        [
+            repo / "args" / "data" / "ops_soak_gate.json",
+            repo / "args" / "data" / "ops_soak_gate_latest.json",
+            repo / "args" / "data" / "ops_soak_gate_v1.json",
+        ]
+    )
 
-    reconcile_path = first_existing([
-        repo / "args" / "data" / "reconcile_evidence_latest_v2.json",
-        repo / "args" / "data" / "reconcile_evidence_latest.json",
-        repo / "args" / "data" / "reconcile_latest.json",
-    ])
+    reconcile_path = first_existing(
+        [
+            repo / "args" / "data" / "reconcile_evidence_latest_v2.json",
+            repo / "args" / "data" / "reconcile_evidence_latest.json",
+            repo / "args" / "data" / "reconcile_latest.json",
+        ]
+    )
 
     control_plane_path = repo / "args" / "data" / "control_plane.json"
     signals_path = repo / "args" / "data" / "as_v1_signals_latest.json"
@@ -505,9 +562,9 @@ def main() -> int:
     soak_status = ok_status_from_any(soak_obj)
     reconcile_status = ok_status_from_any(rec_obj)
 
-    soak_ok = (soak_status == "OK")
-    reconcile_ok = (reconcile_status == "OK")
-    reconcile_warn = (reconcile_status == "WARN")
+    soak_ok = soak_status == "OK"
+    reconcile_ok = reconcile_status == "OK"
+    reconcile_warn = reconcile_status == "WARN"
 
     # exit-on-warn gates:
     # - ENTER only when soak OK and reconcile OK
@@ -558,8 +615,16 @@ def main() -> int:
 
     intents: List[Dict[str, Any]] = []
     for sym in universe:
-        pos_qty = load_positions_qty_from_snapshot(pos_snapshot, sym) if isinstance(pos_snapshot, dict) else 0.0
-        open_orders = count_open_orders_from_jsonl(oo_path, sym) if (oo_path and oo_path.exists()) else 0
+        pos_qty = (
+            load_positions_qty_from_snapshot(pos_snapshot, sym)
+            if isinstance(pos_snapshot, dict)
+            else 0.0
+        )
+        open_orders = (
+            count_open_orders_from_jsonl(oo_path, sym)
+            if (oo_path and oo_path.exists())
+            else 0
+        )
 
         sig = sigs.get(sym) if isinstance(sigs, dict) else None
         sig = sig if isinstance(sig, dict) else {}
@@ -585,7 +650,9 @@ def main() -> int:
             cooldown_until_utc=fsm_raw.get("cooldown_until_utc"),
             last_transition_utc=fsm_raw.get("last_transition_utc"),
         )
-        fsm = transition(now, fsm, pos_qty, open_orders, intent_type, int(args.cooldown_sec))
+        fsm = transition(
+            now, fsm, pos_qty, open_orders, intent_type, int(args.cooldown_sec)
+        )
 
         actionable = False
         if intent_type != "NONE" and ("signals_missing" not in blocked_by):
@@ -659,7 +726,13 @@ def main() -> int:
 
     save_json(latest_path, out)
 
-    ev_dir = repo / "args" / "ops_evidence" / "as_v1" / now.replace(":", "").replace("-", "").replace(".", "")
+    ev_dir = (
+        repo
+        / "args"
+        / "ops_evidence"
+        / "as_v1"
+        / now.replace(":", "").replace("-", "").replace(".", "")
+    )
     save_json(ev_dir / "as_v1_latest.json", out)
 
     cursor_out = {"schema": "as_v1_cursor", "last_run_utc": now, "fsm": fsm_map}

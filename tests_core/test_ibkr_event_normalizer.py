@@ -6,7 +6,12 @@ from args_core.execution_v1 import EventType
 
 class TestIbkrEventNormalizer(unittest.TestCase):
     def test_ack_from_status(self):
-        rec = {"type": "ORDER_STATUS", "orderId": 1018, "status": "PreSubmitted", "symbol": "AAPL"}
+        rec = {
+            "type": "ORDER_STATUS",
+            "orderId": 1018,
+            "status": "PreSubmitted",
+            "symbol": "AAPL",
+        }
         ev = normalize_ibkr_record(rec)
         self.assertIsNotNone(ev)
         self.assertEqual(ev.event_type, EventType.ACK)
@@ -20,14 +25,26 @@ class TestIbkrEventNormalizer(unittest.TestCase):
         self.assertEqual(ev.order_id, 1018)
 
     def test_fill_partial(self):
-        rec = {"event_type": "FILL", "order_id": 1018, "filled": 1, "remaining": 1, "symbol": "AAPL"}
+        rec = {
+            "event_type": "FILL",
+            "order_id": 1018,
+            "filled": 1,
+            "remaining": 1,
+            "symbol": "AAPL",
+        }
         ev = normalize_ibkr_record(rec)
         self.assertIsNotNone(ev)
         self.assertEqual(ev.event_type, EventType.FILL)
         self.assertEqual(ev.remaining_qty, 1)
 
     def test_fill_terminal(self):
-        rec = {"status": "Filled", "orderId": 1018, "filled": 2, "remaining": 0, "symbol": "AAPL"}
+        rec = {
+            "status": "Filled",
+            "orderId": 1018,
+            "filled": 2,
+            "remaining": 0,
+            "symbol": "AAPL",
+        }
         ev = normalize_ibkr_record(rec)
         self.assertIsNotNone(ev)
         self.assertEqual(ev.event_type, EventType.FILL)

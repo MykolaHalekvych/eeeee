@@ -26,7 +26,9 @@ def _get_by_dotpath(obj: Dict[str, Any], path: str) -> Tuple[bool, Any]:
     return True, cur
 
 
-def validate_ma_input(input_obj: Dict[str, Any], allowed_paths: List[str]) -> ContractResult:
+def validate_ma_input(
+    input_obj: Dict[str, Any], allowed_paths: List[str]
+) -> ContractResult:
     missing: List[str] = []
     present: List[str] = []
 
@@ -77,7 +79,12 @@ def main() -> int:
     print("MISSING_PATHS:", len(res.missing_paths))
     for p in res.missing_paths:
         print(" -", p)
-    print("UNKNOWN_TOP_LEVEL_KEYS:", ", ".join(res.unknown_top_level_keys) if res.unknown_top_level_keys else "(none)")
+    print(
+        "UNKNOWN_TOP_LEVEL_KEYS:",
+        ", ".join(res.unknown_top_level_keys)
+        if res.unknown_top_level_keys
+        else "(none)",
+    )
     return 0 if res.ok else 2
 
 
@@ -91,31 +98,31 @@ if __name__ == "__main__":
 
 OPTIONAL_V1_TEMPLATE = {
     "session_flags": {
-        "is_rth": None,             # bool
-        "is_globex": None,          # bool
-        "minutes_to_close": None,   # int
-        "is_holiday": None,         # bool
+        "is_rth": None,  # bool
+        "is_globex": None,  # bool
+        "minutes_to_close": None,  # int
+        "is_holiday": None,  # bool
     },
     "roll_flags": {
-        "days_to_expiry": None,     # int
-        "in_roll_window": None,     # bool
+        "days_to_expiry": None,  # int
+        "in_roll_window": None,  # bool
     },
     "position_state": {
-        "size": 0,                  # int
-        "avg_price": None,          # float
-        "unrealized_pnl": None,     # float
-        "last_action_utc": None,    # str (UTC)
+        "size": 0,  # int
+        "avg_price": None,  # float
+        "unrealized_pnl": None,  # float
+        "last_action_utc": None,  # str (UTC)
     },
     "risk_caps": {
-        "risk_per_trade_cap": None, # float
-        "daily_heat_cap": None,     # float
-        "heat_used_today": None,    # float
+        "risk_per_trade_cap": None,  # float
+        "daily_heat_cap": None,  # float
+        "heat_used_today": None,  # float
     },
     "liquidity_l0": {
-        "spread": None,             # float
-        "top_size_bid": None,       # float/int
-        "top_size_ask": None,       # float/int
-        "thin_book": None,          # bool
+        "spread": None,  # float
+        "top_size_bid": None,  # float/int
+        "top_size_ask": None,  # float/int
+        "thin_book": None,  # bool
     },
 }
 
@@ -130,4 +137,3 @@ def ensure_optional_v1(ma_input: Dict[str, Any]) -> Dict[str, Any]:
         if k not in out or out.get(k) is None:
             out[k] = dict(v)
     return out
-

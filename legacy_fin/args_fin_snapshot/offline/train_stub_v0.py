@@ -6,7 +6,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -16,7 +16,12 @@ MODELS_DIR = OFFLINE_DIR / "models"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -74,13 +79,21 @@ def _code_sha_self() -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser("train_stub_v0")
-    ap.add_argument("--dataset", default="", help="Dataset dir name under args/offline/datasets (default: latest)")
+    ap.add_argument(
+        "--dataset",
+        default="",
+        help="Dataset dir name under args/offline/datasets (default: latest)",
+    )
     args = ap.parse_args(argv)
 
     if args.dataset.strip():
         ds_dir = DATASETS_DIR / args.dataset.strip()
     else:
-        cands = [p for p in DATASETS_DIR.iterdir() if p.is_dir() and (p / "dataset_manifest.json").exists()]
+        cands = [
+            p
+            for p in DATASETS_DIR.iterdir()
+            if p.is_dir() and (p / "dataset_manifest.json").exists()
+        ]
         if not cands:
             print("NO_DATASETS_FOUND")
             return 2
@@ -150,10 +163,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "release": {"promoted": False, "as_model_version": None},
     }
 
-    (model_dir / "model_manifest.json").write_text(json.dumps(model_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(model_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     print("TRAIN_STUB_V0")
-    print(json.dumps({"ok": True, "model_dir": str(model_dir), "model_id": mid, "manifest": str(model_dir / "model_manifest.json")}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "model_dir": str(model_dir),
+                "model_id": mid,
+                "manifest": str(model_dir / "model_manifest.json"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

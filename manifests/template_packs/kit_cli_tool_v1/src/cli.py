@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -28,7 +28,11 @@ def cmd_version(_args: argparse.Namespace) -> Dict[str, Any]:
 
 def cmd_hash(_args: argparse.Namespace) -> Dict[str, Any]:
     # Deterministic: hash of version + python major/minor (stable across runs)
-    payload = f"{APP_VERSION}|py{sys.version_info.major}.{sys.version_info.minor}".encode("utf-8")
+    payload = (
+        f"{APP_VERSION}|py{sys.version_info.major}.{sys.version_info.minor}".encode(
+            "utf-8"
+        )
+    )
     h = hashlib.sha256(payload).hexdigest()
     return {"ok": True, "cmd": "hash", "sha256": h}
 
@@ -44,9 +48,21 @@ def cmd_manifest_validate(args: argparse.Namespace) -> Dict[str, Any]:
 def cmd_selftest(_args: argparse.Namespace) -> Dict[str, Any]:
     # Deterministic internal checks; no network, no time.
     checks: List[Dict[str, Any]] = []
-    checks.append({"name": "ping", "ok": cmd_ping(argparse.Namespace()).get("ok") is True})
-    checks.append({"name": "version", "ok": isinstance(cmd_version(argparse.Namespace()).get("version"), str)})
-    checks.append({"name": "hash", "ok": len(cmd_hash(argparse.Namespace()).get("sha256", "")) == 64})
+    checks.append(
+        {"name": "ping", "ok": cmd_ping(argparse.Namespace()).get("ok") is True}
+    )
+    checks.append(
+        {
+            "name": "version",
+            "ok": isinstance(cmd_version(argparse.Namespace()).get("version"), str),
+        }
+    )
+    checks.append(
+        {
+            "name": "hash",
+            "ok": len(cmd_hash(argparse.Namespace()).get("sha256", "")) == 64,
+        }
+    )
     ok = all(bool(c["ok"]) for c in checks)
     return {"ok": ok, "cmd": "selftest", "checks": checks}
 

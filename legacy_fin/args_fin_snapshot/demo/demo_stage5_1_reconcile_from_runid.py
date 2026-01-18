@@ -34,32 +34,85 @@ def main() -> int:
     # 1) account snapshot
     _run(
         "args.ibkr.ibkr_account_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+        ],
     )
 
     # 2) positions snapshot
     _run(
         "args.ibkr.ibkr_positions_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+        ],
     )
 
     # 3) open orders snapshot (existing tool)
     out_open = DATA_DIR / "ibkr_open_orders_stage5.jsonl"
     _run(
         "args.ibkr.ibkr_open_orders_snapshotter_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", "25", "--wait-s", "5", "--out", str(out_open)],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            "25",
+            "--wait-s",
+            "5",
+            "--out",
+            str(out_open),
+        ],
     )
 
     # 4) executions snapshot
     _run(
         "args.ibkr.ibkr_executions_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id, "--lookback-min", str(a.lookback_min)],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+            "--lookback-min",
+            str(a.lookback_min),
+        ],
     )
 
     # 5) reconcile
     _run("args.wa.reconcile_paper_v1", ["--run-id", run_id])
 
-    print(json.dumps({"ok": True, "run_id": run_id, "note": "stage5.1 snapshots+reconcile done"}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"ok": True, "run_id": run_id, "note": "stage5.1 snapshots+reconcile done"},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

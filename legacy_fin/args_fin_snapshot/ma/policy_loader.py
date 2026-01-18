@@ -55,7 +55,9 @@ def _require_dict(raw: Dict[str, Any], key: str) -> Dict[str, Any]:
     return val
 
 
-def _validate_blocks(blocks: Dict[str, Any], allowed_decisions: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+def _validate_blocks(
+    blocks: Dict[str, Any], allowed_decisions: List[str]
+) -> Dict[str, List[Dict[str, Any]]]:
     # blocks must contain all required names
     for b in REQUIRED_BLOCKS:
         if b not in blocks:
@@ -86,28 +88,42 @@ def _validate_blocks(blocks: Dict[str, Any], allowed_decisions: List[str]) -> Di
             enabled = r.get("enabled", True)
 
             if not isinstance(rule_id, str) or not rule_id.strip():
-                raise ValueError(f"blocks.{block_name}.rules[{i}].rule_id must be a non-empty string")
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].rule_id must be a non-empty string"
+                )
             rid = rule_id.strip()
             if rid in seen_rule_ids:
                 raise ValueError(f"Duplicate rule_id: {rid}")
             seen_rule_ids.add(rid)
 
             if not isinstance(when, dict):
-                raise ValueError(f"blocks.{block_name}.rules[{i}].when must be an expr object (mapping)")
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].when must be an expr object (mapping)"
+                )
 
             if not isinstance(decision, str) or decision not in allowed_decisions:
-                raise ValueError(f"blocks.{block_name}.rules[{i}].decision must be one of decision_set.allowed")
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].decision must be one of decision_set.allowed"
+                )
 
             if enforce is None:
                 enforce = []
-            if not isinstance(enforce, list) or not all(isinstance(x, str) for x in enforce):
-                raise ValueError(f"blocks.{block_name}.rules[{i}].enforce must be a list of strings (can be empty)")
+            if not isinstance(enforce, list) or not all(
+                isinstance(x, str) for x in enforce
+            ):
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].enforce must be a list of strings (can be empty)"
+                )
 
             if not isinstance(reason, str) or not reason.strip():
-                raise ValueError(f"blocks.{block_name}.rules[{i}].reason must be a non-empty string")
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].reason must be a non-empty string"
+                )
 
             if not isinstance(enabled, bool):
-                raise ValueError(f"blocks.{block_name}.rules[{i}].enabled must be bool if provided")
+                raise ValueError(
+                    f"blocks.{block_name}.rules[{i}].enabled must be bool if provided"
+                )
 
             out_rules.append(
                 {
@@ -140,7 +156,9 @@ def load_policy(path: str) -> Policy:
     blocks = _require_dict(raw, "blocks")
 
     allowed = decision_set.get("allowed")
-    if not isinstance(allowed, list) or not all(isinstance(x, str) and x.strip() for x in allowed):
+    if not isinstance(allowed, list) or not all(
+        isinstance(x, str) and x.strip() for x in allowed
+    ):
         raise ValueError("decision_set.allowed must be a non-empty list of strings")
     allowed_clean = [x.strip() for x in allowed]
 

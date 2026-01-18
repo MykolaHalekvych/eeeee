@@ -41,7 +41,9 @@ def iter_jsonl_strict(path: Path) -> Tuple[Iterable[Dict[str, Any]], int, int]:
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        f.write(
+            json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
         f.write("\n")
 
 
@@ -116,7 +118,9 @@ def _order_ref(run_id: str, index: Any) -> str:
     return ref[:48]
 
 
-def _idempotency_key(run_id: str, index: Any, contract: Dict[str, Any], order: Dict[str, Any]) -> str:
+def _idempotency_key(
+    run_id: str, index: Any, contract: Dict[str, Any], order: Dict[str, Any]
+) -> str:
     parts = [
         run_id,
         _norm(index),

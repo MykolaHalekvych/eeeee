@@ -6,7 +6,7 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator
 
 from args.wa.mode_gate_v1 import apply_mode_gate_from_report
 
@@ -21,7 +21,14 @@ KIND_REDUCE = "REDUCE"
 KIND_TAKE_PROFIT = "TAKE_PROFIT"
 KIND_CANCEL_ALL = "CANCEL_ALL"
 
-_ALLOWED_KINDS = {KIND_NONE, KIND_ENTRY, KIND_EXIT, KIND_REDUCE, KIND_TAKE_PROFIT, KIND_CANCEL_ALL}
+_ALLOWED_KINDS = {
+    KIND_NONE,
+    KIND_ENTRY,
+    KIND_EXIT,
+    KIND_REDUCE,
+    KIND_TAKE_PROFIT,
+    KIND_CANCEL_ALL,
+}
 
 # Optional: infer run_id from raw intents filename if needed
 _RX_RAW = re.compile(r"^(raw_)?intents_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
@@ -56,15 +63,27 @@ def enforce_mode_gate(intent: Any, run_report: Any) -> Dict[str, Any]:
     Fail-safe wrapper for mode gate. Never throws; always returns a dict with kind.
     """
     if not isinstance(intent, dict):
-        return {"kind": KIND_NONE, "kind_raw": str(intent), "gate_reason": "intent_not_dict"}
+        return {
+            "kind": KIND_NONE,
+            "kind_raw": str(intent),
+            "gate_reason": "intent_not_dict",
+        }
     rr = run_report if isinstance(run_report, dict) else {}
     try:
         out = apply_mode_gate_from_report(intent, rr)
         if isinstance(out, dict):
             return out
-        return {"kind": KIND_NONE, "kind_raw": str(intent.get("kind")), "gate_reason": "mode_gate_not_dict"}
+        return {
+            "kind": KIND_NONE,
+            "kind_raw": str(intent.get("kind")),
+            "gate_reason": "mode_gate_not_dict",
+        }
     except Exception as e:
-        return {"kind": KIND_NONE, "kind_raw": str(intent.get("kind")), "gate_reason": f"mode_gate_exception:{type(e).__name__}"}
+        return {
+            "kind": KIND_NONE,
+            "kind_raw": str(intent.get("kind")),
+            "gate_reason": f"mode_gate_exception:{type(e).__name__}",
+        }
 
 
 def _write_jsonl_atomic(out_path: Path, rows: Iterator[Dict[str, Any]]) -> int:
@@ -73,14 +92,20 @@ def _write_jsonl_atomic(out_path: Path, rows: Iterator[Dict[str, Any]]) -> int:
     n = 0
     with tmp.open("w", encoding="utf-8") as f:
         for obj in rows:
-            f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            f.write(
+                json.dumps(
+                    obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+            )
             f.write("\n")
             n += 1
     tmp.replace(out_path)
     return n
 
 
-def normalize_order_intent(intent: Dict[str, Any], run_report: Dict[str, Any], source: str = "wa_v1") -> Dict[str, Any]:
+def normalize_order_intent(
+    intent: Dict[str, Any], run_report: Dict[str, Any], source: str = "wa_v1"
+) -> Dict[str, Any]:
     """
     Contract record for order_intents_v1 (stable, auditable).
     Keeps fields needed downstream: run_id/index/ts/instrument/timeframe/env/kind/intent_kind + gate context.
@@ -94,30 +119,29 @@ def normalize_order_intent(intent: Dict[str, Any], run_report: Dict[str, Any], s
     env = _s(intent.get("env"), _s(run_report.get("env"), "IBKR_PAPER_LABEL"))
 
     kind_norm = _norm_kind(intent.get("kind"))
-    kind_raw = intent.get("kind_raw") if intent.get("kind_raw") is not None else intent.get("kind")
+    kind_raw = (
+        intent.get("kind_raw")
+        if intent.get("kind_raw") is not None
+        else intent.get("kind")
+    )
 
     rec: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "source": source,
-
         "run_id": run_id,
         "index": _i(intent.get("index")),
         "ts": intent.get("ts"),
-
         "instrument": instrument,
         "timeframe": timeframe,
         "env": env,
-
         # decision context / gating
         "ma_decision": intent.get("ma_decision"),
         "mode": intent.get("mode"),
         "position_size": intent.get("position_size"),
         "gate_reason": intent.get("gate_reason") or None,
-
         # intent semantics
         "kind_raw": kind_raw,
         "kind": kind_norm,
-
         # downstream compatibility: payload builder can use intent_kind OR kind
         "intent_kind": kind_norm,
     }
@@ -264,26 +288,27 @@ def build_order_intents(
             "errors": int(errors),
         }
 
-    ok = (errors == 0)
+    ok = errors == 0
 
     return {
         "ok": bool(ok),
         "schema_version": SCHEMA_VERSION,
         "raw_intents": str(raw_intents_path),
         "order_intents": str(out_path),
-
         "raw_lines_seen": int(raw_lines_seen),
         "raw_dicts_seen": int(raw_dicts_seen),
         "raw_parse_errors": int(raw_parse_errors),
-
         "total": int(total),
         "written": int(written),
         "errors": int(errors),
-
         "allowed": int(allowed),
         "none": int(none),
         "gated": int(gated),
-        "breakdown": {"entries": int(entries), "exits": int(exits), "cancel_all": int(cancel_all)},
+        "breakdown": {
+            "entries": int(entries),
+            "exits": int(exits),
+            "cancel_all": int(cancel_all),
+        },
         "kind_counts": dict(counts),
     }
 
@@ -300,9 +325,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Build normalized order_intents_<run_id>.jsonl from raw intents JSONL + run_report.json"
     )
-    ap.add_argument("--run-report", required=True, help="Path to run_report_<run_id>_paper.json or run_report_<run_id>.json")
+    ap.add_argument(
+        "--run-report",
+        required=True,
+        help="Path to run_report_<run_id>_paper.json or run_report_<run_id>.json",
+    )
     ap.add_argument("--raw-intents", required=True, help="Path to raw intents JSONL")
-    ap.add_argument("--out", required=True, help="Output path order_intents_<run_id>.jsonl")
+    ap.add_argument(
+        "--out", required=True, help="Output path order_intents_<run_id>.jsonl"
+    )
     ap.add_argument("--source", default="wa_v1")
     ap.add_argument("--max-lines", type=int, default=250_000)
 

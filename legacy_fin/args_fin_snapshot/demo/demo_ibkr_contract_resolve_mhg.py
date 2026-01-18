@@ -89,7 +89,9 @@ def main() -> int:
             "ok": False,
             "exit_code": 1,
             "severity": "WARN",
-            "error": f"RuntimeError: {last_err}" if last_err else "RuntimeError: unknown",
+            "error": f"RuntimeError: {last_err}"
+            if last_err
+            else "RuntimeError: unknown",
             "traceback": None,
             "notes": ["exhausted_retries_nextValidId"],
         }

@@ -15,7 +15,6 @@ def _read_json(p: Path) -> Dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8-sig"))
 
 
-
 def _write_json(p: Path, obj: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -34,7 +33,9 @@ def _restore(dst: Path, src: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def _make_fake_positions(repo: Path, sym: str, local_symbol: str, position: float) -> Path:
+def _make_fake_positions(
+    repo: Path, sym: str, local_symbol: str, position: float
+) -> Path:
     tmp_dir = repo / "args" / "data" / "_tmp_exit_on_warn_smoke"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     p = tmp_dir / "positions_snapshot_fake.json"
@@ -66,7 +67,9 @@ def _make_fake_open_orders(repo: Path) -> Path:
     return p
 
 
-def _patch_reconcile_for_smoke(reconcile_path: Path, status: str, pos_path: Path, oo_path: Path) -> Dict[str, Any]:
+def _patch_reconcile_for_smoke(
+    reconcile_path: Path, status: str, pos_path: Path, oo_path: Path
+) -> Dict[str, Any]:
     ev = _read_json(reconcile_path)
     ev["status"] = status
     ev.setdefault("positions", {})
@@ -154,7 +157,9 @@ def main() -> int:
     _backup(signals_path, sig_bak)
 
     try:
-        fake_pos = _make_fake_positions(repo, args.symbol, args.local_symbol, args.position)
+        fake_pos = _make_fake_positions(
+            repo, args.symbol, args.local_symbol, args.position
+        )
         fake_oo = _make_fake_open_orders(repo)
 
         _patch_reconcile_for_smoke(reconcile_path, "WARN", fake_pos, fake_oo)

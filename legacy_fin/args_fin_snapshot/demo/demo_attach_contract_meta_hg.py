@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -46,7 +46,9 @@ def main() -> int:
         },
     }
 
-    OUT_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_META_PATH.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"OK: wrote {OUT_META_PATH}")
     print(f"Contract: conId={conid} local={local}")
     return 0
@@ -54,4 +56,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

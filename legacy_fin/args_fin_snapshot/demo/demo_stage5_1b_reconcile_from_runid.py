@@ -20,7 +20,9 @@ def _run(mod: str, args: list[str]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Stage5.1B: snapshots + reconcile v1b (matching + code filtering).")
+    ap = argparse.ArgumentParser(
+        description="Stage5.1B: snapshots + reconcile v1b (matching + code filtering)."
+    )
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=7497)
@@ -34,32 +36,84 @@ def main() -> int:
     # account
     _run(
         "args.ibkr.ibkr_account_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+        ],
     )
 
     # positions
     _run(
         "args.ibkr.ibkr_positions_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+        ],
     )
 
     # open orders snapshot (existing)
     out_open = DATA_DIR / "ibkr_open_orders_stage5.jsonl"
     _run(
         "args.ibkr.ibkr_open_orders_snapshotter_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", "25", "--wait-s", "5", "--out", str(out_open)],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            "25",
+            "--wait-s",
+            "5",
+            "--out",
+            str(out_open),
+        ],
     )
 
     # executions
     _run(
         "args.ibkr.ibkr_executions_snapshot_v0",
-        ["--host", a.host, "--port", str(a.port), "--client-id", str(a.client_id), "--timeout-s", str(a.timeout_s), "--run-id", run_id, "--lookback-min", str(a.lookback_min)],
+        [
+            "--host",
+            a.host,
+            "--port",
+            str(a.port),
+            "--client-id",
+            str(a.client_id),
+            "--timeout-s",
+            str(a.timeout_s),
+            "--run-id",
+            run_id,
+            "--lookback-min",
+            str(a.lookback_min),
+        ],
     )
 
     # reconcile v1b
     _run("args.wa.reconcile_paper_v1b", ["--run-id", run_id])
 
-    print(json.dumps({"ok": True, "run_id": run_id, "note": "stage5.1B done"}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"ok": True, "run_id": run_id, "note": "stage5.1B done"}, ensure_ascii=False
+        )
+    )
     return 0
 
 

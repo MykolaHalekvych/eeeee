@@ -55,11 +55,17 @@ def reconcile_sendplan_vs_exec(
         "run_id": run_id,
         "sendplan_path": str(sendplan_path),
         "exec_log_path": str(exec_log_path),
-        "counts": {"sendplan": len(send_keys), "exec_present": len(present), "exec_missing": len(missing)},
+        "counts": {
+            "sendplan": len(send_keys),
+            "exec_present": len(present),
+            "exec_missing": len(missing),
+        },
         "missing_send_keys": missing[:200],
     }
 
     if out_json_path is not None:
-        out_json_path.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        out_json_path.write_text(
+            json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     return out

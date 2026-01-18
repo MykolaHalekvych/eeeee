@@ -23,7 +23,12 @@ def main() -> int:
     if res.missing_paths:
         for p in res.missing_paths:
             print(" -", p)
-    print("UNKNOWN_TOP_LEVEL_KEYS:", ", ".join(res.unknown_top_level_keys) if res.unknown_top_level_keys else "(none)")
+    print(
+        "UNKNOWN_TOP_LEVEL_KEYS:",
+        ", ".join(res.unknown_top_level_keys)
+        if res.unknown_top_level_keys
+        else "(none)",
+    )
 
     return 0 if res.ok else 2
 

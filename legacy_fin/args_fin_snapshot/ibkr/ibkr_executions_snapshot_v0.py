@@ -7,14 +7,19 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 SCHEMA_VERSION = "ibkr_executions_snapshot_v0"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -57,9 +62,13 @@ class _App:
                     {
                         "ts": _utc_now_z(),
                         "reqId": reqId,
-                        "code": int(errorCode) if str(errorCode).lstrip("-").isdigit() else errorCode,
+                        "code": int(errorCode)
+                        if str(errorCode).lstrip("-").isdigit()
+                        else errorCode,
                         "msg": str(errorString),
-                        "advanced": str(advancedOrderRejectJson) if isinstance(advancedOrderRejectJson, str) else "",
+                        "advanced": str(advancedOrderRejectJson)
+                        if isinstance(advancedOrderRejectJson, str)
+                        else "",
                     }
                 )
 
@@ -87,7 +96,9 @@ class _App:
 
         self._app = App(self)
 
-    def run(self, *, lookback_minutes: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def run(
+        self, *, lookback_minutes: int
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         from ibapi.execution import ExecutionFilter  # type: ignore
 
         self._app.connect(self._ep.host, int(self._ep.port), int(self._ep.client_id))
@@ -126,14 +137,24 @@ def main() -> int:
     ap.add_argument("--client-id", type=int, default=17)
     ap.add_argument("--timeout-s", type=float, default=20.0)
     ap.add_argument("--run-id", default="")
-    ap.add_argument("--lookback-min", type=int, default=1440, help="Lookback minutes for executions filter.")
+    ap.add_argument(
+        "--lookback-min",
+        type=int,
+        default=1440,
+        help="Lookback minutes for executions filter.",
+    )
     a = ap.parse_args()
 
     repo_root = Path(__file__).resolve().parents[2]
     tag = str(a.run_id).strip() or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_path = repo_root / "args" / "data" / f"ibkr_executions_{tag}.jsonl"
 
-    ep = Endpoint(host=str(a.host), port=int(a.port), client_id=int(a.client_id), timeout_s=float(a.timeout_s))
+    ep = Endpoint(
+        host=str(a.host),
+        port=int(a.port),
+        client_id=int(a.client_id),
+        timeout_s=float(a.timeout_s),
+    )
     rows, errors = _App(ep).run(lookback_minutes=int(a.lookback_min))
 
     header = {
@@ -146,11 +167,35 @@ def main() -> int:
     }
     lines = [json.dumps(header, ensure_ascii=False, sort_keys=True)]
     for r in rows:
-        lines.append(json.dumps({"kind": "IBKR_EXECUTION", **r}, ensure_ascii=False, sort_keys=True))
-    lines.append(json.dumps({"kind": "IBKR_EXECUTIONS_SNAPSHOT_END", "ts_utc": _utc_now_z(), "count": len(rows)}, ensure_ascii=False, sort_keys=True))
+        lines.append(
+            json.dumps(
+                {"kind": "IBKR_EXECUTION", **r}, ensure_ascii=False, sort_keys=True
+            )
+        )
+    lines.append(
+        json.dumps(
+            {
+                "kind": "IBKR_EXECUTIONS_SNAPSHOT_END",
+                "ts_utc": _utc_now_z(),
+                "count": len(rows),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
     _atomic_write_text(out_path, "\n".join(lines) + "\n")
-    print(json.dumps({"ok": True, "out_path": str(out_path), "executions": len(rows), "errors": len(errors)}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "out_path": str(out_path),
+                "executions": len(rows),
+                "errors": len(errors),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

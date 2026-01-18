@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -71,14 +70,20 @@ def _extract_summary(payload: Dict[str, Any]) -> HealthSummary:
 
     stale_locks = _as_int(payload.get("locks", {}).get("stale_count", 0), 0)
 
-    main_red_flags = _as_int(payload.get("logs", {}).get("main", {}).get("red_flag_hits", 0), 0)
-    cycle_red_flags = _as_int(payload.get("logs", {}).get("cycle", {}).get("red_flag_hits", 0), 0)
+    main_red_flags = _as_int(
+        payload.get("logs", {}).get("main", {}).get("red_flag_hits", 0), 0
+    )
+    cycle_red_flags = _as_int(
+        payload.get("logs", {}).get("cycle", {}).get("red_flag_hits", 0), 0
+    )
 
     proc_total = _as_int(payload.get("processes", {}).get("total_count", 0), 0)
 
     task_wrapper_exists = None
     try:
-        task_wrapper_exists = payload.get("tasks", {}).get("wrapper", {}).get("exists", None)
+        task_wrapper_exists = (
+            payload.get("tasks", {}).get("wrapper", {}).get("exists", None)
+        )
     except Exception:
         task_wrapper_exists = None
 
@@ -183,7 +188,9 @@ def render_ops_watchdog_tab() -> None:
     st.subheader("Stage 7 — Ops Watchdog")
 
     # Operator gate (safe-by-default)
-    operator_mode = st.checkbox("Operator mode (safe controls)", value=False, key="stage7_operator_mode")
+    operator_mode = st.checkbox(
+        "Operator mode (safe controls)", value=False, key="stage7_operator_mode"
+    )
 
     # Quick actions
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
@@ -281,7 +288,14 @@ def render_ops_watchdog_tab() -> None:
         )
 
     with st.expander("ops_watchdog.log tail", expanded=False):
-        max_lines = st.number_input("Tail lines", min_value=20, max_value=400, value=120, step=10, key="stage7_tail_lines")
+        max_lines = st.number_input(
+            "Tail lines",
+            min_value=20,
+            max_value=400,
+            value=120,
+            step=10,
+            key="stage7_tail_lines",
+        )
         txt = _tail_text_file(WATCHDOG_LOG_PATH, max_lines=int(max_lines))
         if not txt:
             st.info("No log content found (or file missing).")

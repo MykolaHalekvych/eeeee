@@ -7,7 +7,14 @@ from typing import Any, Dict, List, Optional
 # Controlled test flag (OFF by default).
 # To enable: set ARGS_TEST_ENTRY_ORDER=1 in environment OR manually toggle in code.
 import os
-TEST_ENTRY_ORDER = os.environ.get("ARGS_TEST_ENTRY_ORDER", "").strip() in {"1", "true", "TRUE", "yes", "YES"}
+
+TEST_ENTRY_ORDER = os.environ.get("ARGS_TEST_ENTRY_ORDER", "").strip() in {
+    "1",
+    "true",
+    "TRUE",
+    "yes",
+    "YES",
+}
 
 
 @dataclass(frozen=True)
@@ -20,7 +27,9 @@ class WAAction:
         return {"action": self.action, "reason": self.reason, "notes": dict(self.notes)}
 
 
-def decide_wa_action(ma_decision: Optional[str], violations: List[Dict[str, Any]]) -> WAAction:
+def decide_wa_action(
+    ma_decision: Optional[str], violations: List[Dict[str, Any]]
+) -> WAAction:
     d = (ma_decision or "UNKNOWN").strip().upper().replace("-", "_")
 
     v_ids: List[str] = []
@@ -51,7 +60,11 @@ def decide_wa_action(ma_decision: Optional[str], violations: List[Dict[str, Any]
         )
 
     if d == "ALLOW":
-        notes: Dict[str, Any] = {"ma_decision": d, "violation_rule_ids": v_ids, "intent": "ALLOW"}
+        notes: Dict[str, Any] = {
+            "ma_decision": d,
+            "violation_rule_ids": v_ids,
+            "intent": "ALLOW",
+        }
 
         # Controlled test-only order injection (OFF by default)
         if TEST_ENTRY_ORDER:

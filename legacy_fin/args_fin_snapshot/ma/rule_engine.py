@@ -15,7 +15,7 @@ Safety:
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Mapping, Tuple
 
 
 @dataclass(frozen=True)

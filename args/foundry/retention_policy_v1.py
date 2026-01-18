@@ -51,19 +51,17 @@ def load_retention_policy_v1(policy_path: str) -> RetentionPolicyV1:
 
     return RetentionPolicyV1(
         artifact_root=str(_req(data, "artifact_root")),
-
         releases_dir=str(_req(dist, "releases_dir")),
         keep_last_per_product=int(_req(dist, "keep_last_per_product")),
         pinned_release_ids=list(dist.get("pinned_release_ids", []) or []),
-
         runs_dir=str(_req(runs, "runs_dir")),
         keep_last_pass=int(_req(runs, "keep_last_pass")),
         keep_days_fail_infra=int(_req(runs, "keep_days_fail_infra")),
         keep_run_ids=list(runs.get("keep_run_ids", []) or []),
-
         tmp_dir=str(_req(tmp, "tmp_dir")),
         max_age_days=int(_req(tmp, "max_age_days")),
-
-        require_paths_under_artifact_root=bool(safety.get("require_paths_under_artifact_root", True)),
+        require_paths_under_artifact_root=bool(
+            safety.get("require_paths_under_artifact_root", True)
+        ),
         dryrun_default=bool(safety.get("dryrun_default", True)),
     )

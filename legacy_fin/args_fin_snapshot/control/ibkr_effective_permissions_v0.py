@@ -28,7 +28,9 @@ def _read_control_state() -> Dict[str, Any]:
     if not CONTROL_STATE_PATH.exists():
         return {}
     try:
-        obj = json.loads(CONTROL_STATE_PATH.read_text(encoding="utf-8-sig", errors="replace"))
+        obj = json.loads(
+            CONTROL_STATE_PATH.read_text(encoding="utf-8-sig", errors="replace")
+        )
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
@@ -76,13 +78,21 @@ def _stage5_override_allows(rec: Dict[str, Any]) -> bool:
     except Exception:
         lmt = None
 
-    if action == "BUY" and otype == "LMT" and qty == 1.0 and lmt is not None and lmt <= max_lmt:
+    if (
+        action == "BUY"
+        and otype == "LMT"
+        and qty == 1.0
+        and lmt is not None
+        and lmt <= max_lmt
+    ):
         return True
 
     return False
 
 
-def compute_effective_permissions(exec_mode: str, run_mode: str) -> EffectivePermissions:
+def compute_effective_permissions(
+    exec_mode: str, run_mode: str
+) -> EffectivePermissions:
     em = _u(exec_mode)
     rm = _u(run_mode)
 
@@ -150,11 +160,16 @@ def compute_effective_permissions(exec_mode: str, run_mode: str) -> EffectivePer
     )
 
 
-def allowed_sendplan_record(perms: EffectivePermissions, rec: Dict[str, Any]) -> Tuple[bool, str]:
+def allowed_sendplan_record(
+    perms: EffectivePermissions, rec: Dict[str, Any]
+) -> Tuple[bool, str]:
     kind = _u(rec.get("kind"))
 
     if kind == "SENDPLAN_CANCEL_ALL":
-        return (bool(perms.allow_cancel_all), "CANCEL_ALL_ALLOWED" if perms.allow_cancel_all else "CANCEL_ALL_BLOCKED")
+        return (
+            bool(perms.allow_cancel_all),
+            "CANCEL_ALL_ALLOWED" if perms.allow_cancel_all else "CANCEL_ALL_BLOCKED",
+        )
 
     if kind == "SENDPLAN_ORDER":
         # Stage5 override can allow a very strict test ENTRY even in NO_TRADE.

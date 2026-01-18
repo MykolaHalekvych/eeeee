@@ -15,7 +15,13 @@ def _latest_report() -> Optional[Path]:
     if not LOGS_DIR.exists():
         return None
     reports = sorted(
-        [p for p in LOGS_DIR.iterdir() if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")],
+        [
+            p
+            for p in LOGS_DIR.iterdir()
+            if p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
+        ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )

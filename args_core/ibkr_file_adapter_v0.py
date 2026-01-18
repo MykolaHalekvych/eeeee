@@ -88,6 +88,7 @@ def parse_open_orders_snapshot(path: Path) -> Dict[str, Dict[str, Any]]:
 
 class JsonlTailer:
     """Byte-offset tailer with persisted cursor (restart-safe)."""
+
     def __init__(self, path: Path, cursor_path: Path) -> None:
         self.path = path
         self.cursor_path = cursor_path
@@ -118,7 +119,9 @@ class JsonlTailer:
                     pass
             self.cursor = f.tell()
 
-        atomic_write_json(self.cursor_path, {"path": str(self.path), "cursor": self.cursor})
+        atomic_write_json(
+            self.cursor_path, {"path": str(self.path), "cursor": self.cursor}
+        )
         return out
 
 
@@ -153,7 +156,9 @@ class IbkrFileAdapterV0(BrokerAdapter):
 
         self._tailer: Optional[JsonlTailer] = None
         if events_jsonl_path is not None:
-            cursor = events_cursor_path or (repo_root / "args" / "data" / "ibkr_events.cursor.json")
+            cursor = events_cursor_path or (
+                repo_root / "args" / "data" / "ibkr_events.cursor.json"
+            )
             self._tailer = JsonlTailer(events_jsonl_path, cursor)
 
     def connect(self) -> None:
@@ -162,7 +167,9 @@ class IbkrFileAdapterV0(BrokerAdapter):
     def is_connected(self) -> bool:
         return self._connected
 
-    def place_order(self, order_id: int, order: OrderSpec, client_order_id: str) -> None:
+    def place_order(
+        self, order_id: int, order: OrderSpec, client_order_id: str
+    ) -> None:
         raise RuntimeError("IbkrFileAdapterV0 is READ-ONLY (place_order forbidden)")
 
     def cancel_order(self, order_id: int) -> None:
@@ -246,7 +253,11 @@ class IbkrFileAdapterV0(BrokerAdapter):
             # force filled_qty=0 to avoid double-count (terminal marker only).
             if typ == "ORDER_STATUS":
                 st = str(r.get("status", "")).lower()
-                if st == "filled" and ev.event_type == EventType.FILL and ev.filled_qty != 0.0:
+                if (
+                    st == "filled"
+                    and ev.event_type == EventType.FILL
+                    and ev.filled_qty != 0.0
+                ):
                     ev = BrokerEvent(
                         ev.event_type,
                         ev.order_id,

@@ -3,17 +3,21 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 
 SCHEMA_VERSION = "reconcile_paper_v1"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _read_jsonl_dicts(path: Path) -> List[Dict[str, Any]]:
@@ -36,12 +40,16 @@ def _read_jsonl_dicts(path: Path) -> List[Dict[str, Any]]:
 def _atomic_write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
     tmp.replace(path)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Reconcile paper run artifacts vs IBKR snapshots.")
+    ap = argparse.ArgumentParser(
+        description="Reconcile paper run artifacts vs IBKR snapshots."
+    )
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--data-dir", default="")
     a = ap.parse_args()
@@ -53,7 +61,9 @@ def main() -> int:
 
     sent_path = data_dir / f"sent_orders_{run_id}.jsonl"
     exec_path = data_dir / f"orders_exec_{run_id}.jsonl"
-    open_orders_path = data_dir / "ibkr_open_orders_stage5.jsonl"  # default used in your Stage5
+    open_orders_path = (
+        data_dir / "ibkr_open_orders_stage5.jsonl"
+    )  # default used in your Stage5
     positions_path = data_dir / f"ibkr_positions_{run_id}.jsonl"
     executions_path = data_dir / f"ibkr_executions_{run_id}.jsonl"
 
@@ -64,8 +74,15 @@ def main() -> int:
     exe = _read_jsonl_dicts(executions_path)
 
     # Extract submitted orders from exec log
-    submitted = [r for r in ex if str(r.get("status") or "").upper() == "SUBMITTED" and r.get("order_id") is not None]
-    submitted_ids = {int(r["order_id"]) for r in submitted if str(r.get("order_id")).isdigit()}
+    submitted = [
+        r
+        for r in ex
+        if str(r.get("status") or "").upper() == "SUBMITTED"
+        and r.get("order_id") is not None
+    ]
+    submitted_ids = {
+        int(r["order_id"]) for r in submitted if str(r.get("order_id")).isdigit()
+    }
 
     # Open orders snapshot contains start/end markers + openOrder rows depending on snapshotter implementation.
     open_order_ids = set()
@@ -127,7 +144,12 @@ def main() -> int:
     out_path = data_dir / f"reconcile_report_{run_id}.json"
     _atomic_write_json(out_path, report)
 
-    print(json.dumps({"ok": True, "status": report["status"], "out_path": str(out_path)}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"ok": True, "status": report["status"], "out_path": str(out_path)},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

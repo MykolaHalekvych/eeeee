@@ -1,11 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from args.wa.order_intents_v1 import build_order_intents
-from args.wa.wa_order_gateway_v1 import append_jsonl, decide_intent, enforce_mode_gate, iter_jsonl
+from args.wa.wa_order_gateway_v1 import (
+    append_jsonl,
+    decide_intent,
+    enforce_mode_gate,
+    iter_jsonl,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
@@ -13,7 +18,7 @@ LOGS_DIR = REPO_ROOT / "args" / "logs"
 
 # DEBUG (OFF by default). Enable only for proofs.
 DEBUG_FORCE_ACTION = ""  # e.g. "ENTER_LONG"
-DEBUG_FORCE_KIND = ""    # e.g. "INTENT_ORDER"
+DEBUG_FORCE_KIND = ""  # e.g. "INTENT_ORDER"
 
 
 def _latest_report() -> Optional[Path]:
@@ -23,7 +28,9 @@ def _latest_report() -> Optional[Path]:
         [
             p
             for p in LOGS_DIR.iterdir()
-            if p.is_file() and p.name.startswith("run_report_") and p.name.endswith("_paper.json")
+            if p.is_file()
+            and p.name.startswith("run_report_")
+            and p.name.endswith("_paper.json")
         ],
         key=lambda x: x.stat().st_mtime,
         reverse=True,
@@ -139,26 +146,28 @@ def main() -> int:
 
     # Stage 4.3: Contract artifact (order_intents_<run_id>.jsonl)
     order_intents_path = DATA_DIR / f"order_intents_{run_id}.jsonl"
-    oi = build_order_intents(run_report=report, raw_intents_path=out_intents, out_path=order_intents_path, source="wa_v1")
+    oi = build_order_intents(
+        run_report=report,
+        raw_intents_path=out_intents,
+        out_path=order_intents_path,
+        source="wa_v1",
+    )
 
     summary = {
         "latest_report": str(rp),
         "run_id": run_id,
         "orders_in": str(orders_file),
-
         "orders_in_total": total,
         "intent_none": n_none,
         "intent_order": n_order,
         "intent_cancel_all": n_cancel,
         "gated_total": n_gated,
-
         "out_intents": str(out_intents),
         "order_intents_out": str(order_intents_path),
         "order_intents_total": oi.get("total"),
         "order_intents_allowed": oi.get("allowed"),
         "order_intents_none": oi.get("none"),
         "order_intents_gated": oi.get("gated"),
-
         "debug_force_action": DEBUG_FORCE_ACTION,
         "debug_force_kind": DEBUG_FORCE_KIND,
     }
@@ -170,5 +179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

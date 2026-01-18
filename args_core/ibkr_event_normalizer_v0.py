@@ -51,7 +51,9 @@ def _norm_type(rec: Dict[str, Any]) -> str:
 
 def _ts(rec: Dict[str, Any]) -> str:
     # Prefer tap timestamp; else stable placeholder.
-    ts = _s(_get(rec, "ts_utc", "tsUtc", "ts", "ingest_ts_utc", "ingestTsUtc", default=""))
+    ts = _s(
+        _get(rec, "ts_utc", "tsUtc", "ts", "ingest_ts_utc", "ingestTsUtc", default="")
+    )
     return ts or "1970-01-01T00:00:00Z"
 
 
@@ -116,7 +118,15 @@ def normalize_ibkr_record(rec: Dict[str, Any]) -> Optional[BrokerEvent]:
     if not symbol and isinstance(rec.get("contract"), dict):
         symbol = _s(rec["contract"].get("symbol"))
 
-    client_order_id = _s(_get(rec, "client_order_id", "clientOrderId", "clientOrderID", default=f"oid_{order_id}"))
+    client_order_id = _s(
+        _get(
+            rec,
+            "client_order_id",
+            "clientOrderId",
+            "clientOrderID",
+            default=f"oid_{order_id}",
+        )
+    )
     ts_utc = _ts(rec)
 
     status = _s(_get(rec, "status", "orderStatus", default=""))
@@ -124,20 +134,58 @@ def normalize_ibkr_record(rec: Dict[str, Any]) -> Optional[BrokerEvent]:
 
     # -------- ORDER_STATUS --------
     if typ == "ORDER_STATUS":
-        remaining = _to_float(_get(rec, "remaining", "remaining_qty", "remainingQty", default=0.0), 0.0)
+        remaining = _to_float(
+            _get(rec, "remaining", "remaining_qty", "remainingQty", default=0.0), 0.0
+        )
 
         if status in {"PreSubmitted", "Submitted"}:
-            return BrokerEvent(EventType.ACK, order_id, client_order_id, symbol, 0.0, remaining, None, ts_utc)
+            return BrokerEvent(
+                EventType.ACK,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                remaining,
+                None,
+                ts_utc,
+            )
 
         if status_l in {"cancelled", "canceled"}:
-            return BrokerEvent(EventType.CANCELLED, order_id, client_order_id, symbol, 0.0, remaining, "cancelled", ts_utc)
+            return BrokerEvent(
+                EventType.CANCELLED,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                remaining,
+                "cancelled",
+                ts_utc,
+            )
 
         if status_l in {"inactive", "rejected"}:
-            return BrokerEvent(EventType.REJECT, order_id, client_order_id, symbol, 0.0, remaining, status, ts_utc)
+            return BrokerEvent(
+                EventType.REJECT,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                remaining,
+                status,
+                ts_utc,
+            )
 
         if status_l == "filled":
             # Terminal marker only (no delta)
-            return BrokerEvent(EventType.FILL, order_id, client_order_id, symbol, 0.0, 0.0, "filled", ts_utc)
+            return BrokerEvent(
+                EventType.FILL,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                0.0,
+                "filled",
+                ts_utc,
+            )
 
         return None
 
@@ -151,7 +199,16 @@ def normalize_ibkr_record(rec: Dict[str, Any]) -> Optional[BrokerEvent]:
         reason = _reason_from_exec_id(exec_id)
 
         # remaining patched by adapter cache
-        return BrokerEvent(EventType.FILL, order_id, client_order_id, symbol, shares, 0.0, reason, ts_utc)
+        return BrokerEvent(
+            EventType.FILL,
+            order_id,
+            client_order_id,
+            symbol,
+            shares,
+            0.0,
+            reason,
+            ts_utc,
+        )
 
     # -------- ERROR --------
     if typ in {"ERROR", "IB_ERROR"}:
@@ -163,24 +220,64 @@ def normalize_ibkr_record(rec: Dict[str, Any]) -> Optional[BrokerEvent]:
             return None
 
         if code in {201, 202}:
-            return BrokerEvent(EventType.REJECT, order_id, client_order_id, symbol, 0.0, 0.0, f"ib_error:{code}:{msg}", ts_utc)
+            return BrokerEvent(
+                EventType.REJECT,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                0.0,
+                f"ib_error:{code}:{msg}",
+                ts_utc,
+            )
 
         if code == 399 and "reject" in msg.lower():
-            return BrokerEvent(EventType.REJECT, order_id, client_order_id, symbol, 0.0, 0.0, f"ib_error:{code}:{msg}", ts_utc)
+            return BrokerEvent(
+                EventType.REJECT,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                0.0,
+                f"ib_error:{code}:{msg}",
+                ts_utc,
+            )
 
         if "reject" in msg.lower():
-            return BrokerEvent(EventType.REJECT, order_id, client_order_id, symbol, 0.0, 0.0, f"ib_error:{code}:{msg}", ts_utc)
+            return BrokerEvent(
+                EventType.REJECT,
+                order_id,
+                client_order_id,
+                symbol,
+                0.0,
+                0.0,
+                f"ib_error:{code}:{msg}",
+                ts_utc,
+            )
 
         return None
 
     # -------- Generic FILL (unit tests / misc) --------
     if "FILL" in typ:
-        filled = _to_float(_get(rec, "filled", "filled_qty", "filledQty", "cumQty", default=0.0), 0.0)
-        remaining = _to_float(_get(rec, "remaining", "remaining_qty", "remainingQty", default=0.0), 0.0)
+        filled = _to_float(
+            _get(rec, "filled", "filled_qty", "filledQty", "cumQty", default=0.0), 0.0
+        )
+        remaining = _to_float(
+            _get(rec, "remaining", "remaining_qty", "remainingQty", default=0.0), 0.0
+        )
 
         # If caller provided a reason-like field, keep it; else None.
         reason = _s(_get(rec, "reason", "fill_reason", default="")) or None
-        return BrokerEvent(EventType.FILL, order_id, client_order_id, symbol, filled, remaining, reason, ts_utc)
+        return BrokerEvent(
+            EventType.FILL,
+            order_id,
+            client_order_id,
+            symbol,
+            filled,
+            remaining,
+            reason,
+            ts_utc,
+        )
 
     # informational
     if typ == "OPEN_ORDER":
@@ -188,13 +285,40 @@ def normalize_ibkr_record(rec: Dict[str, Any]) -> Optional[BrokerEvent]:
 
     # fallback: status-only (rare)
     if status_l == "filled":
-        return BrokerEvent(EventType.FILL, order_id, client_order_id, symbol, 0.0, 0.0, "filled", ts_utc)
+        return BrokerEvent(
+            EventType.FILL,
+            order_id,
+            client_order_id,
+            symbol,
+            0.0,
+            0.0,
+            "filled",
+            ts_utc,
+        )
     if status_l in {"cancelled", "canceled"}:
         rem = _to_float(_get(rec, "remaining", default=0.0), 0.0)
-        return BrokerEvent(EventType.CANCELLED, order_id, client_order_id, symbol, 0.0, rem, "cancelled", ts_utc)
+        return BrokerEvent(
+            EventType.CANCELLED,
+            order_id,
+            client_order_id,
+            symbol,
+            0.0,
+            rem,
+            "cancelled",
+            ts_utc,
+        )
     if status_l in {"inactive", "rejected"}:
         rem = _to_float(_get(rec, "remaining", default=0.0), 0.0)
-        return BrokerEvent(EventType.REJECT, order_id, client_order_id, symbol, 0.0, rem, status, ts_utc)
+        return BrokerEvent(
+            EventType.REJECT,
+            order_id,
+            client_order_id,
+            symbol,
+            0.0,
+            rem,
+            status,
+            ts_utc,
+        )
 
     return None
 

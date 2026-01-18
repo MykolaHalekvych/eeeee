@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -38,7 +37,13 @@ class LockFile:
         try:
             fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"pid": os.getpid(), "ts_utc": utc_now_iso()}, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {"pid": os.getpid(), "ts_utc": utc_now_iso()},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             self.acquired = True
             return True
         except FileExistsError:
@@ -49,7 +54,11 @@ class LockFile:
             return
         try:
             self.path.write_text(
-                json.dumps({"pid": os.getpid(), "heartbeat_utc": utc_now_iso()}, ensure_ascii=False) + "\n",
+                json.dumps(
+                    {"pid": os.getpid(), "heartbeat_utc": utc_now_iso()},
+                    ensure_ascii=False,
+                )
+                + "\n",
                 encoding="utf-8",
             )
         except Exception:
@@ -72,8 +81,12 @@ def setup_logger(log_path: Path) -> logging.Logger:
     logger.handlers.clear()
     logger.propagate = False
 
-    fmt = logging.Formatter("%(asctime)sZ %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
-    fh = RotatingFileHandler(str(log_path), maxBytes=5 * 1024 * 1024, backupCount=10, encoding="utf-8")
+    fmt = logging.Formatter(
+        "%(asctime)sZ %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
+    )
+    fh = RotatingFileHandler(
+        str(log_path), maxBytes=5 * 1024 * 1024, backupCount=10, encoding="utf-8"
+    )
     fh.setFormatter(fmt)
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
@@ -110,10 +123,19 @@ def main() -> int:
 
     # ---- Stage7 standard additions ----
     # lock override for evidence/chaos runs (isolates from live loop)
-    ap.add_argument("--lock-path", default="", help="Override lock file path (useful for tests/evidence).")
+    ap.add_argument(
+        "--lock-path",
+        default="",
+        help="Override lock file path (useful for tests/evidence).",
+    )
 
     # Backward-compat knob (ignored by standard). Kept to not break existing callers.
-    ap.add_argument("--locked-exit-code", type=int, default=0, help="(ignored) Stage7 standard always exits 0 on LOCKED.")
+    ap.add_argument(
+        "--locked-exit-code",
+        type=int,
+        default=0,
+        help="(ignored) Stage7 standard always exits 0 on LOCKED.",
+    )
 
     args = ap.parse_args()
 
@@ -124,12 +146,19 @@ def main() -> int:
 
     logger = setup_logger(repo / args.log_out)
 
-    lock_path = Path(args.lock_path) if str(args.lock_path).strip() else (repo / args.lock_out)
+    lock_path = (
+        Path(args.lock_path) if str(args.lock_path).strip() else (repo / args.lock_out)
+    )
     lock = LockFile(lock_path, stale_after_s=args.lock_stale_s)
 
     # ---- Stage7 standard: LOCKED is OK (exit 0) ----
     if not lock.acquire():
-        print(json.dumps({"ok": True, "reason": "LOCKED", "lock": str(lock_path)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"ok": True, "reason": "LOCKED", "lock": str(lock_path)},
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     started = time.time()
@@ -138,21 +167,28 @@ def main() -> int:
     health_path = repo / args.health_out
     _ensure_dir(health_path.parent)
 
-    def _final_health(mode: str, loops: int, run_id: str, eng: Engine, last_err: Optional[str]) -> None:
-        atomic_write_json(health_path, {
-            "schema": "ops_health_v1",
-            "ts_utc": utc_now_iso(),
-            "ok": True if mode in {"DONE", "STOPPED", "INTERRUPTED"} and not last_err else False,
-            "mode": mode,
-            "loops": loops,
-            "run_id": run_id,
-            "uptime_s": round(time.time() - started, 3),
-            "stop_flag": stop_flag.exists(),
-            "safe_mode": safe_flag.exists(),
-            "events_seen": eng.state.counters.get("events_seen"),
-            "reconcile_ratio": eng.state.reconcile_last_ratio,
-            "last_error": last_err,
-        })
+    def _final_health(
+        mode: str, loops: int, run_id: str, eng: Engine, last_err: Optional[str]
+    ) -> None:
+        atomic_write_json(
+            health_path,
+            {
+                "schema": "ops_health_v1",
+                "ts_utc": utc_now_iso(),
+                "ok": True
+                if mode in {"DONE", "STOPPED", "INTERRUPTED"} and not last_err
+                else False,
+                "mode": mode,
+                "loops": loops,
+                "run_id": run_id,
+                "uptime_s": round(time.time() - started, 3),
+                "stop_flag": stop_flag.exists(),
+                "safe_mode": safe_flag.exists(),
+                "events_seen": eng.state.counters.get("events_seen"),
+                "reconcile_ratio": eng.state.reconcile_last_ratio,
+                "last_error": last_err,
+            },
+        )
 
     try:
         # Control plane path
@@ -180,14 +216,20 @@ def main() -> int:
         adapter.connect()
 
         run_id = f"soak_stage7_{int(time.time())}"
-        eng = Engine(repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter)
+        eng = Engine(
+            repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter
+        )
 
         # Adopt a known live order (safe)
         intent_id = f"adopt_{args.adopt_order_id}"
         eng.adopt_order(
             intent_id=intent_id,
             order_id=int(args.adopt_order_id),
-            order=OrderSpec(symbol=args.adopt_symbol, side=args.adopt_side, qty=float(args.adopt_qty)),
+            order=OrderSpec(
+                symbol=args.adopt_symbol,
+                side=args.adopt_side,
+                qty=float(args.adopt_qty),
+            ),
             client_order_id=f"oid_{args.adopt_order_id}",
             remaining_qty=float(args.adopt_qty),
         )
@@ -204,11 +246,23 @@ def main() -> int:
                 if stop_flag.exists():
                     logger.warning("stop.flag detected -> exiting (fail-closed)")
                     _final_health("STOPPED", loops, run_id, eng, last_err)
-                    print(json.dumps({"ok": True, "reason": "STOP_FLAG", "loops": loops, "health": str(health_path)}, ensure_ascii=False))
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "reason": "STOP_FLAG",
+                                "loops": loops,
+                                "health": str(health_path),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
                     return 0
 
                 if safe_flag.exists():
-                    logger.warning("safe_mode.flag detected -> SAFE_MODE (read-only loop)")
+                    logger.warning(
+                        "safe_mode.flag detected -> SAFE_MODE (read-only loop)"
+                    )
 
                 try:
                     eng.step()
@@ -253,11 +307,31 @@ def main() -> int:
         except KeyboardInterrupt:
             logger.warning("KeyboardInterrupt -> graceful stop")
             _final_health("INTERRUPTED", loops, run_id, eng, last_err)
-            print(json.dumps({"ok": True, "reason": "INTERRUPTED", "loops": loops, "health": str(health_path)}, ensure_ascii=False))
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "reason": "INTERRUPTED",
+                        "loops": loops,
+                        "health": str(health_path),
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0
 
         _final_health("DONE", loops, run_id, eng, last_err)
-        print(json.dumps({"ok": True, "reason": "DONE", "loops": loops, "health": str(health_path)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "reason": "DONE",
+                    "loops": loops,
+                    "health": str(health_path),
+                },
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     finally:

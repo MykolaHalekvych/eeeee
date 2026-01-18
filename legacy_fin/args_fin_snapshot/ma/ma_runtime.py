@@ -115,7 +115,15 @@ def _extract_pos_from_position_state(position_state: Any) -> float:
         return 0.0
 
     if isinstance(position_state, Mapping):
-        for k in ("pos", "net_pos", "size", "position", "position_qty", "qty", "net_qty"):
+        for k in (
+            "pos",
+            "net_pos",
+            "size",
+            "position",
+            "position_qty",
+            "qty",
+            "net_qty",
+        ):
             if k in position_state:
                 try:
                     return float(position_state.get(k) or 0.0)
@@ -123,7 +131,15 @@ def _extract_pos_from_position_state(position_state: Any) -> float:
                     return 0.0
         return 0.0
 
-    for attr in ("pos", "net_pos", "size", "position", "position_qty", "qty", "net_qty"):
+    for attr in (
+        "pos",
+        "net_pos",
+        "size",
+        "position",
+        "position_qty",
+        "qty",
+        "net_qty",
+    ):
         if hasattr(position_state, attr):
             try:
                 return float(getattr(position_state, attr) or 0.0)
@@ -224,7 +240,9 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(enforce, list):
                 enforce = []
 
-            enforce_clean = [str(x).strip() for x in enforce if isinstance(x, str) and x.strip()]
+            enforce_clean = [
+                str(x).strip() for x in enforce if isinstance(x, str) and x.strip()
+            ]
 
             v = Violation(
                 rule_id=rid,
@@ -247,7 +265,9 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
         ma_decision_raw = "UNKNOWN"
 
     # 3) Enforcement + Risk envelope (single computation; no overwrites)
-    enforced_no_trade = ("NO_TRADE" in enforce_flags) or (ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"})
+    enforced_no_trade = ("NO_TRADE" in enforce_flags) or (
+        ma_decision_raw in {"UNKNOWN", "NO_TRADE", "EXIT"}
+    )
 
     ps = ctx.get("position_state", {})
     pos_val = _extract_pos_from_position_state(ps)
@@ -263,7 +283,11 @@ def eval_ma(policy: Policy, ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     # Minimal observability invariant (does not change decisions)
     mode_invariant_ok = True
-    if (not enforced_no_trade) and (exec_global_mode in _VALID_GLOBAL_MODES) and (mode != exec_global_mode):
+    if (
+        (not enforced_no_trade)
+        and (exec_global_mode in _VALID_GLOBAL_MODES)
+        and (mode != exec_global_mode)
+    ):
         mode_invariant_ok = False
 
     risk_envelope = {

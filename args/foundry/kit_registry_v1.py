@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # Exit codes (project standard)
 # ----------------------------
 RC_OK = 0
-RC_FAIL = 1       # user / validation failure
-RC_INFRA = 2      # file / json / unexpected infra failure
+RC_FAIL = 1  # user / validation failure
+RC_INFRA = 2  # file / json / unexpected infra failure
 
 
 def eprint(msg: str) -> None:
@@ -31,7 +31,9 @@ def read_json_file(path: Path) -> Any:
 def load_registry(path: Path) -> Dict[str, Any]:
     obj = read_json_file(path)
     if not isinstance(obj, dict) or obj.get("schema") != "kits_registry_v1":
-        raise ValueError("invalid kits registry schema (expected schema=kits_registry_v1)")
+        raise ValueError(
+            "invalid kits registry schema (expected schema=kits_registry_v1)"
+        )
     kits = obj.get("kits")
     if not isinstance(kits, list):
         raise ValueError("kits must be a list")
@@ -86,16 +88,22 @@ def _print_kits_table(kits: List[Dict[str, Any]]) -> None:
     rows.sort(key=lambda r: r[0])
 
     w1 = max([len("kit_id")] + [len(r[0]) for r in rows]) if rows else len("kit_id")
-    w2 = max([len("default_product_id")] + [len(r[1]) for r in rows]) if rows else len("default_product_id")
+    w2 = (
+        max([len("default_product_id")] + [len(r[1]) for r in rows])
+        if rows
+        else len("default_product_id")
+    )
 
     print(f"{'kit_id'.ljust(w1)}  {'default_product_id'.ljust(w2)}  summary")
-    print(f"{'-'*w1}  {'-'*w2}  " + "-" * 40)
+    print(f"{'-' * w1}  {'-' * w2}  " + "-" * 40)
     for kit_id, default_pid, summary in rows:
         print(f"{kit_id.ljust(w1)}  {default_pid.ljust(w2)}  {summary}")
     print(f"\nTotal kits: {len(rows)}")
 
 
-def build_job_request_v1(kit: Dict[str, Any], product_id: str, summary: str) -> Dict[str, Any]:
+def build_job_request_v1(
+    kit: Dict[str, Any], product_id: str, summary: str
+) -> Dict[str, Any]:
     workspace = kit.get("workspace", {})
     allowed_paths = kit.get("allowed_paths", [])
     kit_id = kit.get("kit_id")
@@ -129,14 +137,14 @@ def build_job_request_v1(kit: Dict[str, Any], product_id: str, summary: str) -> 
             "cli_entry": cli_entry,
             "stdlib_only": stdlib_only,
         },
-        "requirements": {
-            "summary": summary
-        },
+        "requirements": {"summary": summary},
         "allowed_paths": allowed_paths,
     }
 
 
-def resolve_defaults(kit: Dict[str, Any], product_id_arg: Optional[str], summary_arg: Optional[str]) -> Tuple[str, str]:
+def resolve_defaults(
+    kit: Dict[str, Any], product_id_arg: Optional[str], summary_arg: Optional[str]
+) -> Tuple[str, str]:
     # product_id: arg overrides kit.default_product_id
     product_id = (product_id_arg or "").strip()
     if not product_id:
@@ -158,12 +166,26 @@ def resolve_defaults(kit: Dict[str, Any], product_id_arg: Optional[str], summary
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--kits", default="manifests/kits_v1.json", help="Path to kits registry JSON")
+    ap.add_argument(
+        "--kits", default="manifests/kits_v1.json", help="Path to kits registry JSON"
+    )
     ap.add_argument("--list", action="store_true", help="List available kits and exit")
-    ap.add_argument("--json", action="store_true", help="With --list: output JSON instead of table")
-    ap.add_argument("--kit-id", required=False, help="Kit id to generate job_request_v1")
-    ap.add_argument("--product-id", required=False, help="Override product_id (otherwise default_product_id from kit)")
-    ap.add_argument("--summary", required=False, help="Override summary (otherwise requirements_default.summary from kit)")
+    ap.add_argument(
+        "--json", action="store_true", help="With --list: output JSON instead of table"
+    )
+    ap.add_argument(
+        "--kit-id", required=False, help="Kit id to generate job_request_v1"
+    )
+    ap.add_argument(
+        "--product-id",
+        required=False,
+        help="Override product_id (otherwise default_product_id from kit)",
+    )
+    ap.add_argument(
+        "--summary",
+        required=False,
+        help="Override summary (otherwise requirements_default.summary from kit)",
+    )
 
     args = ap.parse_args(argv)
 
@@ -208,10 +230,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     product_id, summary = resolve_defaults(kit, args.product_id, args.summary)
 
     if not product_id:
-        eprint("FAIL: product_id missing (provide --product-id or set default_product_id in kit)")
+        eprint(
+            "FAIL: product_id missing (provide --product-id or set default_product_id in kit)"
+        )
         return RC_FAIL
     if not summary:
-        eprint("FAIL: summary missing (provide --summary or set requirements_default.summary in kit)")
+        eprint(
+            "FAIL: summary missing (provide --summary or set requirements_default.summary in kit)"
+        )
         return RC_FAIL
 
     try:

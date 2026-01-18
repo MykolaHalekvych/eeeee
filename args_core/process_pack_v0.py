@@ -79,7 +79,12 @@ def forensic(run_dir: Path) -> Dict[str, Any]:
 
 def _run(cmd: list[str], cwd: Path) -> Dict[str, Any]:
     p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
-    return {"cmd": cmd, "returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
+    return {
+        "cmd": cmd,
+        "returncode": p.returncode,
+        "stdout": p.stdout,
+        "stderr": p.stderr,
+    }
 
 
 def _run_git(repo: Path, *args: str) -> Dict[str, Any]:
@@ -101,14 +106,23 @@ def _git_status_porcelain(repo: Path) -> Dict[str, Any]:
             "error": f"git_status_failed rc={p['returncode']} stderr={err}",
             "returncode": int(p["returncode"]),
         }
-    return {"ok": True, "porcelain": (p["stdout"] or "").strip(), "error": None, "returncode": 0}
+    return {
+        "ok": True,
+        "porcelain": (p["stdout"] or "").strip(),
+        "error": None,
+        "returncode": 0,
+    }
 
 
 def _git_head(repo: Path) -> Dict[str, Any]:
     p = _run_git(repo, "rev-parse", "HEAD")
     if p["returncode"] != 0:
         err = (p["stderr"] or "").strip()
-        return {"ok": False, "head": "", "error": f"git_head_failed rc={p['returncode']} stderr={err}"}
+        return {
+            "ok": False,
+            "head": "",
+            "error": f"git_head_failed rc={p['returncode']} stderr={err}",
+        }
     return {"ok": True, "head": (p["stdout"] or "").strip(), "error": None}
 
 
@@ -168,7 +182,9 @@ def release(
     (rel_dir / "diff.patch").write_text(diff["stdout"], encoding="utf-8")
 
     # --- status evidence ---
-    (rel_dir / "git_status_porcelain.txt").write_text(st["porcelain"] or "", encoding="utf-8")
+    (rel_dir / "git_status_porcelain.txt").write_text(
+        st["porcelain"] or "", encoding="utf-8"
+    )
     if st["error"]:
         (rel_dir / "git_status_error.txt").write_text(st["error"], encoding="utf-8")
 
@@ -180,7 +196,7 @@ def release(
     if create_git_tag:
         # lightweight tag is enough; do not fail release if tag already exists
         ptag = _run_git(repo, "tag", tag)
-        tag_created = (ptag["returncode"] == 0)
+        tag_created = ptag["returncode"] == 0
         if not tag_created:
             tag_error = (ptag["stderr"] or "").strip()
 
@@ -190,7 +206,6 @@ def release(
         "tag": tag,
         "notes": notes,
         "repo": str(repo),
-
         "git": {
             "head": head_sha,
             "status_ok": bool(st["ok"]),
@@ -202,7 +217,6 @@ def release(
             "tag_created": bool(tag_created),
             "tag_error": tag_error,
         },
-
         "tests": {
             "returncode": int(tests["returncode"]),
             "cmd": tests["cmd"],
@@ -211,7 +225,6 @@ def release(
                 "stderr": str(rel_dir / "tests.stderr.txt"),
             },
         },
-
         "paths": {
             "diff": str(rel_dir / "diff.patch"),
             "git_status_porcelain": str(rel_dir / "git_status_porcelain.txt"),
@@ -251,7 +264,12 @@ def main() -> int:
         default=True,
         help="Require clean git working tree (default true). Use --no-require-clean-tree to disable.",
     )
-    ap_r.add_argument("--allow-dirty", action="store_true", default=False, help="Override clean-tree gate.")
+    ap_r.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        default=False,
+        help="Override clean-tree gate.",
+    )
     ap_r.add_argument("--create-git-tag", action="store_true", default=False)
 
     args = ap.parse_args()

@@ -49,14 +49,17 @@ class IbkrEventTap(EWrapper, EClient):
             self.state.events_written += 1
 
     def _write_health(self) -> None:
-        atomic_write_json(self.health_path, {
-            "schema": "ibkr_event_tap_health_v0",
-            "ts_utc": utc_now_iso(),
-            "ok": self.state.ok,
-            "connected": self.state.connected,
-            "events_written": self.state.events_written,
-            "last_error": self.state.last_error,
-        })
+        atomic_write_json(
+            self.health_path,
+            {
+                "schema": "ibkr_event_tap_health_v0",
+                "ts_utc": utc_now_iso(),
+                "ok": self.state.ok,
+                "connected": self.state.connected,
+                "events_written": self.state.events_written,
+                "last_error": self.state.last_error,
+            },
+        )
 
     # ----- callbacks -----
 
@@ -74,7 +77,13 @@ class IbkrEventTap(EWrapper, EClient):
         except Exception:
             pass
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         rec = {
             "ts_utc": utc_now_iso(),
             "type": "ERROR",
@@ -199,13 +208,18 @@ def main() -> int:
     # final health
     tap._write_health()
 
-    print(json.dumps({
-        "ok": tap.state.ok,
-        "connected": tap.state.connected,
-        "events_written": tap.state.events_written,
-        "out": str(out),
-        "health": str(health),
-    }, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "ok": tap.state.ok,
+                "connected": tap.state.connected,
+                "events_written": tap.state.events_written,
+                "out": str(out),
+                "health": str(health),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

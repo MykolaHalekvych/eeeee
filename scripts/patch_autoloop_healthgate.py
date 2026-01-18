@@ -121,6 +121,7 @@ CALL_INSERT = r"""
         }
 """
 
+
 def main() -> None:
     if not TARGET.exists():
         raise SystemExit(f"Missing: {TARGET}")
@@ -174,6 +175,7 @@ def main() -> None:
     else:
         TARGET.write_text(text, encoding="utf-8")
         print(f"patch_autoloop_healthgate: patched OK. backup={bak}")
+
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -89,28 +88,47 @@ class GateResult:
     details: Dict[str, Any]
 
 
-def _decide(failures: int, warnings: int, reason: str, details: Dict[str, Any]) -> GateResult:
+def _decide(
+    failures: int, warnings: int, reason: str, details: Dict[str, Any]
+) -> GateResult:
     if failures > 0:
-        return GateResult(ok=False, level="FAIL", exit_code=2, reason=reason, details=details)
+        return GateResult(
+            ok=False, level="FAIL", exit_code=2, reason=reason, details=details
+        )
     if warnings > 0:
-        return GateResult(ok=True, level="WARN", exit_code=1, reason=reason, details=details)
-    return GateResult(ok=True, level="PASS", exit_code=0, reason=reason, details=details)
+        return GateResult(
+            ok=True, level="WARN", exit_code=1, reason=reason, details=details
+        )
+    return GateResult(
+        ok=True, level="PASS", exit_code=0, reason=reason, details=details
+    )
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="ARGS Stage7 Hard-Soak Gate (file-based health checks)")
+    ap = argparse.ArgumentParser(
+        description="ARGS Stage7 Hard-Soak Gate (file-based health checks)"
+    )
     ap.add_argument("--max-heartbeat-age-s", type=int, default=900)
     ap.add_argument("--max-ops-health-age-s", type=int, default=900)
     ap.add_argument("--max-ops-events-age-s", type=int, default=900)
     ap.add_argument("--max-latest-run-age-s", type=int, default=1800)
     ap.add_argument("--require-latest-paths", action="store_true")
     ap.add_argument("--allow-stop-flag", action="store_true")
-    ap.add_argument("--halt-on-fail", action="store_true", help="On FAIL: write stop.flag (safe halt)")
+    ap.add_argument(
+        "--halt-on-fail",
+        action="store_true",
+        help="On FAIL: write stop.flag (safe halt)",
+    )
     ap.add_argument("--stop-flag-path", type=str, default="")
     ap.add_argument("--verify-registry-audit", action="store_true")
     ap.add_argument("--verify-evidence-latest", action="store_true")
     ap.add_argument("--py-timeout-s", type=int, default=30)
-    ap.add_argument("--write-out", type=str, default="", help="Write status JSON to this path (default args/data/soak_status.json)")
+    ap.add_argument(
+        "--write-out",
+        type=str,
+        default="",
+        help="Write status JSON to this path (default args/data/soak_status.json)",
+    )
     args = ap.parse_args()
 
     repo = _repo_root()
@@ -120,7 +138,9 @@ def main() -> int:
 
     now = _utc_now()
 
-    stop_flag = Path(args.stop_flag_path) if args.stop_flag_path else (data_dir / "stop.flag")
+    stop_flag = (
+        Path(args.stop_flag_path) if args.stop_flag_path else (data_dir / "stop.flag")
+    )
     hb = data_dir / "scheduler_heartbeat.txt"
     ops_health = data_dir / "ops_health.json"
     ops_events = logs_dir / "ops_events.jsonl"
@@ -157,7 +177,11 @@ def main() -> int:
         if hb_age > args.max_heartbeat_age_s:
             failures += 1
             d["failures"].append("HEARTBEAT_STALE")
-    d["checks"]["scheduler_heartbeat"] = {"path": str(hb), "age_s": hb_age, "max_age_s": args.max_heartbeat_age_s}
+    d["checks"]["scheduler_heartbeat"] = {
+        "path": str(hb),
+        "age_s": hb_age,
+        "max_age_s": args.max_heartbeat_age_s,
+    }
 
     # ops_health freshness + content
     ops_health_age = _mtime_age_s(ops_health, now)
@@ -178,7 +202,9 @@ def main() -> int:
         "path": str(ops_health),
         "age_s": ops_health_age,
         "max_age_s": args.max_ops_health_age_s,
-        "ok_field": (ops_health_json.get("ok") if isinstance(ops_health_json, dict) else None),
+        "ok_field": (
+            ops_health_json.get("ok") if isinstance(ops_health_json, dict) else None
+        ),
     }
 
     # ops_events freshness (file mtime only; schema-independent)
@@ -190,7 +216,11 @@ def main() -> int:
         if ops_events_age > args.max_ops_events_age_s:
             failures += 1
             d["failures"].append("OPS_EVENTS_STALE")
-    d["checks"]["ops_events"] = {"path": str(ops_events), "age_s": ops_events_age, "max_age_s": args.max_ops_events_age_s}
+    d["checks"]["ops_events"] = {
+        "path": str(ops_events),
+        "age_s": ops_events_age,
+        "max_age_s": args.max_ops_events_age_s,
+    }
 
     # latest_run freshness
     lr_age = _mtime_age_s(latest_run, now)
@@ -202,7 +232,12 @@ def main() -> int:
         if lr_age > args.max_latest_run_age_s:
             failures += 1
             d["failures"].append("LATEST_RUN_STALE")
-    d["checks"]["latest_run_id"] = {"path": str(latest_run), "age_s": lr_age, "max_age_s": args.max_latest_run_age_s, "run_id": (lr_txt or "").strip()}
+    d["checks"]["latest_run_id"] = {
+        "path": str(latest_run),
+        "age_s": lr_age,
+        "max_age_s": args.max_latest_run_age_s,
+        "run_id": (lr_txt or "").strip(),
+    }
 
     # latest_paths optional
     lp_age = _mtime_age_s(latest_paths, now)
@@ -210,7 +245,11 @@ def main() -> int:
         if lp_age is None:
             failures += 1
             d["failures"].append("LATEST_PATHS_MISSING")
-    d["checks"]["latest_paths"] = {"path": str(latest_paths), "age_s": lp_age, "required": bool(args.require_latest_paths)}
+    d["checks"]["latest_paths"] = {
+        "path": str(latest_paths),
+        "age_s": lp_age,
+        "required": bool(args.require_latest_paths),
+    }
 
     # Optional: verify audit chain in model_registry_events.jsonl
     if args.verify_registry_audit:
@@ -219,19 +258,36 @@ def main() -> int:
         if rc != 0:
             failures += 1
             d["failures"].append("MODEL_REGISTRY_AUDIT_VERIFY_FAIL")
-        d["checks"]["verify_registry_audit"] = {"enabled": True, "rc": rc, "out": out[:800]}
+        d["checks"]["verify_registry_audit"] = {
+            "enabled": True,
+            "rc": rc,
+            "out": out[:800],
+        }
     else:
         d["checks"]["verify_registry_audit"] = {"enabled": False}
 
     # Optional: verify eval evidence latest pointer (sha256)
     if args.verify_evidence_latest:
         latest_ptr = offline_dir / "evidence" / "eval_gate" / "latest.json"
-        cmd = ["py", "-3.11", "-m", "args.offline.evidence_history_v0", "verify", "--latest_pointer", str(latest_ptr)]
+        cmd = [
+            "py",
+            "-3.11",
+            "-m",
+            "args.offline.evidence_history_v0",
+            "verify",
+            "--latest_pointer",
+            str(latest_ptr),
+        ]
         rc, out = _run_py(cmd, timeout_s=args.py_timeout_s)
         if rc != 0:
             failures += 1
             d["failures"].append("EVIDENCE_LATEST_VERIFY_FAIL")
-        d["checks"]["verify_evidence_latest"] = {"enabled": True, "rc": rc, "out": out[:800], "latest_pointer": str(latest_ptr)}
+        d["checks"]["verify_evidence_latest"] = {
+            "enabled": True,
+            "rc": rc,
+            "out": out[:800],
+            "latest_pointer": str(latest_ptr),
+        }
     else:
         d["checks"]["verify_evidence_latest"] = {"enabled": False}
 
@@ -239,15 +295,27 @@ def main() -> int:
     if failures > 0 and args.halt_on_fail:
         try:
             stop_flag.write_text(_iso(now) + " SOAK_GATE_FAIL\n", encoding="utf-8")
-            d["checks"]["halt_on_fail"] = {"enabled": True, "stop_flag_written": True, "path": str(stop_flag)}
+            d["checks"]["halt_on_fail"] = {
+                "enabled": True,
+                "stop_flag_written": True,
+                "path": str(stop_flag),
+            }
         except Exception as e:
             # Even remediation failure should be visible
-            d["checks"]["halt_on_fail"] = {"enabled": True, "stop_flag_written": False, "error": f"{type(e).__name__}:{e}"}
+            d["checks"]["halt_on_fail"] = {
+                "enabled": True,
+                "stop_flag_written": False,
+                "error": f"{type(e).__name__}:{e}",
+            }
             # remediation failure -> still FAIL, but add warning
             warnings += 1
             d["warnings"].append("HALT_ON_FAIL_WRITE_FAILED")
     else:
-        d["checks"]["halt_on_fail"] = {"enabled": bool(args.halt_on_fail), "stop_flag_written": False, "path": str(stop_flag)}
+        d["checks"]["halt_on_fail"] = {
+            "enabled": bool(args.halt_on_fail),
+            "stop_flag_written": False,
+            "path": str(stop_flag),
+        }
 
     reason = "OK"
     if failures > 0:
@@ -267,7 +335,9 @@ def main() -> int:
         "details": d,
     }
 
-    out_path = Path(args.write_out) if args.write_out else (data_dir / "soak_status.json")
+    out_path = (
+        Path(args.write_out) if args.write_out else (data_dir / "soak_status.json")
+    )
     try:
         out_path.write_text(json.dumps(out_obj, ensure_ascii=False), encoding="utf-8")
     except Exception:

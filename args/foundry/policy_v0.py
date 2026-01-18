@@ -1,4 +1,3 @@
-﻿
 from __future__ import annotations
 
 import argparse
@@ -25,7 +24,10 @@ def read_json(path: Path) -> Dict[str, Any]:
 
 def write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def required_perm(action: str) -> Optional[str]:
@@ -41,7 +43,9 @@ def required_perm(action: str) -> Optional[str]:
     return None
 
 
-def build_policy_summary_det(repo_root: Path, cp_path: Path, cp: Dict[str, Any]) -> Dict[str, Any]:
+def build_policy_summary_det(
+    repo_root: Path, cp_path: Path, cp: Dict[str, Any]
+) -> Dict[str, Any]:
     engine = cp.get("engine", {}) if isinstance(cp, dict) else {}
     perms = engine.get("permissions", {}) if isinstance(engine, dict) else {}
     allow = engine.get("allowlist", {}) if isinstance(engine, dict) else {}
@@ -84,11 +88,19 @@ def check_action(
     factories = allow.get("factories", [])
 
     if product is not None:
-        if not isinstance(products, list) or len(products) == 0 or product not in products:
+        if (
+            not isinstance(products, list)
+            or len(products) == 0
+            or product not in products
+        ):
             blocked.append("product_not_in_allowlist")
 
     if factory is not None:
-        if not isinstance(factories, list) or len(factories) == 0 or factory not in factories:
+        if (
+            not isinstance(factories, list)
+            or len(factories) == 0
+            or factory not in factories
+        ):
             blocked.append("factory_not_in_allowlist")
 
     return (len(blocked) == 0), blocked
@@ -100,14 +112,22 @@ def main() -> int:
 
     p_emit = sub.add_parser("policy", help="emit deterministic policy summary")
     p_emit.add_argument("--control-plane", default="control_plane.json")
-    p_emit.add_argument("--out", default=None, help="optional output path; if omitted, only stdout")
+    p_emit.add_argument(
+        "--out", default=None, help="optional output path; if omitted, only stdout"
+    )
 
-    p_check = sub.add_parser("check", help="check if action is allowed under current policy")
+    p_check = sub.add_parser(
+        "check", help="check if action is allowed under current policy"
+    )
     p_check.add_argument("--control-plane", default="control_plane.json")
     p_check.add_argument("--action", required=True)
     p_check.add_argument("--product", default=None)
     p_check.add_argument("--factory", default=None)
-    p_check.add_argument("--write-summary", action="store_true", help="write args/data/policy_summary_latest.json")
+    p_check.add_argument(
+        "--write-summary",
+        action="store_true",
+        help="write args/data/policy_summary_latest.json",
+    )
 
     args = ap.parse_args()
 
@@ -115,7 +135,14 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema": "foundry_policy_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_policy_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     cp_path = (repo_root / Path(args.control_plane)).resolve()
@@ -138,15 +165,32 @@ def main() -> int:
         if args.out:
             out_path = (repo_root / Path(args.out)).resolve()
             write_json(out_path, summary)
-            dump({"schema": "foundry_policy_emit_v0", "ok": True, "exit_code": 0, "out": str(out_path)})
+            dump(
+                {
+                    "schema": "foundry_policy_emit_v0",
+                    "ok": True,
+                    "exit_code": 0,
+                    "out": str(out_path),
+                }
+            )
         else:
-            dump({"schema": "foundry_policy_emit_v0", "ok": True, "exit_code": 0, "summary": summary})
+            dump(
+                {
+                    "schema": "foundry_policy_emit_v0",
+                    "ok": True,
+                    "exit_code": 0,
+                    "summary": summary,
+                }
+            )
         return EXIT_OK
 
     # check
     if args.write_summary:
         # runtime artifact; .gitignore should exclude it
-        write_json((repo_root / Path("args/data/policy_summary_latest.json")).resolve(), summary)
+        write_json(
+            (repo_root / Path("args/data/policy_summary_latest.json")).resolve(),
+            summary,
+        )
 
     ok, blocked_by = check_action(summary, args.action, args.product, args.factory)
 

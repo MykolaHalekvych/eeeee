@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
@@ -48,17 +47,27 @@ class CycleAgg:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser("soak_check_v0")
-    ap.add_argument("--last", type=int, default=50, help="How many last cycles to evaluate")
+    ap.add_argument(
+        "--last", type=int, default=50, help="How many last cycles to evaluate"
+    )
     ap.add_argument("--max_failures", type=int, default=0, help="Allowed failed cycles")
-    ap.add_argument("--max_timeouts", type=int, default=0, help="Allowed TIMEOUT step results")
-    ap.add_argument("--require_run_change", action="store_true", help="Require run_id to change across cycles")
+    ap.add_argument(
+        "--max_timeouts", type=int, default=0, help="Allowed TIMEOUT step results"
+    )
+    ap.add_argument(
+        "--require_run_change",
+        action="store_true",
+        help="Require run_id to change across cycles",
+    )
     args = ap.parse_args(argv)
 
     events = _read_jsonl(OPS_EVENTS)
     if not events:
         rep = {"ok": False, "reason": "NO_EVENTS", "path": str(OPS_EVENTS)}
         SOAK_REPORT.parent.mkdir(parents=True, exist_ok=True)
-        SOAK_REPORT.write_text(json.dumps(rep, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        SOAK_REPORT.write_text(
+            json.dumps(rep, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         return 2
 
@@ -117,7 +126,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         uniq = {r for r in run_ids if isinstance(r, str) and r}
         run_change_ok = len(uniq) >= 2
 
-    ok = (failures <= args.max_failures) and (timeouts <= args.max_timeouts) and run_change_ok
+    ok = (
+        (failures <= args.max_failures)
+        and (timeouts <= args.max_timeouts)
+        and run_change_ok
+    )
 
     rep = {
         "schema": "soak_check_v0",
@@ -139,7 +152,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
 
     SOAK_REPORT.parent.mkdir(parents=True, exist_ok=True)
-    SOAK_REPORT.write_text(json.dumps(rep, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    SOAK_REPORT.write_text(
+        json.dumps(rep, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     print(json.dumps(rep, ensure_ascii=False, indent=2))
     return 0 if ok else 2

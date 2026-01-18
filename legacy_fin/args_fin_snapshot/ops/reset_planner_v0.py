@@ -24,16 +24,38 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Ownership reset planner (v0, DRYRUN only).")
-    ap.add_argument("--control", default="", help="control_plane.json (default args/data/control_plane.json)")
-    ap.add_argument("--positions", default="", help="positions snapshot (default args/data/ibkr_positions_live.json)")
-    ap.add_argument("--out", default="", help="write plan json (default args/data/reset_plan.json)")
+    ap = argparse.ArgumentParser(
+        description="Ownership reset planner (v0, DRYRUN only)."
+    )
+    ap.add_argument(
+        "--control",
+        default="",
+        help="control_plane.json (default args/data/control_plane.json)",
+    )
+    ap.add_argument(
+        "--positions",
+        default="",
+        help="positions snapshot (default args/data/ibkr_positions_live.json)",
+    )
+    ap.add_argument(
+        "--out", default="", help="write plan json (default args/data/reset_plan.json)"
+    )
     args = ap.parse_args()
 
     repo = _repo_root()
-    control_path = Path(args.control) if args.control else (repo / "args" / "data" / "control_plane.json")
-    pos_path = Path(args.positions) if args.positions else (repo / "args" / "data" / "ibkr_positions_live.json")
-    out_path = Path(args.out) if args.out else (repo / "args" / "data" / "reset_plan.json")
+    control_path = (
+        Path(args.control)
+        if args.control
+        else (repo / "args" / "data" / "control_plane.json")
+    )
+    pos_path = (
+        Path(args.positions)
+        if args.positions
+        else (repo / "args" / "data" / "ibkr_positions_live.json")
+    )
+    out_path = (
+        Path(args.out) if args.out else (repo / "args" / "data" / "reset_plan.json")
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     control = _read_json(control_path) or {}
@@ -86,7 +108,9 @@ def main() -> int:
         "positions_source": str(pos_path),
         "actions": actions,
         "summary": {
-            "positions_count": len([r for r in rows if abs(float(r.get("position") or 0.0)) > 0]),
+            "positions_count": len(
+                [r for r in rows if abs(float(r.get("position") or 0.0)) > 0]
+            ),
             "actions_count": len(actions),
             "has_unknown": any(a["kind"] == "CLOSE_UNKNOWN" for a in actions),
         },

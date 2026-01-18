@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -30,7 +30,7 @@ def emit(payload: Dict[str, Any], code: int) -> int:
     payload["schema"] = payload.get("schema", SCHEMA)
     payload["ts_utc"] = payload.get("ts_utc", utc_ts())
     payload["exit_code"] = int(code)
-    payload["ok"] = (int(code) == 0)
+    payload["ok"] = int(code) == 0
     s = json.dumps(payload, ensure_ascii=False)
     sys.stdout.write(s)
     sys.stdout.flush()
@@ -45,7 +45,12 @@ def run(cmd: List[str], cwd: Path | None = None) -> Dict[str, Any]:
         text=True,
         check=False,
     )
-    return {"cmd": cmd, "rc": int(p.returncode), "stdout": p.stdout or "", "stderr": p.stderr or ""}
+    return {
+        "cmd": cmd,
+        "rc": int(p.returncode),
+        "stdout": p.stdout or "",
+        "stderr": p.stderr or "",
+    }
 
 
 def read_text_safe(p: Path) -> str:
@@ -73,13 +78,21 @@ def evidence_has_sections(evidence_md: str) -> Dict[str, bool]:
         "inputs": ("## Inputs" in evidence_md),
         "toolchain": ("## Toolchain" in evidence_md),
         "preflight": ("## Preflight checks" in evidence_md),
-        "build": ("## Build" in evidence_md) or ("## Build (PyInstaller)" in evidence_md),
-        "postcheck": ("## Post-build check" in evidence_md) or ("## Post-build" in evidence_md),
+        "build": ("## Build" in evidence_md)
+        or ("## Build (PyInstaller)" in evidence_md),
+        "postcheck": ("## Post-build check" in evidence_md)
+        or ("## Post-build" in evidence_md),
     }
 
 
 def verify_release_root(root: Path) -> Tuple[Dict[str, Any], int]:
-    required = ["app.exe", "config.example.json", "runbook.md", "evidence.md", "hashes.json"]
+    required = [
+        "app.exe",
+        "config.example.json",
+        "runbook.md",
+        "evidence.md",
+        "hashes.json",
+    ]
 
     details: Dict[str, Any] = {"root": str(root), "required_files": required}
 
@@ -126,14 +139,27 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--zip", help="Path to release zip")
     g.add_argument("--dir", help="Path to release directory (e.g., dist/<product_id>)")
-    ap.add_argument("--out", required=False, default=None, help="Optional JSON output path (also prints to stdout)")
+    ap.add_argument(
+        "--out",
+        required=False,
+        default=None,
+        help="Optional JSON output path (also prints to stdout)",
+    )
     args = ap.parse_args()
 
     try:
         if args.zip:
             zip_path = Path(args.zip).resolve()
             if not zip_path.exists():
-                return emit({"error": {"kind": "not_found", "message": f"zip not found: {zip_path}"}}, 1)
+                return emit(
+                    {
+                        "error": {
+                            "kind": "not_found",
+                            "message": f"zip not found: {zip_path}",
+                        }
+                    },
+                    1,
+                )
 
             tmp_root = Path(tempfile.mkdtemp(prefix="acceptance_gate_v1__"))
             extracted = tmp_root / "release"
@@ -141,12 +167,25 @@ def main() -> int:
             extract_zip(zip_path, extracted)
 
             checks, rc = verify_release_root(extracted)
-            payload: Dict[str, Any] = {"mode": "zip", "zip": str(zip_path), "checks": checks, "tmp": str(tmp_root)}
+            payload: Dict[str, Any] = {
+                "mode": "zip",
+                "zip": str(zip_path),
+                "checks": checks,
+                "tmp": str(tmp_root),
+            }
 
         else:
             root = Path(args.dir).resolve()
             if not root.exists():
-                return emit({"error": {"kind": "not_found", "message": f"dir not found: {root}"}}, 1)
+                return emit(
+                    {
+                        "error": {
+                            "kind": "not_found",
+                            "message": f"dir not found: {root}",
+                        }
+                    },
+                    1,
+                )
 
             checks, rc = verify_release_root(root)
             payload = {"mode": "dir", "dir": str(root), "checks": checks}
@@ -155,7 +194,16 @@ def main() -> int:
             out_path = Path(args.out).resolve()
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(
-                json.dumps({**payload, "schema": SCHEMA, "ts_utc": utc_ts(), "ok": (rc == 0), "exit_code": rc}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        **payload,
+                        "schema": SCHEMA,
+                        "ts_utc": utc_ts(),
+                        "ok": (rc == 0),
+                        "exit_code": rc,
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
 

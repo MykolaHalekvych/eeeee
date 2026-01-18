@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import subprocess
@@ -64,7 +64,9 @@ def main() -> int:
             }
             _stdout_json(out)
             return 2
-        print(f"WARN: contract resolve returned rc=1; using cached contract: {CONTRACT_PATH}")
+        print(
+            f"WARN: contract resolve returned rc=1; using cached contract: {CONTRACT_PATH}"
+        )
     else:
         # Hard fail
         out = {
@@ -122,7 +124,9 @@ def main() -> int:
             }
             _stdout_json(out)
             return 2
-        print(f"WARN: attach meta failed (rc={rc_meta}); using cached meta: {CSV_META_PATH}")
+        print(
+            f"WARN: attach meta failed (rc={rc_meta}); using cached meta: {CSV_META_PATH}"
+        )
 
     print("\nDONE: MHG bundle refreshed (best-effort).")
 

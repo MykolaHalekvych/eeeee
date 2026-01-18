@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import enum
@@ -7,7 +6,14 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .common_v0 import append_jsonl, atomic_write_json, iter_jsonl, read_json, sha256_text, utc_now_iso
+from .common_v0 import (
+    append_jsonl,
+    atomic_write_json,
+    iter_jsonl,
+    read_json,
+    sha256_text,
+    utc_now_iso,
+)
 from .control_plane_v0 import ControlPlane
 from .policy_v0 import check_order_allowed
 
@@ -15,7 +21,7 @@ from .policy_v0 import check_order_allowed
 class EventType(str, enum.Enum):
     ACK = "ACK"
     REJECT = "REJECT"
-    FILL = "FILL"          # partial/full; remaining_qty drives terminal
+    FILL = "FILL"  # partial/full; remaining_qty drives terminal
     CANCELLED = "CANCELLED"
 
 
@@ -31,8 +37,8 @@ class TicketState(str, enum.Enum):
 
 
 class TerminalState(str, enum.Enum):
-    DONE = "DONE"          # exit completed -> flat
-    FILLED = "FILLED"      # filled but not necessarily flat
+    DONE = "DONE"  # exit completed -> flat
+    FILLED = "FILLED"  # filled but not necessarily flat
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
@@ -66,17 +72,20 @@ class BrokerEvent:
     order_id: int
     client_order_id: str
     symbol: str
-    filled_qty: float = 0.0         # delta fill
-    remaining_qty: float = 0.0      # remaining after this fill
+    filled_qty: float = 0.0  # delta fill
+    remaining_qty: float = 0.0  # remaining after this fill
     reason: Optional[str] = None
     ts_utc: str = field(default_factory=utc_now_iso)
 
 
 class BrokerAdapter:
     """Interface: real IBKR adapter will implement these methods."""
+
     def connect(self) -> None: ...
     def is_connected(self) -> bool: ...
-    def place_order(self, order_id: int, order: OrderSpec, client_order_id: str) -> None: ...
+    def place_order(
+        self, order_id: int, order: OrderSpec, client_order_id: str
+    ) -> None: ...
     def cancel_order(self, order_id: int) -> None: ...
     def replace_order(self, order_id: int, new_order: OrderSpec) -> None: ...
     def poll_events(self) -> List[BrokerEvent]: ...
@@ -154,15 +163,17 @@ class EngineState:
     # Persisted dedup keys (ordered, trimmed). Engine also maintains a set for O(1) membership.
     fill_dedup_keys_v0: List[str] = field(default_factory=list)
 
-    counters: Dict[str, int] = field(default_factory=lambda: {
-        "place_calls": 0,
-        "cancel_calls": 0,
-        "replace_calls": 0,
-        "dedup_skips": 0,         # intent-level or general dedups
-        "fill_dedup_skips": 0,    # FILL dedup skips
-        "forbidden": 0,
-        "events_seen": 0,
-    })
+    counters: Dict[str, int] = field(
+        default_factory=lambda: {
+            "place_calls": 0,
+            "cancel_calls": 0,
+            "replace_calls": 0,
+            "dedup_skips": 0,  # intent-level or general dedups
+            "fill_dedup_skips": 0,  # FILL dedup skips
+            "forbidden": 0,
+            "events_seen": 0,
+        }
+    )
 
     reconcile_last_ratio: Optional[float] = None
     last_error: Optional[str] = None
@@ -264,13 +275,16 @@ class Engine:
         self._fill_dedup_set_v0 = set(self.state.fill_dedup_keys_v0)
 
         if not self.manifest_path.exists():
-            atomic_write_json(self.manifest_path, {
-                "schema": "run_manifest_v1",
-                "run_id": self.run_id,
-                "created_at_utc": utc_now_iso(),
-                "control_plane_path": str(self.control_plane_path),
-                "control_plane": self.cp.to_json(),
-            })
+            atomic_write_json(
+                self.manifest_path,
+                {
+                    "schema": "run_manifest_v1",
+                    "run_id": self.run_id,
+                    "created_at_utc": utc_now_iso(),
+                    "control_plane_path": str(self.control_plane_path),
+                    "control_plane": self.cp.to_json(),
+                },
+            )
 
         if not self.broker.is_connected():
             self.broker.connect()
@@ -291,7 +305,14 @@ class Engine:
             remaining_qty=float(intent.order.qty),
         )
         self.state.tickets[intent.intent_id] = t
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "INTENT_NEW", "ticket": self._ticket_json(t)})
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "INTENT_NEW",
+                "ticket": self._ticket_json(t),
+            },
+        )
         self._persist_state()
 
     def adopt_order(
@@ -318,10 +339,19 @@ class Engine:
             order=order,
             order_id=int(order_id),
             state=TicketState.SENT,
-            remaining_qty=float(remaining_qty if remaining_qty is not None else order.qty),
+            remaining_qty=float(
+                remaining_qty if remaining_qty is not None else order.qty
+            ),
         )
         self.state.tickets[intent_id] = t
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "ADOPT_ORDER", "ticket": self._ticket_json(t)})
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "ADOPT_ORDER",
+                "ticket": self._ticket_json(t),
+            },
+        )
         self._persist_state()
 
     def request_cancel(self, intent_id: str) -> None:
@@ -329,7 +359,14 @@ class Engine:
         if not t or t.is_terminal():
             return
         t.want_cancel = True
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "INTENT_CANCEL_REQUEST", "intent_id": intent_id})
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "INTENT_CANCEL_REQUEST",
+                "intent_id": intent_id,
+            },
+        )
         self._persist_state()
 
     def request_replace_qty(self, intent_id: str, new_qty: float) -> None:
@@ -337,7 +374,15 @@ class Engine:
         if not t or t.is_terminal():
             return
         t.want_replace_qty = float(new_qty)
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "INTENT_REPLACE_REQUEST", "intent_id": intent_id, "new_qty": float(new_qty)})
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "INTENT_REPLACE_REQUEST",
+                "intent_id": intent_id,
+                "new_qty": float(new_qty),
+            },
+        )
         self._persist_state()
 
     def step(self) -> None:
@@ -358,24 +403,42 @@ class Engine:
 
             ratio, details = self._reconcile()
             self.state.reconcile_last_ratio = ratio
-            append_jsonl(self.reconcile_path, {"ts_utc": utc_now_iso(), "schema": "reconcile_v1", "ratio": ratio, "details": details})
+            append_jsonl(
+                self.reconcile_path,
+                {
+                    "ts_utc": utc_now_iso(),
+                    "schema": "reconcile_v1",
+                    "ratio": ratio,
+                    "details": details,
+                },
+            )
 
-            atomic_write_json(self.health_path, {
-                "schema": "health_v1",
-                "ts_utc": utc_now_iso(),
-                "run_id": self.run_id,
-                "stop_flag": stop_flag,
-                "safe_mode": safe_mode,
-                "broker_connected": bool(self.broker.is_connected()),
-                "reconcile_ratio": ratio,
-                "counters": dict(self.state.counters),
-                "last_error": self.state.last_error,
-            })
+            atomic_write_json(
+                self.health_path,
+                {
+                    "schema": "health_v1",
+                    "ts_utc": utc_now_iso(),
+                    "run_id": self.run_id,
+                    "stop_flag": stop_flag,
+                    "safe_mode": safe_mode,
+                    "broker_connected": bool(self.broker.is_connected()),
+                    "reconcile_ratio": ratio,
+                    "counters": dict(self.state.counters),
+                    "last_error": self.state.last_error,
+                },
+            )
 
         except Exception as e:
             self.state.last_error = f"{type(e).__name__}: {e}"
             self._set_cooldown("exception")
-            append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "ENGINE_EXCEPTION", "error": self.state.last_error})
+            append_jsonl(
+                self.ledger_path,
+                {
+                    "ts_utc": utc_now_iso(),
+                    "type": "ENGINE_EXCEPTION",
+                    "error": self.state.last_error,
+                },
+            )
         finally:
             self._persist_state()
 
@@ -398,7 +461,14 @@ class Engine:
     def _persist_state(self) -> None:
         # state.fill_dedup_keys_v0 already updated in-place by _fill_dedup_seen_or_add_v0()
         atomic_write_json(self.state_path, self.state.to_json())
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "STATE_SNAPSHOT", "state": self.state.to_json()})
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "STATE_SNAPSHOT",
+                "state": self.state.to_json(),
+            },
+        )
 
     def _handshake_with_snapshot(self) -> None:
         snap = self.broker.snapshot() or {}
@@ -420,8 +490,18 @@ class Engine:
 
     def _set_cooldown(self, reason: str) -> None:
         until = time.time() + float(self.cp.cool_down_seconds)
-        self.state.cooldown_until_epoch_s = max(self.state.cooldown_until_epoch_s, until)
-        append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "COOLDOWN_SET", "reason": reason, "until_epoch_s": self.state.cooldown_until_epoch_s})
+        self.state.cooldown_until_epoch_s = max(
+            self.state.cooldown_until_epoch_s, until
+        )
+        append_jsonl(
+            self.ledger_path,
+            {
+                "ts_utc": utc_now_iso(),
+                "type": "COOLDOWN_SET",
+                "reason": reason,
+                "until_epoch_s": self.state.cooldown_until_epoch_s,
+            },
+        )
 
     def _cooldown_active(self) -> bool:
         return time.time() < float(self.state.cooldown_until_epoch_s)
@@ -430,9 +510,17 @@ class Engine:
         for t in self.state.tickets.values():
             if t.is_terminal():
                 continue
-            if t.want_cancel and t.order_id is not None and t.state != TicketState.CANCEL_REQUESTED:
+            if (
+                t.want_cancel
+                and t.order_id is not None
+                and t.state != TicketState.CANCEL_REQUESTED
+            ):
                 t.state = TicketState.CANCEL_REQUESTED
-            if t.want_replace_qty is not None and t.order_id is not None and t.state != TicketState.REPLACE_REQUESTED:
+            if (
+                t.want_replace_qty is not None
+                and t.order_id is not None
+                and t.state != TicketState.REPLACE_REQUESTED
+            ):
                 t.state = TicketState.REPLACE_REQUESTED
 
     def _drain_actions(self) -> None:
@@ -461,7 +549,15 @@ class Engine:
                     t.state = TicketState.TERMINAL
                     t.terminal = TerminalState.FAILED
                     t.terminal_reason = f"forbidden:{dec.reason}"
-                    append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "FORBIDDEN", "intent_id": t.intent_id, "reason": dec.reason})
+                    append_jsonl(
+                        self.ledger_path,
+                        {
+                            "ts_utc": utc_now_iso(),
+                            "type": "FORBIDDEN",
+                            "intent_id": t.intent_id,
+                            "reason": dec.reason,
+                        },
+                    )
                     continue
 
                 if t.order_id is not None:
@@ -476,14 +572,35 @@ class Engine:
                 self.broker.place_order(oid, t.order, t.client_order_id)
                 self.state.counters["place_calls"] += 1
                 t.state = TicketState.SENT
-                append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "BROKER_PLACE", "intent_id": t.intent_id, "order_id": oid, "client_order_id": t.client_order_id})
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "BROKER_PLACE",
+                        "intent_id": t.intent_id,
+                        "order_id": oid,
+                        "client_order_id": t.client_order_id,
+                    },
+                )
 
             if t.state == TicketState.CANCEL_REQUESTED and t.order_id is not None:
                 self.broker.cancel_order(int(t.order_id))
                 self.state.counters["cancel_calls"] += 1
-                append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "BROKER_CANCEL", "intent_id": t.intent_id, "order_id": int(t.order_id)})
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "BROKER_CANCEL",
+                        "intent_id": t.intent_id,
+                        "order_id": int(t.order_id),
+                    },
+                )
 
-            if t.state == TicketState.REPLACE_REQUESTED and t.order_id is not None and t.want_replace_qty is not None:
+            if (
+                t.state == TicketState.REPLACE_REQUESTED
+                and t.order_id is not None
+                and t.want_replace_qty is not None
+            ):
                 snap2 = self.broker.snapshot() or {}
                 positions2 = snap2.get("positions", {}) or {}
                 pos_qty2 = float(positions2.get(t.order.symbol, 0.0))
@@ -508,13 +625,30 @@ class Engine:
                     t.state = TicketState.TERMINAL
                     t.terminal = TerminalState.FAILED
                     t.terminal_reason = f"forbidden_replace:{dec2.reason}"
-                    append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "FORBIDDEN_REPLACE", "intent_id": t.intent_id, "reason": dec2.reason})
+                    append_jsonl(
+                        self.ledger_path,
+                        {
+                            "ts_utc": utc_now_iso(),
+                            "type": "FORBIDDEN_REPLACE",
+                            "intent_id": t.intent_id,
+                            "reason": dec2.reason,
+                        },
+                    )
                     continue
 
                 self.broker.replace_order(int(t.order_id), new_order)
                 self.state.counters["replace_calls"] += 1
                 t.order = new_order
-                append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "BROKER_REPLACE", "intent_id": t.intent_id, "order_id": int(t.order_id), "new_qty": float(new_order.qty)})
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "BROKER_REPLACE",
+                        "intent_id": t.intent_id,
+                        "order_id": int(t.order_id),
+                        "new_qty": float(new_order.qty),
+                    },
+                )
 
     # ---------------------------
     # FILL DEDUP helpers
@@ -547,15 +681,18 @@ class Engine:
         # Apply dedup BEFORE mutating ticket, only for FILL
         if ev.event_type == EventType.FILL:
             if self._fill_dedup_seen_or_add_v0(ev):
-                append_jsonl(self.ledger_path, {
-                    "ts_utc": utc_now_iso(),
-                    "type": "EVENT_FILL_DEDUP",
-                    "order_id": ev.order_id,
-                    "client_order_id": ev.client_order_id,
-                    "reason": ev.reason,
-                    "filled_qty": ev.filled_qty,
-                    "ts_event_utc": ev.ts_utc,
-                })
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "EVENT_FILL_DEDUP",
+                        "order_id": ev.order_id,
+                        "client_order_id": ev.client_order_id,
+                        "reason": ev.reason,
+                        "filled_qty": ev.filled_qty,
+                        "ts_event_utc": ev.ts_utc,
+                    },
+                )
                 return
 
         t: Optional[Ticket] = None
@@ -572,28 +709,50 @@ class Engine:
                     break
 
         if t is None:
-            append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "EVENT_ORPHAN", "event": self._event_json(ev)})
+            append_jsonl(
+                self.ledger_path,
+                {
+                    "ts_utc": utc_now_iso(),
+                    "type": "EVENT_ORPHAN",
+                    "event": self._event_json(ev),
+                },
+            )
             return
 
         t.last_event_ts_utc = ev.ts_utc
 
         if ev.event_type == EventType.ACK:
-            if not t.is_terminal() and t.state in {TicketState.SENT, TicketState.PENDING_PLACE, TicketState.NEW}:
+            if not t.is_terminal() and t.state in {
+                TicketState.SENT,
+                TicketState.PENDING_PLACE,
+                TicketState.NEW,
+            }:
                 t.state = TicketState.ACKED
-            append_jsonl(self.ledger_path, {"ts_utc": utc_now_iso(), "type": "EVENT_ACK", "intent_id": t.intent_id, "order_id": ev.order_id})
+            append_jsonl(
+                self.ledger_path,
+                {
+                    "ts_utc": utc_now_iso(),
+                    "type": "EVENT_ACK",
+                    "intent_id": t.intent_id,
+                    "order_id": ev.order_id,
+                },
+            )
 
         elif ev.event_type == EventType.REJECT:
             if not t.is_terminal():
                 t.state = TicketState.TERMINAL
                 t.terminal = TerminalState.FAILED
                 t.terminal_reason = ev.reason or "reject"
-                append_jsonl(self.ledger_path, {
-                    "ts_utc": utc_now_iso(),
-                    "type": "EVENT_REJECT",
-                    "intent_id": t.intent_id,
-                    "order_id": ev.order_id,
-                    "reason": t.terminal_reason,
-                })
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "EVENT_REJECT",
+                        "intent_id": t.intent_id,
+                        "order_id": ev.order_id,
+                        "reason": t.terminal_reason,
+                    },
+                )
                 self._set_cooldown("reject")
 
         elif ev.event_type == EventType.CANCELLED:
@@ -601,12 +760,15 @@ class Engine:
                 t.state = TicketState.TERMINAL
                 t.terminal = TerminalState.CANCELLED
                 t.terminal_reason = ev.reason or "cancelled"
-                append_jsonl(self.ledger_path, {
-                    "ts_utc": utc_now_iso(),
-                    "type": "EVENT_CANCELLED",
-                    "intent_id": t.intent_id,
-                    "order_id": ev.order_id,
-                })
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "EVENT_CANCELLED",
+                        "intent_id": t.intent_id,
+                        "order_id": ev.order_id,
+                    },
+                )
 
         elif ev.event_type == EventType.FILL:
             if t.is_terminal():
@@ -617,15 +779,18 @@ class Engine:
 
             if t.remaining_qty > 0:
                 t.state = TicketState.PARTIAL
-                append_jsonl(self.ledger_path, {
-                    "ts_utc": utc_now_iso(),
-                    "type": "EVENT_PARTIAL_FILL",
-                    "intent_id": t.intent_id,
-                    "order_id": ev.order_id,
-                    "filled_total": t.filled_qty,
-                    "remaining": t.remaining_qty,
-                    "reason": ev.reason,
-                })
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "EVENT_PARTIAL_FILL",
+                        "intent_id": t.intent_id,
+                        "order_id": ev.order_id,
+                        "filled_total": t.filled_qty,
+                        "remaining": t.remaining_qty,
+                        "reason": ev.reason,
+                    },
+                )
             else:
                 snap = self.broker.snapshot() or {}
                 pos = float((snap.get("positions", {}) or {}).get(t.order.symbol, 0.0))
@@ -633,15 +798,18 @@ class Engine:
                 t.state = TicketState.TERMINAL
                 t.terminal = term
                 t.terminal_reason = "filled"
-                append_jsonl(self.ledger_path, {
-                    "ts_utc": utc_now_iso(),
-                    "type": "EVENT_FILL_TERMINAL",
-                    "intent_id": t.intent_id,
-                    "order_id": ev.order_id,
-                    "terminal": term.value,
-                    "pos": pos,
-                    "reason": ev.reason,
-                })
+                append_jsonl(
+                    self.ledger_path,
+                    {
+                        "ts_utc": utc_now_iso(),
+                        "type": "EVENT_FILL_TERMINAL",
+                        "intent_id": t.intent_id,
+                        "order_id": ev.order_id,
+                        "terminal": term.value,
+                        "pos": pos,
+                        "reason": ev.reason,
+                    },
+                )
 
     def _reconcile(self) -> Tuple[float, Dict[str, Any]]:
         """
@@ -690,13 +858,15 @@ class Engine:
             if matched:
                 ok += 1
             else:
-                mismatches.append({
-                    "type": "missing_open_order",
-                    "intent_id": t.intent_id,
-                    "client_order_id": t.client_order_id,
-                    "order_id": t.order_id,
-                    "state": t.state.value,
-                })
+                mismatches.append(
+                    {
+                        "type": "missing_open_order",
+                        "intent_id": t.intent_id,
+                        "client_order_id": t.client_order_id,
+                        "order_id": t.order_id,
+                        "state": t.state.value,
+                    }
+                )
 
         for t in self.state.tickets.values():
             if t.is_terminal() and t.terminal == TerminalState.DONE:
@@ -705,19 +875,23 @@ class Engine:
                 if abs(pos) < 1e-9:
                     ok += 1
                 else:
-                    mismatches.append({
-                        "type": "not_flat_after_done",
-                        "intent_id": t.intent_id,
-                        "symbol": t.order.symbol,
-                        "pos": pos,
-                    })
+                    mismatches.append(
+                        {
+                            "type": "not_flat_after_done",
+                            "intent_id": t.intent_id,
+                            "symbol": t.order.symbol,
+                            "pos": pos,
+                        }
+                    )
 
         ratio = 1.0 if checks == 0 else (ok / checks)
         details = {
             "checks": checks,
             "ok": ok,
             "mismatches": mismatches[:50],
-            "open_orders_count": int(snap.get("open_orders_count", len(open_order_ids))),
+            "open_orders_count": int(
+                snap.get("open_orders_count", len(open_order_ids))
+            ),
             "positions_count": int(len(positions)),
             "open_order_ids_count": int(len(open_order_ids)),
             "open_client_ids_count": int(len(open_client_ids)),

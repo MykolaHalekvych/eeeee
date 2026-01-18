@@ -19,7 +19,9 @@ def _write_jsonl(path: Path, rows: list[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            f.write(
+                json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
             f.write("\n")
 
 
@@ -46,7 +48,12 @@ def main() -> int:
             "schema_version": "WRONG_SCHEMA",
             "ts": ts,
             "order_id": 123,
-            "contract": {"symbol": "HG", "secType": "FUT", "currency": "USD", "exchange": "COMEX"},
+            "contract": {
+                "symbol": "HG",
+                "secType": "FUT",
+                "currency": "USD",
+                "exchange": "COMEX",
+            },
             "order": {"action": "BUY", "orderType": "MKT", "totalQuantity": 1},
             "order_state": {"status": "Submitted"},
         },
@@ -58,7 +65,12 @@ def main() -> int:
     ]
 
     _write_jsonl(out, rows)
-    print(json.dumps({"ok": True, "out_path": str(out), "note": "invalid schema_version"}, indent=2))
+    print(
+        json.dumps(
+            {"ok": True, "out_path": str(out), "note": "invalid schema_version"},
+            indent=2,
+        )
+    )
     return 0
 
 

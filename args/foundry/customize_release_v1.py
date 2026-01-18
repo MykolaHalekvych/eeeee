@@ -32,7 +32,9 @@ def write_json_no_bom(path: Path, obj: Any) -> None:
     write_text_no_bom(path, json_dumps(obj))
 
 
-def append_event(events_path: Path, run_id: str, kind: str, data: Dict[str, Any]) -> None:
+def append_event(
+    events_path: Path, run_id: str, kind: str, data: Dict[str, Any]
+) -> None:
     ev = {
         "schema": "event_v0",
         "ts_utc": utc_now_iso(),
@@ -137,7 +139,9 @@ def overlay_hash_from_report(rep: dict, base_release_id: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def derive_customer_release_id(product_id: str, base_release_id: str, request_id: str, overlay_hash: str) -> str:
+def derive_customer_release_id(
+    product_id: str, base_release_id: str, request_id: str, overlay_hash: str
+) -> str:
     parts = base_release_id.split("__")
     prefix = product_id
     if len(parts) >= 2:
@@ -173,16 +177,32 @@ def main() -> None:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     write_text_no_bom(events_jsonl, "")
 
-    append_event(events_jsonl, run_id, "start", {"repo": str(repo), "request": str(req_path), "base_release_override": str(args.base_release_id_override)})
+    append_event(
+        events_jsonl,
+        run_id,
+        "start",
+        {
+            "repo": str(repo),
+            "request": str(req_path),
+            "base_release_override": str(args.base_release_id_override),
+        },
+    )
 
     # ---- step 1: validate request ----
     req_norm = run_dir / "customization_request_normalized.json"
     v_obj, v_infra, v_rc = run_py_module(
-        repo, evidence_dir, "validate_request",
+        repo,
+        evidence_dir,
+        "validate_request",
         "args.foundry.customization_request_validate_v1",
         ["--request", str(req_path), "--out", str(req_norm)],
     )
-    append_event(events_jsonl, run_id, "validate_done", {"rc": v_rc, "infra": v_infra, "out": str(req_norm)})
+    append_event(
+        events_jsonl,
+        run_id,
+        "validate_done",
+        {"rc": v_rc, "infra": v_infra, "out": str(req_norm)},
+    )
 
     if v_infra or v_rc != 0:
         final = {
@@ -203,7 +223,11 @@ def main() -> None:
             "run_acceptance": "YES",
             "acceptance_report": "",
             "acceptance_embedded": "",
-            "error": {"kind": ("infra" if (v_infra or v_rc == 2) else "fail"), "type": "validate_failed", "message": "customization request invalid"},
+            "error": {
+                "kind": ("infra" if (v_infra or v_rc == 2) else "fail"),
+                "type": "validate_failed",
+                "message": "customization request invalid",
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, int(final["exit_code"]))
@@ -238,18 +262,29 @@ def main() -> None:
             "run_acceptance": "YES",
             "acceptance_report": "",
             "acceptance_embedded": "",
-            "error": {"kind": "fail", "type": "missing_fields", "message": "product_id/base_release_id missing"},
+            "error": {
+                "kind": "fail",
+                "type": "missing_fields",
+                "message": "product_id/base_release_id missing",
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, 1)
 
     # ---- step 2: verify base release ----
     vb_obj, vb_infra, vb_rc = run_py_module(
-        repo, evidence_dir, "verify_base",
+        repo,
+        evidence_dir,
+        "verify_base",
         "args.foundry.release_verify_v0",
         ["--release-id", base_rel],
     )
-    append_event(events_jsonl, run_id, "verify_base_done", {"rc": vb_rc, "infra": vb_infra, "base_release_id": base_rel})
+    append_event(
+        events_jsonl,
+        run_id,
+        "verify_base_done",
+        {"rc": vb_rc, "infra": vb_infra, "base_release_id": base_rel},
+    )
     if vb_infra or vb_rc != 0:
         code = 2 if (vb_infra or vb_rc == 2) else 1
         final = {
@@ -270,7 +305,11 @@ def main() -> None:
             "run_acceptance": "YES",
             "acceptance_report": "",
             "acceptance_embedded": "",
-            "error": {"kind": ("infra" if code == 2 else "fail"), "type": "base_release_verify_failed", "message": base_rel},
+            "error": {
+                "kind": ("infra" if code == 2 else "fail"),
+                "type": "base_release_verify_failed",
+                "message": base_rel,
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, code)
@@ -281,11 +320,30 @@ def main() -> None:
     unpack_report = run_dir / "unpack_report.json"
 
     u_obj, u_infra, u_rc = run_py_module(
-        repo, evidence_dir, "unpack_base",
+        repo,
+        evidence_dir,
+        "unpack_base",
         "args.foundry.release_unpack_v1",
-        ["--release-id", base_rel, "--out-dir", str(workspace_dist), "--out-report", str(unpack_report)],
+        [
+            "--release-id",
+            base_rel,
+            "--out-dir",
+            str(workspace_dist),
+            "--out-report",
+            str(unpack_report),
+        ],
     )
-    append_event(events_jsonl, run_id, "unpack_done", {"rc": u_rc, "infra": u_infra, "workspace_dist": str(workspace_dist), "report": str(unpack_report)})
+    append_event(
+        events_jsonl,
+        run_id,
+        "unpack_done",
+        {
+            "rc": u_rc,
+            "infra": u_infra,
+            "workspace_dist": str(workspace_dist),
+            "report": str(unpack_report),
+        },
+    )
     if u_infra or u_rc != 0:
         code = 2 if (u_infra or u_rc == 2) else 1
         final = {
@@ -306,7 +364,11 @@ def main() -> None:
             "run_acceptance": "YES",
             "acceptance_report": "",
             "acceptance_embedded": "",
-            "error": {"kind": ("infra" if code == 2 else "fail"), "type": "unpack_failed", "message": base_rel},
+            "error": {
+                "kind": ("infra" if code == 2 else "fail"),
+                "type": "unpack_failed",
+                "message": base_rel,
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, code)
@@ -314,11 +376,25 @@ def main() -> None:
     # ---- step 4: apply overlay ----
     overlay_report = run_dir / "overlay_report.json"
     oa_obj, oa_infra, oa_rc = run_py_module(
-        repo, evidence_dir, "apply_overlay",
+        repo,
+        evidence_dir,
+        "apply_overlay",
         "args.foundry.overlay_apply_v1",
-        ["--request", str(req_path), "--workspace-dir", str(workspace_dist), "--out-report", str(overlay_report)],
+        [
+            "--request",
+            str(req_path),
+            "--workspace-dir",
+            str(workspace_dist),
+            "--out-report",
+            str(overlay_report),
+        ],
     )
-    append_event(events_jsonl, run_id, "overlay_done", {"rc": oa_rc, "infra": oa_infra, "report": str(overlay_report)})
+    append_event(
+        events_jsonl,
+        run_id,
+        "overlay_done",
+        {"rc": oa_rc, "infra": oa_infra, "report": str(overlay_report)},
+    )
     if oa_infra or oa_rc != 0:
         code = 2 if (oa_infra or oa_rc == 2) else 1
         final = {
@@ -339,7 +415,11 @@ def main() -> None:
             "run_acceptance": "YES",
             "acceptance_report": "",
             "acceptance_embedded": "",
-            "error": {"kind": ("infra" if code == 2 else "fail"), "type": "overlay_failed", "message": "see overlay_report"},
+            "error": {
+                "kind": ("infra" if code == 2 else "fail"),
+                "type": "overlay_failed",
+                "message": "see overlay_report",
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, code)
@@ -348,15 +428,34 @@ def main() -> None:
     overlay_rep = json.loads(overlay_report.read_text(encoding="utf-8-sig"))
     oh = overlay_hash_from_report(overlay_rep, base_rel)
     cust_rel = derive_customer_release_id(product_id, base_rel, request_id, oh)
-    append_event(events_jsonl, run_id, "release_id_derived", {"customer_release_id": cust_rel, "overlay_hash": oh})
+    append_event(
+        events_jsonl,
+        run_id,
+        "release_id_derived",
+        {"customer_release_id": cust_rel, "overlay_hash": oh},
+    )
 
     # ---- step 5: pack custom release ----
     p_obj, p_infra, p_rc = run_py_module(
-        repo, evidence_dir, "pack_custom",
+        repo,
+        evidence_dir,
+        "pack_custom",
         "args.foundry.release_pack_v0",
-        ["--product-id", product_id, "--product-dist", str(workspace_dist), "--release-id", cust_rel],
+        [
+            "--product-id",
+            product_id,
+            "--product-dist",
+            str(workspace_dist),
+            "--release-id",
+            cust_rel,
+        ],
     )
-    append_event(events_jsonl, run_id, "pack_done", {"rc": p_rc, "infra": p_infra, "customer_release_id": cust_rel})
+    append_event(
+        events_jsonl,
+        run_id,
+        "pack_done",
+        {"rc": p_rc, "infra": p_infra, "customer_release_id": cust_rel},
+    )
     if p_infra or p_rc != 0:
         code = 2 if (p_infra or p_rc == 2) else 1
         final = {
@@ -387,7 +486,11 @@ def main() -> None:
                 "overlay_hash": oh,
                 "customer_release_id": cust_rel,
             },
-            "error": {"kind": ("infra" if code == 2 else "fail"), "type": "pack_failed", "message": cust_rel},
+            "error": {
+                "kind": ("infra" if code == 2 else "fail"),
+                "type": "pack_failed",
+                "message": cust_rel,
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, code)
@@ -397,11 +500,18 @@ def main() -> None:
 
     # ---- step 6: verify new release ----
     vn_obj, vn_infra, vn_rc = run_py_module(
-        repo, evidence_dir, "verify_new",
+        repo,
+        evidence_dir,
+        "verify_new",
         "args.foundry.release_verify_v0",
         ["--release-id", cust_rel],
     )
-    append_event(events_jsonl, run_id, "verify_new_done", {"rc": vn_rc, "infra": vn_infra, "customer_release_id": cust_rel})
+    append_event(
+        events_jsonl,
+        run_id,
+        "verify_new_done",
+        {"rc": vn_rc, "infra": vn_infra, "customer_release_id": cust_rel},
+    )
     if vn_infra or vn_rc != 0:
         code = 2 if (vn_infra or vn_rc == 2) else 1
         final = {
@@ -432,7 +542,11 @@ def main() -> None:
                 "overlay_hash": oh,
                 "customer_release_id": cust_rel,
             },
-            "error": {"kind": ("infra" if code == 2 else "fail"), "type": "new_release_verify_failed", "message": cust_rel},
+            "error": {
+                "kind": ("infra" if code == 2 else "fail"),
+                "type": "new_release_verify_failed",
+                "message": cust_rel,
+            },
         }
         write_json_no_bom(final_json, final)
         emit_final_and_exit(final, code)
@@ -468,7 +582,9 @@ def main() -> None:
         },
     }
     write_json_no_bom(final_json, final)
-    append_event(events_jsonl, run_id, "done", {"ok": True, "customer_release_id": cust_rel})
+    append_event(
+        events_jsonl, run_id, "done", {"ok": True, "customer_release_id": cust_rel}
+    )
     emit_final_and_exit(final, 0)
 
 

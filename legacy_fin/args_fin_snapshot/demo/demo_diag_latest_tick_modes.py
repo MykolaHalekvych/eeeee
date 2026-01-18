@@ -23,7 +23,11 @@ def _evt_type(evt: Dict[str, Any]) -> str:
 
 
 def _latest_events_file(data_dir: Path) -> Optional[Path]:
-    files = sorted(data_dir.glob("events_run_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(
+        data_dir.glob("events_run_*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     return files[0] if files else None
 
 
@@ -72,7 +76,11 @@ def main() -> int:
             types_seen[t] = types_seen.get(t, 0) + 1
 
             # Prefer event with MA output
-            if isinstance(evt, dict) and ("risk_envelope" in evt) and ("ma_decision" in evt):
+            if (
+                isinstance(evt, dict)
+                and ("risk_envelope" in evt)
+                and ("ma_decision" in evt)
+            ):
                 first_candidate = evt
                 break
 
@@ -86,7 +94,9 @@ def main() -> int:
 
     if first_candidate is None:
         print(f"[diag] file={f.name}")
-        print(f"[diag] no candidate event with risk_envelope/ma_decision (scanned={scanned})")
+        print(
+            f"[diag] no candidate event with risk_envelope/ma_decision (scanned={scanned})"
+        )
         top = sorted(types_seen.items(), key=lambda kv: kv[1], reverse=True)[:12]
         print("[diag] top event types:")
         for k, v in top:
@@ -96,16 +106,26 @@ def main() -> int:
     evt = first_candidate
 
     # --- Core fields
-    exec_gm = _norm(_deep_get(evt, "exec.global_mode") or _deep_get(evt, "ma_input.exec.global_mode"))
+    exec_gm = _norm(
+        _deep_get(evt, "exec.global_mode")
+        or _deep_get(evt, "ma_input.exec.global_mode")
+    )
     risk_mode = _norm(_deep_get(evt, "risk_envelope.mode"))
-    enforced_no_trade = bool(_deep_get(evt, "risk_envelope.enforced_no_trade", False) or evt.get("enforced_no_trade"))
+    enforced_no_trade = bool(
+        _deep_get(evt, "risk_envelope.enforced_no_trade", False)
+        or evt.get("enforced_no_trade")
+    )
     ma_decision = evt.get("ma_decision")
 
     # --- Inputs (truth) + limits
     ma_input = evt.get("ma_input", {}) if isinstance(evt.get("ma_input"), dict) else {}
     st = ma_input.get("state", {}) if isinstance(ma_input.get("state"), dict) else {}
     rk = ma_input.get("risk", {}) if isinstance(ma_input.get("risk"), dict) else {}
-    limits = _deep_get(evt, "risk_envelope.limits", {}) if isinstance(_deep_get(evt, "risk_envelope.limits"), dict) else {}
+    limits = (
+        _deep_get(evt, "risk_envelope.limits", {})
+        if isinstance(_deep_get(evt, "risk_envelope.limits"), dict)
+        else {}
+    )
 
     state_regime = st.get("regime")
     state_conf = st.get("confidence")
@@ -115,7 +135,9 @@ def main() -> int:
     conf_min = limits.get("conf_min")
     margin_max = limits.get("margin_max")
 
-    violations = evt.get("violations", []) if isinstance(evt.get("violations"), list) else []
+    violations = (
+        evt.get("violations", []) if isinstance(evt.get("violations"), list) else []
+    )
 
     print(f"[diag] file={f.name}")
     print(f"[diag] event_type={_evt_type(evt)}")
@@ -127,9 +149,13 @@ def main() -> int:
     # --- Explain section (this is the Step-5 finishing move)
     print("[diag] --- truth snapshot (ma_input) ---")
     print(f"[diag] state.regime={_fmt_val(state_regime)}")
-    print(f"[diag] state.confidence={_fmt_val(state_conf)}  (conf_min={_fmt_val(conf_min)})")
+    print(
+        f"[diag] state.confidence={_fmt_val(state_conf)}  (conf_min={_fmt_val(conf_min)})"
+    )
     print(f"[diag] state.tail_risk={_fmt_val(state_tail)}")
-    print(f"[diag] risk.margin_usage={_fmt_val(margin_usage)} (margin_max={_fmt_val(margin_max)})")
+    print(
+        f"[diag] risk.margin_usage={_fmt_val(margin_usage)} (margin_max={_fmt_val(margin_max)})"
+    )
 
     print(f"[diag] violations_count={len(violations)}")
     if violations:
@@ -143,16 +169,26 @@ def main() -> int:
 
     # --- Regression invariants (original)
     # 1) If not enforced and operator says ALLOW_NEW_ENTRIES -> mode must be ALLOW_NEW_ENTRIES
-    if (not enforced_no_trade) and exec_gm == "ALLOW_NEW_ENTRIES" and risk_mode != "ALLOW_NEW_ENTRIES":
-        raise SystemExit("[diag] FAIL: exec.global_mode=ALLOW_NEW_ENTRIES but risk_envelope.mode != ALLOW_NEW_ENTRIES")
+    if (
+        (not enforced_no_trade)
+        and exec_gm == "ALLOW_NEW_ENTRIES"
+        and risk_mode != "ALLOW_NEW_ENTRIES"
+    ):
+        raise SystemExit(
+            "[diag] FAIL: exec.global_mode=ALLOW_NEW_ENTRIES but risk_envelope.mode != ALLOW_NEW_ENTRIES"
+        )
 
     # 2) Can't be ALLOW while mode NO_TRADE
     if ma_decision == "ALLOW" and risk_mode == "NO_TRADE":
-        raise SystemExit("[diag] FAIL: ma_decision=ALLOW while risk_envelope.mode=NO_TRADE")
+        raise SystemExit(
+            "[diag] FAIL: ma_decision=ALLOW while risk_envelope.mode=NO_TRADE"
+        )
 
     # When enforced_no_trade=True, operator override is expected to be dominated
     if enforced_no_trade and exec_gm == "ALLOW_NEW_ENTRIES":
-        print("[diag] NOTE: Operator ALLOW_NEW_ENTRIES is dominated by enforced_no_trade (expected).")
+        print(
+            "[diag] NOTE: Operator ALLOW_NEW_ENTRIES is dominated by enforced_no_trade (expected)."
+        )
 
     print("[diag] OK")
     return 0
@@ -160,4 +196,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

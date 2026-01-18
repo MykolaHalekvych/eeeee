@@ -29,7 +29,11 @@ def utc_run_id() -> str:
 
 def write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, sort_keys=True), encoding="utf-8", newline="\n")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
@@ -65,7 +69,9 @@ def parse_release_id(fname: str) -> Tuple[str, str] | None:
     return product_id, base
 
 
-def plan_dist_releases(releases_dir: Path, keep_last_per_product: int, pinned_release_ids: List[str]) -> Dict[str, Any]:
+def plan_dist_releases(
+    releases_dir: Path, keep_last_per_product: int, pinned_release_ids: List[str]
+) -> Dict[str, Any]:
     files = [p for p in releases_dir.glob("*") if p.is_file()]
     by_product: Dict[str, List[Tuple[float, str, Path]]] = {}
     for p in files:
@@ -125,7 +131,12 @@ def classify_run(final_report_path: Path) -> str:
         return "UNKNOWN"
 
 
-def plan_runs(runs_dir: Path, keep_last_pass: int, keep_days_fail_infra: int, keep_run_ids: List[str]) -> Dict[str, Any]:
+def plan_runs(
+    runs_dir: Path,
+    keep_last_pass: int,
+    keep_days_fail_infra: int,
+    keep_run_ids: List[str],
+) -> Dict[str, Any]:
     keep_set = set(keep_run_ids)
 
     dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
@@ -180,7 +191,11 @@ def plan_tmp(tmp_dir: Path, max_age_days: int) -> Dict[str, Any]:
         if mtime < cutoff and p.is_file():
             delete_files.append(str(p))
 
-    for d in sorted([x for x in tmp_dir.rglob("*") if x.is_dir()], key=lambda x: len(str(x)), reverse=True):
+    for d in sorted(
+        [x for x in tmp_dir.rglob("*") if x.is_dir()],
+        key=lambda x: len(str(x)),
+        reverse=True,
+    ):
         try:
             if not any(d.iterdir()):
                 mtime = datetime.fromtimestamp(d.stat().st_mtime, tz=timezone.utc)
@@ -255,12 +270,18 @@ def main() -> int:
             "error": {"kind": kind, "message": msg},
         }
         write_json(final_report_json, out)
-        append_jsonl(events_jsonl, {"ts_utc": utc_now_iso(), "kind": "RETENTION_FAIL", "error": out["error"]})
+        append_jsonl(
+            events_jsonl,
+            {"ts_utc": utc_now_iso(), "kind": "RETENTION_FAIL", "error": out["error"]},
+        )
         sys.stdout.write(json.dumps(out, ensure_ascii=False, sort_keys=True))
         return code
 
     try:
-        append_jsonl(events_jsonl, {"ts_utc": utc_now_iso(), "kind": "RETENTION_START", "mode": args.mode})
+        append_jsonl(
+            events_jsonl,
+            {"ts_utc": utc_now_iso(), "kind": "RETENTION_START", "mode": args.mode},
+        )
         policy = load_retention_policy_v1(args.policy)
 
         artifact_root = Path(policy.artifact_root)
@@ -269,18 +290,31 @@ def main() -> int:
         tmp_dir = repo / Path(policy.tmp_dir)
 
         if args.mode == "apply" and str(args.confirm_delete).upper() != "YES":
-            return fail(RC_FAIL, "confirm_required", "apply_requires_confirm_delete_YES")
+            return fail(
+                RC_FAIL, "confirm_required", "apply_requires_confirm_delete_YES"
+            )
 
         if not releases_dir.exists():
-            return fail(RC_INFRA, "missing_dir", f"releases_dir_not_found:{releases_dir}")
+            return fail(
+                RC_INFRA, "missing_dir", f"releases_dir_not_found:{releases_dir}"
+            )
 
         missing_pins = check_pinned_exist(releases_dir, policy.pinned_release_ids)
         if missing_pins:
-            write_json(evidence_dir / "retention_missing_pins.json", {"missing": missing_pins})
+            write_json(
+                evidence_dir / "retention_missing_pins.json", {"missing": missing_pins}
+            )
             return fail(RC_FAIL, "missing_pins", f"missing_pins:{len(missing_pins)}")
 
-        dist_plan = plan_dist_releases(releases_dir, policy.keep_last_per_product, policy.pinned_release_ids)
-        runs_plan = plan_runs(runs_dir_cfg, policy.keep_last_pass, policy.keep_days_fail_infra, policy.keep_run_ids)
+        dist_plan = plan_dist_releases(
+            releases_dir, policy.keep_last_per_product, policy.pinned_release_ids
+        )
+        runs_plan = plan_runs(
+            runs_dir_cfg,
+            policy.keep_last_pass,
+            policy.keep_days_fail_infra,
+            policy.keep_run_ids,
+        )
         tmp_plan = plan_tmp(tmp_dir, policy.max_age_days)
 
         plan = {
@@ -304,12 +338,25 @@ def main() -> int:
                 if not ensure_under(artifact_root, c):
                     bad.append(str(c))
             if bad:
-                write_json(evidence_dir / "retention_bad_paths.json", {"bad_paths": bad})
-                return fail(RC_FAIL, "scope_violation", f"delete_targets_outside_artifact_root:{len(bad)}")
+                write_json(
+                    evidence_dir / "retention_bad_paths.json", {"bad_paths": bad}
+                )
+                return fail(
+                    RC_FAIL,
+                    "scope_violation",
+                    f"delete_targets_outside_artifact_root:{len(bad)}",
+                )
 
         plan_path = evidence_dir / "retention_plan_v1.json"
         write_json(plan_path, plan)
-        append_jsonl(events_jsonl, {"ts_utc": utc_now_iso(), "kind": "RETENTION_PLAN_WRITTEN", "plan_path": str(plan_path)})
+        append_jsonl(
+            events_jsonl,
+            {
+                "ts_utc": utc_now_iso(),
+                "kind": "RETENTION_PLAN_WRITTEN",
+                "plan_path": str(plan_path),
+            },
+        )
 
         applied: Dict[str, Any] | None = None
         if args.mode == "apply":
@@ -329,10 +376,19 @@ def main() -> int:
                     applied["errors"].append({"path": s, "error": str(e)})
 
             write_json(evidence_dir / "retention_apply_v1.json", applied)
-            append_jsonl(events_jsonl, {"ts_utc": utc_now_iso(), "kind": "RETENTION_APPLY_DONE", "summary": applied})
+            append_jsonl(
+                events_jsonl,
+                {
+                    "ts_utc": utc_now_iso(),
+                    "kind": "RETENTION_APPLY_DONE",
+                    "summary": applied,
+                },
+            )
 
             if applied["errors"]:
-                return fail(RC_INFRA, "delete_errors", f"delete_errors:{len(applied['errors'])}")
+                return fail(
+                    RC_INFRA, "delete_errors", f"delete_errors:{len(applied['errors'])}"
+                )
 
         ended = utc_now_iso()
         out = {

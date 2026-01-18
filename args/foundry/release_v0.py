@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -34,7 +34,10 @@ def read_json(path: Path) -> Dict[str, Any]:
 
 def write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -61,7 +64,9 @@ def git_short_head(repo_root: Path) -> str:
         return "nogit"
 
 
-def policy_check_export(cp: Dict[str, Any], product_id: str, factory_id: str) -> Tuple[bool, List[str]]:
+def policy_check_export(
+    cp: Dict[str, Any], product_id: str, factory_id: str
+) -> Tuple[bool, List[str]]:
     blocked: List[str] = []
     engine = cp.get("engine", {}) if isinstance(cp, dict) else {}
     perms = engine.get("permissions", {}) if isinstance(engine, dict) else {}
@@ -72,9 +77,17 @@ def policy_check_export(cp: Dict[str, Any], product_id: str, factory_id: str) ->
 
     products = allow.get("products", [])
     factories = allow.get("factories", [])
-    if not isinstance(products, list) or len(products) == 0 or product_id not in products:
+    if (
+        not isinstance(products, list)
+        or len(products) == 0
+        or product_id not in products
+    ):
         blocked.append("product_not_in_allowlist")
-    if not isinstance(factories, list) or len(factories) == 0 or factory_id not in factories:
+    if (
+        not isinstance(factories, list)
+        or len(factories) == 0
+        or factory_id not in factories
+    ):
         blocked.append("factory_not_in_allowlist")
 
     return (len(blocked) == 0), blocked
@@ -143,7 +156,14 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     # control plane
@@ -163,7 +183,14 @@ def main() -> int:
 
     ok_pol, blocked_by = policy_check_export(cp, args.product, args.factory)
     if not ok_pol:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_INFRA, "blocked_by": blocked_by})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "blocked_by": blocked_by,
+            }
+        )
         return EXIT_INFRA
 
     # manifests
@@ -173,14 +200,28 @@ def main() -> int:
             raise ManifestError(f"unknown factory_id: {args.factory}")
         product = load_product(repo_root, args.product)
     except ManifestError as e:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     out_dir = repo_root / factories[args.factory].default_out_dir / product.product_id
 
     ok_dist, dist_err = validate_dist(out_dir)
     if not ok_dist:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_EVAL_FAIL, "error": dist_err})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_EVAL_FAIL,
+                "error": dist_err,
+            }
+        )
         return EXIT_EVAL_FAIL
 
     ok_hash, hash_err, hashes_obj = validate_hashes(out_dir)
@@ -196,7 +237,9 @@ def main() -> int:
         return EXIT_EVAL_FAIL
 
     git_short = git_short_head(repo_root)
-    release_id = args.release_id or f"{product.product_id}__v{product.version}__{git_short}"
+    release_id = (
+        args.release_id or f"{product.product_id}__v{product.version}__{git_short}"
+    )
 
     releases_dir = repo_root / "dist" / "releases"
     zip_path = releases_dir / f"{release_id}.zip"
@@ -204,7 +247,14 @@ def main() -> int:
     try:
         make_release_zip(zip_path, product.product_id, out_dir)
     except Exception as e:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_INFRA, "error": f"zip write failed: {type(e).__name__}: {e}"})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": f"zip write failed: {type(e).__name__}: {e}",
+            }
+        )
         return EXIT_INFRA
 
     release_hashes = {
@@ -226,7 +276,14 @@ def main() -> int:
     try:
         write_json(release_hash_path, release_hashes)
     except Exception as e:
-        dump({"schema": "foundry_release_v0", "ok": False, "exit_code": EXIT_INFRA, "error": f"release hashes write failed: {type(e).__name__}: {e}"})
+        dump(
+            {
+                "schema": "foundry_release_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": f"release hashes write failed: {type(e).__name__}: {e}",
+            }
+        )
         return EXIT_INFRA
 
     dump(

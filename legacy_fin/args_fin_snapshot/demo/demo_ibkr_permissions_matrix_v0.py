@@ -2,16 +2,17 @@
 from args.control.ibkr_effective_permissions_v0 import compute_effective_permissions
 
 CASES = [
-    ("DRY_RUN",  "ALLOW_NEW_ENTRIES"),
-    ("DRY_RUN",  "ONLY_EXITS"),
-    ("DRY_RUN",  "NO_TRADE"),
-    ("EXIT_ONLY","ALLOW_NEW_ENTRIES"),
-    ("EXIT_ONLY","ONLY_EXITS"),
-    ("EXIT_ONLY","NO_TRADE"),
-    ("FULL",     "ALLOW_NEW_ENTRIES"),
-    ("FULL",     "ONLY_EXITS"),
-    ("FULL",     "NO_TRADE"),
+    ("DRY_RUN", "ALLOW_NEW_ENTRIES"),
+    ("DRY_RUN", "ONLY_EXITS"),
+    ("DRY_RUN", "NO_TRADE"),
+    ("EXIT_ONLY", "ALLOW_NEW_ENTRIES"),
+    ("EXIT_ONLY", "ONLY_EXITS"),
+    ("EXIT_ONLY", "NO_TRADE"),
+    ("FULL", "ALLOW_NEW_ENTRIES"),
+    ("FULL", "ONLY_EXITS"),
+    ("FULL", "NO_TRADE"),
 ]
+
 
 def main() -> None:
     for e, r in CASES:
@@ -36,6 +37,7 @@ def main() -> None:
     assert p.allow_cancel_all is True
 
     print("OK: permission matrix assertions passed")
+
 
 if __name__ == "__main__":
     main()

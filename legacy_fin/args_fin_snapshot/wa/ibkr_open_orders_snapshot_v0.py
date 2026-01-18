@@ -130,7 +130,9 @@ class _SnapshotApp:
       - IBKR_ERROR (real errors)
     """
 
-    def __init__(self, conn: IbkrConn, *, tag: str, out_path: Path, wait_after_end_s: float) -> None:
+    def __init__(
+        self, conn: IbkrConn, *, tag: str, out_path: Path, wait_after_end_s: float
+    ) -> None:
         from ibapi.client import EClient  # type: ignore
         from ibapi.wrapper import EWrapper  # type: ignore
 
@@ -190,14 +192,20 @@ class _SnapshotApp:
                     clientId=clientId,
                 )
 
-            def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:  # type: ignore  # noqa: N802
-                self._outer._on_error(reqId, errorCode, errorString, advancedOrderRejectJson)
+            def error(
+                self, reqId, errorCode, errorString, advancedOrderRejectJson=""
+            ) -> None:  # type: ignore  # noqa: N802
+                self._outer._on_error(
+                    reqId, errorCode, errorString, advancedOrderRejectJson
+                )
 
         self._app = App(self)
         self._thread: Optional[threading.Thread] = None
 
     def connect(self) -> None:
-        self._app.connect(self._conn.host, int(self._conn.port), int(self._conn.client_id))
+        self._app.connect(
+            self._conn.host, int(self._conn.port), int(self._conn.client_id)
+        )
         self._thread = threading.Thread(target=self._app.run, daemon=True)
         self._thread.start()
 
@@ -288,7 +296,9 @@ class _SnapshotApp:
         self._next_id = int(order_id)
         self._next_id_ev.set()
 
-    def _on_open_order(self, order_id: Any, contract: Any, order: Any, order_state: Any) -> None:
+    def _on_open_order(
+        self, order_id: Any, contract: Any, order: Any, order_state: Any
+    ) -> None:
         try:
             oid = int(order_id)
         except Exception:
@@ -366,14 +376,16 @@ class _SnapshotApp:
         with self._lock:
             self._status_events += 1
 
-    def _on_error(self, req_id: Any, error_code: Any, error_str: Any, advanced: Any) -> None:
+    def _on_error(
+        self, req_id: Any, error_code: Any, error_str: Any, advanced: Any
+    ) -> None:
         # classify info vs error
         try:
             code_i = int(error_code)
         except Exception:
             code_i = None
 
-        is_info = (code_i in _INFO_CODES)
+        is_info = code_i in _INFO_CODES
 
         ev = {
             "schema_version": SCHEMA_VERSION,
@@ -402,8 +414,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="ibkr_open_orders_snapshot_v0")
 
     ap.add_argument("--tag", default="", help="snapshot tag (default: auto)")
-    ap.add_argument("--out", default="", help="output jsonl (default: args/data/ibkr_open_orders_<tag>.jsonl)")
-    ap.add_argument("--all-open", default="0", help="0/1: reqAllOpenOrders (else reqOpenOrders)")
+    ap.add_argument(
+        "--out",
+        default="",
+        help="output jsonl (default: args/data/ibkr_open_orders_<tag>.jsonl)",
+    )
+    ap.add_argument(
+        "--all-open", default="0", help="0/1: reqAllOpenOrders (else reqOpenOrders)"
+    )
 
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7497)
@@ -431,7 +449,9 @@ def main() -> int:
         timeout_s=float(args.timeout_s),
     )
 
-    app = _SnapshotApp(conn, tag=tag, out_path=out_path, wait_after_end_s=float(args.wait_after_end_s))
+    app = _SnapshotApp(
+        conn, tag=tag, out_path=out_path, wait_after_end_s=float(args.wait_after_end_s)
+    )
     app.connect()
     try:
         app.request_snapshot(all_open=all_open)

@@ -1,5 +1,3 @@
-
-
 # args/ops/reset_verify_v1.py
 from __future__ import annotations
 
@@ -89,8 +87,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ap.add_argument("--control-plane", default=str(DATA_DIR / "control_plane.json"))
     ap.add_argument("--out", default=str(DATA_DIR / "reset_verify_v1_report.json"))
-    ap.add_argument("--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json"))
-    ap.add_argument("--open-orders-out", default=str(DATA_DIR / "ibkr_open_orders_live.json"))
+    ap.add_argument(
+        "--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json")
+    )
+    ap.add_argument(
+        "--open-orders-out", default=str(DATA_DIR / "ibkr_open_orders_live.json")
+    )
 
     args = ap.parse_args(argv)
     ts = _utc_now_iso()

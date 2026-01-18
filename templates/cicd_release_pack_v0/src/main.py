@@ -1,4 +1,4 @@
-﻿# templates/cicd_release_pack_v0/src/main.py
+# templates/cicd_release_pack_v0/src/main.py
 # Contract:
 # - Emit exactly one JSON line to stdout per invocation (best-effort).
 # - Exit codes: 0 OK, 1 FAIL (user error), 2 INFRA (unexpected exception).
@@ -22,7 +22,10 @@ def _ts_utc() -> str:
 
 def _json_line(payload: Dict[str, Any]) -> str:
     # Single-line JSON for logs
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False) + "\n"
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
+        + "\n"
+    )
 
 
 def _os_write_all(fd: int, data: bytes) -> bool:
@@ -205,4 +208,3 @@ def _safe_entry(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_safe_entry(sys.argv))
-

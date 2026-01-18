@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -16,7 +16,7 @@ def main() -> int:
         symbol="MHG",
         exchange="COMEX",
         currency="USD",
-        sec_type="CONTFUT",     # try continuous future first
+        sec_type="CONTFUT",  # try continuous future first
         bar_size="5 mins",
         duration="1 D",
         what_to_show="TRADES",
@@ -39,4 +39,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

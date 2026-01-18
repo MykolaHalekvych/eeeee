@@ -70,7 +70,9 @@ def diff_policies(old_policy_path: str, new_policy_path: str) -> Dict[str, Any]:
 
     report["policy_names"] = {"old": oldp.name, "new": newp.name}
 
-    report["decision_set_allowed"] = _list_diff(oldp.allowed_decisions, newp.allowed_decisions)
+    report["decision_set_allowed"] = _list_diff(
+        oldp.allowed_decisions, newp.allowed_decisions
+    )
     report["risk_limits"] = _dict_diff(oldp.risk_limits, newp.risk_limits)
 
     # Rule diffs per block
@@ -116,7 +118,11 @@ def diff_policies(old_policy_path: str, new_policy_path: str) -> Dict[str, Any]:
             "added": added,
             "removed": removed,
             "changed": changed,
-            "counts": {"added": len(added), "removed": len(removed), "changed": len(changed)},
+            "counts": {
+                "added": len(added),
+                "removed": len(removed),
+                "changed": len(changed),
+            },
         }
 
     report["rules"] = blocks_report

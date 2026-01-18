@@ -31,14 +31,26 @@ class ControlPlane:
         return ControlPlane(
             execution_mode=str(raw.get("execution_mode", "PAPER")),
             enable_paper_execution=bool(raw.get("enable_paper_execution", True)),
-            global_mode=str(raw.get("global_mode", raw.get("globalMode", "ONLY_EXITS"))),
+            global_mode=str(
+                raw.get("global_mode", raw.get("globalMode", "ONLY_EXITS"))
+            ),
             allowlist=list(raw.get("allowlist", raw.get("allowList", [])) or []),
             run_root=str(raw.get("run_root", raw.get("runRoot", "runs"))),
-            kill_switch_file=str(raw.get("kill_switch_file", raw.get("killSwitchFile", "stop.flag"))),
-            safe_mode_file=str(raw.get("safe_mode_file", raw.get("safeModeFile", "safe_mode.flag"))),
-            cool_down_seconds=int(raw.get("cool_down_seconds", raw.get("coolDownSeconds", 30))),
-            max_actions_per_second=float(raw.get("max_actions_per_second", raw.get("maxActionsPerSecond", 10.0))),
-            max_actions_burst=int(raw.get("max_actions_burst", raw.get("maxActionsBurst", 20))),
+            kill_switch_file=str(
+                raw.get("kill_switch_file", raw.get("killSwitchFile", "stop.flag"))
+            ),
+            safe_mode_file=str(
+                raw.get("safe_mode_file", raw.get("safeModeFile", "safe_mode.flag"))
+            ),
+            cool_down_seconds=int(
+                raw.get("cool_down_seconds", raw.get("coolDownSeconds", 30))
+            ),
+            max_actions_per_second=float(
+                raw.get("max_actions_per_second", raw.get("maxActionsPerSecond", 10.0))
+            ),
+            max_actions_burst=int(
+                raw.get("max_actions_burst", raw.get("maxActionsBurst", 20))
+            ),
             as_model_version=raw.get("as_model_version", raw.get("asModelVersion")),
         )
 

@@ -16,16 +16,22 @@ ALLOWED_QC = {"PASS"}  # canonical QC: PASS/FAIL
 
 @dataclass(frozen=True)
 class SafetyDecision:
-    decision: str   # "ALLOW", "NO_DECISION", "HALT"
+    decision: str  # "ALLOW", "NO_DECISION", "HALT"
     reason: str
     details: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         # defensive copy to avoid external mutation
-        return {"decision": self.decision, "reason": self.reason, "details": dict(self.details)}
+        return {
+            "decision": self.decision,
+            "reason": self.reason,
+            "details": dict(self.details),
+        }
 
 
-def _get_dict(parent: Dict[str, Any], key: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def _get_dict(
+    parent: Dict[str, Any], key: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     v = parent.get(key)
     if v is None:
         return None, f"missing:{key}"
@@ -74,7 +80,11 @@ def evaluate_live_safety(ma_input: Dict[str, Any]) -> SafetyDecision:
         return SafetyDecision(
             decision="NO_DECISION",
             reason="Invalid kill_switch type (expected bool).",
-            details={"path": "exec.kill_switch", "value": ks, "type": type(ks).__name__},
+            details={
+                "path": "exec.kill_switch",
+                "value": ks,
+                "type": type(ks).__name__,
+            },
         )
 
     if ks:
@@ -104,13 +114,20 @@ def evaluate_live_safety(ma_input: Dict[str, Any]) -> SafetyDecision:
         return SafetyDecision(
             decision="NO_DECISION",
             reason="Invalid timestamp drift value.",
-            details={"path": "data.timestamp_drift_ms", "value": data.get("timestamp_drift_ms")},
+            details={
+                "path": "data.timestamp_drift_ms",
+                "value": data.get("timestamp_drift_ms"),
+            },
         )
     if abs(drift) > MAX_DRIFT_MS:
         return SafetyDecision(
             decision="NO_DECISION",
             reason="Timestamp drift too large.",
-            details={"path": "data.timestamp_drift_ms", "value": drift, "max_abs": MAX_DRIFT_MS},
+            details={
+                "path": "data.timestamp_drift_ms",
+                "value": drift,
+                "max_abs": MAX_DRIFT_MS,
+            },
         )
 
     # 3) missing bars
@@ -150,4 +167,3 @@ def evaluate_live_safety(ma_input: Dict[str, Any]) -> SafetyDecision:
         )
 
     return SafetyDecision(decision="ALLOW", reason="Safety gate passed.", details={})
-

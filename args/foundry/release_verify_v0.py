@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -43,7 +42,7 @@ def emit_and_exit(payload: Dict[str, Any], code: int) -> int:
     payload["schema"] = payload.get("schema", SCHEMA)
     payload["ts_utc"] = payload.get("ts_utc", utc_ts())
     payload["exit_code"] = int(code)
-    payload["ok"] = (int(code) == 0)
+    payload["ok"] = int(code) == 0
     s = json.dumps(payload, ensure_ascii=False)
     sys.stdout.write(s)
     sys.stdout.flush()
@@ -64,7 +63,9 @@ def run_exe_help(exe_path: Path) -> Tuple[Dict[str, Any], bool]:
     infra_flag=True only when OS-level execution failed (e.g., OSError 22).
     """
     try:
-        p = subprocess.run([str(exe_path), "--help"], capture_output=True, text=True, check=False)
+        p = subprocess.run(
+            [str(exe_path), "--help"], capture_output=True, text=True, check=False
+        )
         return (
             {
                 "skipped": False,
@@ -115,7 +116,9 @@ def _extract_member_atomic(z: zipfile.ZipFile, member: str, out_path: Path) -> N
 
 
 def main_inner() -> Tuple[Dict[str, Any], int]:
-    ap = argparse.ArgumentParser(description="Verify release zip integrity (integrity-only by default)")
+    ap = argparse.ArgumentParser(
+        description="Verify release zip integrity (integrity-only by default)"
+    )
     ap.add_argument("--repo", default=".")
     ap.add_argument("--release-id", required=True)
     ap.add_argument("--releases-dir", default=None)
@@ -123,7 +126,11 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
-    releases_dir = Path(args.releases_dir).resolve() if args.releases_dir else (repo / "dist" / "releases")
+    releases_dir = (
+        Path(args.releases_dir).resolve()
+        if args.releases_dir
+        else (repo / "dist" / "releases")
+    )
 
     release_zip = releases_dir / f"{args.release_id}.zip"
     release_hashes = releases_dir / f"{args.release_id}.hashes.json"
@@ -139,7 +146,9 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     # Zip artifact sha256 (outer zip file)
     zip_sha = sha256_file(release_zip)
-    expected_zip_sha = (((rh.get("artifacts") or {}).get("release_zip") or {}).get("sha256"))
+    expected_zip_sha = ((rh.get("artifacts") or {}).get("release_zip") or {}).get(
+        "sha256"
+    )
     if expected_zip_sha and str(expected_zip_sha).lower() != zip_sha.lower():
         errors.append("zip sha256 mismatch")
 
@@ -147,7 +156,13 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     file_sha256 = rh.get("file_sha256")
 
     verify_mode = "legacy_5_files"
-    expected_files: List[str] = ["app.exe", "config.example.json", "evidence.md", "hashes.json", "runbook.md"]
+    expected_files: List[str] = [
+        "app.exe",
+        "config.example.json",
+        "evidence.md",
+        "hashes.json",
+        "runbook.md",
+    ]
 
     if isinstance(included_files, list) and isinstance(file_sha256, dict):
         verify_mode = "manifest_superset"
@@ -169,7 +184,10 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                     zip_members_by_base[base] = full
 
             if duplicate_basenames:
-                errors.append("zip contains duplicate basenames: " + ",".join(sorted(set(duplicate_basenames))))
+                errors.append(
+                    "zip contains duplicate basenames: "
+                    + ",".join(sorted(set(duplicate_basenames)))
+                )
 
             zip_files = sorted(zip_members_by_base.keys())
 
@@ -178,17 +196,23 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                 expected_set = set(expected_files)
                 got_set = set(zip_files)
                 if expected_set != got_set:
-                    errors.append(f"zip content mismatch: expected {sorted(expected_set)} got {sorted(got_set)}")
+                    errors.append(
+                        f"zip content mismatch: expected {sorted(expected_set)} got {sorted(got_set)}"
+                    )
             else:
                 if zip_files != expected_files:
-                    errors.append(f"zip content mismatch: expected {expected_files} got {zip_files}")
+                    errors.append(
+                        f"zip content mismatch: expected {expected_files} got {zip_files}"
+                    )
 
             # Hash check (only when manifest provides file_sha256)
             if verify_mode == "manifest_superset" and isinstance(file_sha256, dict):
                 for name in expected_files:
                     expected_sha = file_sha256.get(name)
                     if not expected_sha:
-                        errors.append(f"missing expected sha256 for {name} in release_hashes")
+                        errors.append(
+                            f"missing expected sha256 for {name} in release_hashes"
+                        )
                         continue
                     member = zip_members_by_base.get(name)
                     if not member:
@@ -200,7 +224,9 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                         if str(expected_sha).lower() != actual.lower():
                             errors.append(f"sha256 mismatch for {name}")
                     except Exception as e:  # noqa: BLE001
-                        errors.append(f"zip read/hash error for {name}: {e.__class__.__name__}")
+                        errors.append(
+                            f"zip read/hash error for {name}: {e.__class__.__name__}"
+                        )
                         infra = True
 
     except zipfile.BadZipFile:
@@ -221,10 +247,14 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                 infra = True
     except Exception as e:  # noqa: BLE001
         errors.append(f"product_standard_gate_error: {e.__class__.__name__}")
-        product_standard = {"ok": False, "exit_code": 2, "errors": [f"{e.__class__.__name__}: {e}"]}
+        product_standard = {
+            "ok": False,
+            "exit_code": 2,
+            "errors": [f"{e.__class__.__name__}: {e}"],
+        }
         infra = True
 
-# EXE check (opt-in only) — runs from release zip member, not from dist/
+    # EXE check (opt-in only) — runs from release zip member, not from dist/
     exec_res: Dict[str, Any] = {"skipped": True, "rc": 0, "stdout": "", "stderr": ""}
     if args.run_exe_check == "YES":
         exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": ""}
@@ -234,17 +264,35 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
                 member = _find_member_by_basename(z, "app.exe")
                 if member is None:
                     errors.append("missing app.exe in zip")
-                    exec_res = {"skipped": False, "rc": 1, "stdout": "", "stderr": "", "path": "", "source": "release_zip"}
+                    exec_res = {
+                        "skipped": False,
+                        "rc": 1,
+                        "stdout": "",
+                        "stderr": "",
+                        "path": "",
+                        "source": "release_zip",
+                    }
                 else:
                     # Stable repo temp path (short, deterministic)
-                    exe_tmp_root = repo / "args" / "data" / "tmp" / "release_verify_v0_exe"
-                    exe_tmp_dir = exe_tmp_root / hashlib.sha256(args.release_id.encode("utf-8")).hexdigest()[:12]
+                    exe_tmp_root = (
+                        repo / "args" / "data" / "tmp" / "release_verify_v0_exe"
+                    )
+                    exe_tmp_dir = (
+                        exe_tmp_root
+                        / hashlib.sha256(args.release_id.encode("utf-8")).hexdigest()[
+                            :12
+                        ]
+                    )
                     exe_out = exe_tmp_dir / "app.exe"
 
                     _extract_member_atomic(z, member, exe_out)
 
                     # Verify exe sha if available
-                    expected_exe_sha = file_sha256.get("app.exe") if isinstance(file_sha256, dict) else None
+                    expected_exe_sha = (
+                        file_sha256.get("app.exe")
+                        if isinstance(file_sha256, dict)
+                        else None
+                    )
                     if expected_exe_sha:
                         actual_exe_sha = sha256_file(exe_out)
                         if str(expected_exe_sha).lower() != actual_exe_sha.lower():
@@ -309,7 +357,10 @@ def main() -> int:
         return emit_and_exit(payload, code)
     except Exception as e:  # noqa: BLE001
         code = classify_exit_code(e)
-        payload = {"schema": SCHEMA, "error": {"kind": e.__class__.__name__, "message": str(e)}}
+        payload = {
+            "schema": SCHEMA,
+            "error": {"kind": e.__class__.__name__, "message": str(e)},
+        }
         return emit_and_exit(payload, code)
 
 

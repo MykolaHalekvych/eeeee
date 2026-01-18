@@ -1,11 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from args.asys.as_v0_adapter import derive_ma_input_from_bar, parse_bar_row, pick_latest_bar
+from args.asys.as_v0_adapter import (
+    derive_ma_input_from_bar,
+    parse_bar_row,
+    pick_latest_bar,
+)
 from args.contracts.ma_input_contract import validate_ma_input
 from args.contracts.paths_from_policy import inventory_from_policy_yaml
 from args.ma.ma_runtime import eval_ma
@@ -42,7 +46,8 @@ def main() -> int:
         print("ERROR: no bar parsed:", csv_path)
         return 2
 
-    ma_input = derive_ma_input_from_bar(bar, 
+    ma_input = derive_ma_input_from_bar(
+        bar,
         bars=bars,
         qc="OK",
         stale_quotes=False,
@@ -73,7 +78,12 @@ def main() -> int:
     policy = load_policy(str(policy_path))
 
     # Debug (optional, helps confirm required fields are present)
-    print("DEBUG_FIELDS:", ma_input.get("instrument"), ma_input.get("timeframe"), ma_input.get("env"))
+    print(
+        "DEBUG_FIELDS:",
+        ma_input.get("instrument"),
+        ma_input.get("timeframe"),
+        ma_input.get("env"),
+    )
 
     report = eval_ma(policy, ma_input)
 

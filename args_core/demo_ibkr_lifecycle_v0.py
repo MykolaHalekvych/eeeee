@@ -48,7 +48,9 @@ def main() -> int:
         cp_path = repo / "control_plane.json"
 
     run_id = f"ibkr_lifecycle_{int(time.time())}"
-    eng = Engine(repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter)
+    eng = Engine(
+        repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter
+    )
 
     intent_id = f"adopt_{args.order_id}"
     eng.adopt_order(
@@ -65,23 +67,39 @@ def main() -> int:
     for i in range(int(args.steps)):
         eng.step()
         t = eng.state.tickets[intent_id]
-        cur = (t.state.value, t.terminal.value if t.terminal else None, round(t.filled_qty, 6), round(t.remaining_qty, 6))
+        cur = (
+            t.state.value,
+            t.terminal.value if t.terminal else None,
+            round(t.filled_qty, 6),
+            round(t.remaining_qty, 6),
+        )
         if cur != last:
-            print({"i": i, "state": cur[0], "terminal": cur[1], "filled": cur[2], "remaining": cur[3], "events_seen": eng.state.counters.get("events_seen")})
+            print(
+                {
+                    "i": i,
+                    "state": cur[0],
+                    "terminal": cur[1],
+                    "filled": cur[2],
+                    "remaining": cur[3],
+                    "events_seen": eng.state.counters.get("events_seen"),
+                }
+            )
             last = cur
         if t.is_terminal():
             break
         time.sleep(float(args.sleep))
 
     t = eng.state.tickets[intent_id]
-    print({
-        "run_dir": str(eng.run_dir),
-        "ticket_state": t.state.value,
-        "terminal": t.terminal.value if t.terminal else None,
-        "terminal_reason": t.terminal_reason,
-        "reconcile_last_ratio": eng.state.reconcile_last_ratio,
-        "events_seen": eng.state.counters.get("events_seen"),
-    })
+    print(
+        {
+            "run_dir": str(eng.run_dir),
+            "ticket_state": t.state.value,
+            "terminal": t.terminal.value if t.terminal else None,
+            "terminal_reason": t.terminal_reason,
+            "reconcile_last_ratio": eng.state.reconcile_last_ratio,
+            "events_seen": eng.state.counters.get("events_seen"),
+        }
+    )
     return 0
 
 

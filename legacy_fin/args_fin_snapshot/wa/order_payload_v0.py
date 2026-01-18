@@ -18,7 +18,7 @@ _RX_INTENTS = re.compile(r"^order_intents_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class PayloadBuildConfig:
-    execute: bool = False            # metadata only; executor is controlled elsewhere
+    execute: bool = False  # metadata only; executor is controlled elsewhere
     default_qty: int = 1
     order_type: str = "MKT"
     tif: str = "DAY"
@@ -26,7 +26,7 @@ class PayloadBuildConfig:
     # engineering probe
     force_one_order: bool = False
     force_order_side: str = "BUY"
-    force_order_symbol: str = "AAPL"   # SAFE default (NOT HG)
+    force_order_symbol: str = "AAPL"  # SAFE default (NOT HG)
 
 
 @dataclass
@@ -65,7 +65,9 @@ def _infer_run_id_from_intents_path(intents_path: Path) -> str:
     return m.group("rid") if m else "unknown"
 
 
-def _iter_jsonl_dicts(path: Path, stats: JsonlReadStats, *, max_lines: int = 250_000) -> Iterator[Dict[str, Any]]:
+def _iter_jsonl_dicts(
+    path: Path, stats: JsonlReadStats, *, max_lines: int = 250_000
+) -> Iterator[Dict[str, Any]]:
     """
     Stream JSONL dicts while updating stats. Single pass, safe for large files.
     """
@@ -96,7 +98,11 @@ def _write_jsonl_atomic(out_path: Path, rows: Iterator[Dict[str, Any]]) -> int:
     n = 0
     with tmp.open("w", encoding="utf-8") as f:
         for obj in rows:
-            f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            f.write(
+                json.dumps(
+                    obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+            )
             f.write("\n")
             n += 1
     tmp.replace(out_path)
@@ -153,7 +159,9 @@ def _normalize_intent_kind(intent: Dict[str, Any]) -> str:
     return k
 
 
-def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[str, Any]:
+def intent_to_payload(
+    intent: Dict[str, Any], cfg: PayloadBuildConfig
+) -> Dict[str, Any]:
     """
     Converts one intent dict → payload dict.
     Always returns a dict payload (PAYLOAD_NONE or IBKR_ORDER).
@@ -175,18 +183,21 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
         "instrument": instrument,
         "timeframe": timeframe,
         "env": env,
-
         # audit context propagated downstream
         "ma_decision": intent.get("ma_decision") or intent.get("decision"),
         "gate_reason": intent.get("gate_reason"),
         "mode": intent.get("mode"),
         "mode_source": intent.get("mode_source"),
-        "rule_ids": intent.get("rule_ids") if isinstance(intent.get("rule_ids"), list) else [],
-
+        "rule_ids": intent.get("rule_ids")
+        if isinstance(intent.get("rule_ids"), list)
+        else [],
         # payload metadata
         "execute": bool(cfg.execute),
         "intent_kind": k_norm,
-        "intent_kind_raw": intent.get("intent_kind") or intent.get("kind") or intent.get("type") or "",
+        "intent_kind_raw": intent.get("intent_kind")
+        or intent.get("kind")
+        or intent.get("type")
+        or "",
         "payload_id": intent.get("intent_id") or intent.get("id") or "",
         "payload_kind": PAYLOAD_KIND_NONE,
         "reason": "intent_none",
@@ -204,7 +215,11 @@ def intent_to_payload(intent: Dict[str, Any], cfg: PayloadBuildConfig) -> Dict[s
 
     # If intent already contains ibkr payload (passthrough)
     ibkr = intent.get("ibkr")
-    if isinstance(ibkr, dict) and isinstance(ibkr.get("contract"), dict) and isinstance(ibkr.get("order"), dict):
+    if (
+        isinstance(ibkr, dict)
+        and isinstance(ibkr.get("contract"), dict)
+        and isinstance(ibkr.get("order"), dict)
+    ):
         payload["payload_kind"] = PAYLOAD_KIND_IBKR_ORDER
         payload["ibkr"] = ibkr
         payload["reason"] = "intent_ibkr_passthrough"
@@ -277,7 +292,12 @@ def write_orders_payload(
                     payload["reason"] = "force_one_order_probe_fut_resolved"
                 else:
                     payload["ibkr"] = {
-                        "contract": {"secType": "STK", "symbol": sym, "exchange": "SMART", "currency": "USD"},
+                        "contract": {
+                            "secType": "STK",
+                            "symbol": sym,
+                            "exchange": "SMART",
+                            "currency": "USD",
+                        },
                         "order": {
                             "action": side,
                             "orderType": str(cfg.order_type),
@@ -354,16 +374,39 @@ def main() -> int:
         prog="order_payload_v0",
         description="Build orders_payload_<run_id>.jsonl from order_intents_<run_id>.jsonl",
     )
-    ap.add_argument("--intents", required=True, help="Path to order_intents_<run_id>.jsonl")
-    ap.add_argument("--out", default="", help="Optional output path (default derived from intents filename)")
-    ap.add_argument("--execute", default="0", help="0/1. Metadata only. Executor is controlled elsewhere.")
+    ap.add_argument(
+        "--intents", required=True, help="Path to order_intents_<run_id>.jsonl"
+    )
+    ap.add_argument(
+        "--out",
+        default="",
+        help="Optional output path (default derived from intents filename)",
+    )
+    ap.add_argument(
+        "--execute",
+        default="0",
+        help="0/1. Metadata only. Executor is controlled elsewhere.",
+    )
     ap.add_argument("--default-qty", type=int, default=1)
     ap.add_argument("--order-type", default="MKT", help="MKT/LMT (probe only)")
     ap.add_argument("--tif", default="DAY", help="DAY/GTC (probe only)")
 
-    ap.add_argument("--force-one-order", type=int, default=0, help="0/1. Force exactly one IBKR order payload (probe).")
-    ap.add_argument("--force-order-side", default="BUY", help="BUY/SELL (only used with --force-one-order 1)")
-    ap.add_argument("--force-order-symbol", default="AAPL", help="SAFE default AAPL (only used with --force-one-order 1)")
+    ap.add_argument(
+        "--force-one-order",
+        type=int,
+        default=0,
+        help="0/1. Force exactly one IBKR order payload (probe).",
+    )
+    ap.add_argument(
+        "--force-order-side",
+        default="BUY",
+        help="BUY/SELL (only used with --force-one-order 1)",
+    )
+    ap.add_argument(
+        "--force-order-symbol",
+        default="AAPL",
+        help="SAFE default AAPL (only used with --force-one-order 1)",
+    )
     ap.add_argument("--max-lines", type=int, default=250_000)
 
     args = ap.parse_args()
@@ -386,7 +429,12 @@ def main() -> int:
         force_order_symbol=str(args.force_order_symbol or "AAPL"),
     )
 
-    summary = write_orders_payload(intents_path=intents_path, out_path=out_path, cfg=cfg, max_lines=int(args.max_lines))
+    summary = write_orders_payload(
+        intents_path=intents_path,
+        out_path=out_path,
+        cfg=cfg,
+        max_lines=int(args.max_lines),
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("ok") else 2
 

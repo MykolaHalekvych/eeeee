@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -24,7 +24,9 @@ def _read_json_sig(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_bytes().decode("utf-8-sig"))
 
 
-def _extract_ibkr_conn(cp: Dict[str, Any], fallback_client_id: int = 79) -> Tuple[str, int, int]:
+def _extract_ibkr_conn(
+    cp: Dict[str, Any], fallback_client_id: int = 79
+) -> Tuple[str, int, int]:
     host = "localhost"
     port = 7497
     client_id = fallback_client_id
@@ -49,7 +51,9 @@ def _extract_ibkr_conn(cp: Dict[str, Any], fallback_client_id: int = 79) -> Tupl
     return host, port, client_id
 
 
-def _run_module(repo: Path, mod_args: List[str], timeout_s: int) -> Tuple[int, str, str]:
+def _run_module(
+    repo: Path, mod_args: List[str], timeout_s: int
+) -> Tuple[int, str, str]:
     p = subprocess.run(
         [sys.executable, "-m", *mod_args],
         cwd=str(repo),
@@ -105,11 +109,19 @@ class _App(EWrapper, EClient):
         mktCapPrice,
     ) -> None:
         self.status.append(
-            {"orderId": orderId, "status": status, "filled": filled, "remaining": remaining, "permId": permId}
+            {
+                "orderId": orderId,
+                "status": status,
+                "filled": filled,
+                "remaining": remaining,
+                "permId": permId,
+            }
         )
 
 
-def _gate_check(cp: Dict[str, Any], stop_flag: Path, require_halt: bool) -> Tuple[bool, str]:
+def _gate_check(
+    cp: Dict[str, Any], stop_flag: Path, require_halt: bool
+) -> Tuple[bool, str]:
     if not stop_flag.exists():
         return False, f"STOP_FLAG_REQUIRED: create {stop_flag}"
     if str(cp.get("execution_mode", "")).upper() != "PAPER":
@@ -121,7 +133,9 @@ def _gate_check(cp: Dict[str, Any], stop_flag: Path, require_halt: bool) -> Tupl
     return True, "OK"
 
 
-def _attempt_cancel(host: str, port: int, client_id: int, order_ids: List[int], sleep_s: float) -> Dict[str, Any]:
+def _attempt_cancel(
+    host: str, port: int, client_id: int, order_ids: List[int], sleep_s: float
+) -> Dict[str, Any]:
     attempt: Dict[str, Any] = {
         "client_id": client_id,
         "cancel_requested": [],
@@ -186,14 +200,26 @@ def main() -> int:
     ap.add_argument("--stop-flag", default="args/logs/stop.flag")
     ap.add_argument("--host", default="", help="Override IB host")
     ap.add_argument("--port", type=int, default=0, help="Override IB port")
-    ap.add_argument("--client-id", type=int, default=0, help="Override primary client id")
-    ap.add_argument("--also-try-client-ids", default="79,77", help="Comma-separated fallback client ids to try")
+    ap.add_argument(
+        "--client-id", type=int, default=0, help="Override primary client id"
+    )
+    ap.add_argument(
+        "--also-try-client-ids",
+        default="79,77",
+        help="Comma-separated fallback client ids to try",
+    )
     ap.add_argument("--timeout-s", type=int, default=35)
     ap.add_argument("--wait-s", type=int, default=6)
     ap.add_argument("--post-cancel-sleep-s", type=float, default=6.0)
     ap.add_argument("--require-halt", action="store_true", default=True)
-    ap.add_argument("--allow-non-halt", action="store_true", help="If set, do not require global_mode=HALT")
-    ap.add_argument("--open-orders-out", default="args/data/ibkr_open_orders_live.jsonl")
+    ap.add_argument(
+        "--allow-non-halt",
+        action="store_true",
+        help="If set, do not require global_mode=HALT",
+    )
+    ap.add_argument(
+        "--open-orders-out", default="args/data/ibkr_open_orders_live.jsonl"
+    )
     ap.add_argument("--report-out", default="args/data/baseline_cleaner_latest.json")
     args = ap.parse_args()
 
@@ -222,17 +248,21 @@ def main() -> int:
     except Exception as e:
         report["errors"].append({"where": "read_control_plane", "error": repr(e)})
         report_out.parent.mkdir(parents=True, exist_ok=True)
-        report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(report, ensure_ascii=False))
         return 2
 
-    require_halt = (not args.allow_non_halt)
+    require_halt = not args.allow_non_halt
     gate_ok, gate_reason = _gate_check(cp, stop_flag, require_halt=require_halt)
     if not gate_ok:
         report["status"] = "BLOCKED"
         report["blocked_reason"] = gate_reason
         report_out.parent.mkdir(parents=True, exist_ok=True)
-        report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(report, ensure_ascii=False))
         return 2
 
@@ -264,19 +294,32 @@ def main() -> int:
     if rc != 0:
         report["status"] = "INFRA_FAIL"
         report["errors"].append(
-            {"where": "open_orders_snapshot_before", "rc": rc, "stderr": stderr, "stdout": stdout[:300]}
+            {
+                "where": "open_orders_snapshot_before",
+                "rc": rc,
+                "stderr": stderr,
+                "stdout": stdout[:300],
+            }
         )
         report_out.parent.mkdir(parents=True, exist_ok=True)
-        report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(report, ensure_ascii=False))
         return 2
 
     before_orders = _parse_open_orders_jsonl(out_orders)
-    order_ids = [o.get("order_id") for o in before_orders if isinstance(o.get("order_id"), int)]
+    order_ids = [
+        o.get("order_id") for o in before_orders if isinstance(o.get("order_id"), int)
+    ]
     report["before"] = {
         "count": len(before_orders),
         "statuses": sorted(
-            {(o.get("order_state") or {}).get("status") for o in before_orders if (o.get("order_state") or {}).get("status")}
+            {
+                (o.get("order_state") or {}).get("status")
+                for o in before_orders
+                if (o.get("order_state") or {}).get("status")
+            }
         ),
         "order_ids": order_ids,
         "out_path": str(out_orders),
@@ -287,7 +330,9 @@ def main() -> int:
         report["ok"] = True
         report["status"] = "ALREADY_CLEAN"
         report_out.parent.mkdir(parents=True, exist_ok=True)
-        report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(report, ensure_ascii=False))
         return 0
 
@@ -309,26 +354,47 @@ def main() -> int:
             continue
 
     for cid in candidates:
-        report["attempts"].append(_attempt_cancel(host, port, cid, order_ids, sleep_s=float(args.post_cancel_sleep_s)))
+        report["attempts"].append(
+            _attempt_cancel(
+                host, port, cid, order_ids, sleep_s=float(args.post_cancel_sleep_s)
+            )
+        )
 
     # Snapshot AFTER (read-only)
-    rc2, stdout2, stderr2 = _run_module(repo, mod, timeout_s=max(15, args.timeout_s + 20))
+    rc2, stdout2, stderr2 = _run_module(
+        repo, mod, timeout_s=max(15, args.timeout_s + 20)
+    )
     if rc2 != 0:
         report["status"] = "INFRA_FAIL"
         report["errors"].append(
-            {"where": "open_orders_snapshot_after", "rc": rc2, "stderr": stderr2, "stdout": stdout2[:300]}
+            {
+                "where": "open_orders_snapshot_after",
+                "rc": rc2,
+                "stderr": stderr2,
+                "stdout": stdout2[:300],
+            }
         )
         report_out.parent.mkdir(parents=True, exist_ok=True)
-        report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(json.dumps(report, ensure_ascii=False))
         return 2
 
     after_orders = _parse_open_orders_jsonl(out_orders)
-    statuses_after = sorted({(o.get("order_state") or {}).get("status") for o in after_orders if (o.get("order_state") or {}).get("status")})
+    statuses_after = sorted(
+        {
+            (o.get("order_state") or {}).get("status")
+            for o in after_orders
+            if (o.get("order_state") or {}).get("status")
+        }
+    )
     report["after"] = {
         "count": len(after_orders),
         "statuses": statuses_after,
-        "order_ids": [o.get("order_id") for o in after_orders if o.get("order_id") is not None],
+        "order_ids": [
+            o.get("order_id") for o in after_orders if o.get("order_id") is not None
+        ],
         "out_path": str(out_orders),
     }
 
@@ -345,7 +411,9 @@ def main() -> int:
         rc_out = 1
 
     report_out.parent.mkdir(parents=True, exist_ok=True)
-    report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report_out.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(json.dumps(report, ensure_ascii=False))
     return rc_out
 

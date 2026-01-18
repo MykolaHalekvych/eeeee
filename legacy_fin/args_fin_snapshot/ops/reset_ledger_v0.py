@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 SCHEMA = "reset_ledger_v0"
 
@@ -27,8 +27,8 @@ def _sha256_obj(obj: Dict[str, Any]) -> str:
 @dataclass
 class LedgerEntry:
     key: str
-    kind: str                  # MANUAL_CANCEL_REQUIRED / CANCEL_ORDER / CLOSE_POSITION
-    state: str                 # PLANNED / SENT / SKIPPED / BLOCKED
+    kind: str  # MANUAL_CANCEL_REQUIRED / CANCEL_ORDER / CLOSE_POSITION
+    state: str  # PLANNED / SENT / SKIPPED / BLOCKED
     ts_utc: str
     details: Dict[str, Any]
 

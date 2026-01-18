@@ -34,13 +34,21 @@ class _PreflightApp(EWrapper, EClient):
         self._evt.set()
 
     # IB API sometimes calls error with 3 or 4 args; keep compatible
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
-        self.errors.append({
-            "ts": time.time(),
-            "reqId": reqId,
-            "errorCode": errorCode,
-            "errorString": errorString,
-        })
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
+        self.errors.append(
+            {
+                "ts": time.time(),
+                "reqId": reqId,
+                "errorCode": errorCode,
+                "errorString": errorString,
+            }
+        )
 
     def wait_next_valid_id(self, timeout_s: float) -> int:
         ok = self._evt.wait(timeout_s)

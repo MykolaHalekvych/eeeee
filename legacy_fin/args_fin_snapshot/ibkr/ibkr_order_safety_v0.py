@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Mapping, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 # Known order attrs that IB rejects on some instruments / routes when set non-default.
 # We force them to "False/0" if present and truthy.
@@ -16,6 +16,7 @@ FORCE_FALSE_ATTRS: Tuple[str, ...] = (
     "firmquoteOnly",
 )
 
+
 def _is_truthy_nondefault(v: Any) -> bool:
     if v is None:
         return False
@@ -27,7 +28,10 @@ def _is_truthy_nondefault(v: Any) -> bool:
         return False
     return bool(v)
 
-def sanitize_order_inplace(order: Any, *, force_false_attrs: Iterable[str] = FORCE_FALSE_ATTRS) -> Dict[str, Tuple[Any, Any]]:
+
+def sanitize_order_inplace(
+    order: Any, *, force_false_attrs: Iterable[str] = FORCE_FALSE_ATTRS
+) -> Dict[str, Tuple[Any, Any]]:
     """
     Returns dict of changed attrs: {attr: (old, new)}.
     Best-effort: if attribute can't be set, it will be skipped.
@@ -54,12 +58,16 @@ def sanitize_order_inplace(order: Any, *, force_false_attrs: Iterable[str] = FOR
 
     return changed
 
+
 @dataclass(frozen=True, slots=True)
 class OrderAttrCheck:
     ok: bool
     violations: Tuple[str, ...]  # attr names that are still non-default
 
-def validate_order_no_forbidden_truthy_attrs(order: Any, *, force_false_attrs: Iterable[str] = FORCE_FALSE_ATTRS) -> OrderAttrCheck:
+
+def validate_order_no_forbidden_truthy_attrs(
+    order: Any, *, force_false_attrs: Iterable[str] = FORCE_FALSE_ATTRS
+) -> OrderAttrCheck:
     violations = []
     for attr in force_false_attrs:
         if not hasattr(order, attr):

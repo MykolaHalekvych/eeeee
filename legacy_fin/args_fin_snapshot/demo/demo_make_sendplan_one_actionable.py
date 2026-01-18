@@ -23,7 +23,11 @@ def _read_first_jsonl(path: Path) -> Dict[str, Any]:
 
 def main() -> int:
     # pick latest sendplan
-    sendplans = sorted(DATA_DIR.glob("orders_sendplan_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    sendplans = sorted(
+        DATA_DIR.glob("orders_sendplan_*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not sendplans:
         raise FileNotFoundError("No orders_sendplan_*.jsonl found in args/data")
 
@@ -37,7 +41,9 @@ def main() -> int:
     contract_path = DATA_DIR / "ibkr_hg_contract_v1.json"
     if not contract_path.exists():
         raise FileNotFoundError(f"Missing contract file: {contract_path}")
-    contract = json.loads(contract_path.read_text(encoding="utf-8-sig", errors="replace"))
+    contract = json.loads(
+        contract_path.read_text(encoding="utf-8-sig", errors="replace")
+    )
     if not isinstance(contract, dict):
         raise RuntimeError("Contract json is not a dict")
 
@@ -61,7 +67,9 @@ def main() -> int:
         }
     )
 
-    out_path.write_text(json.dumps(plan, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    out_path.write_text(
+        json.dumps(plan, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(f"OK: wrote {out_path}")
     return 0
 

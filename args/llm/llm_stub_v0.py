@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -24,11 +24,20 @@ def _write_text(path: Path, text: str) -> None:
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 class StubError(Exception):
-    def __init__(self, exit_code: int, reason_code: str, child_reason_code: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        exit_code: int,
+        reason_code: str,
+        child_reason_code: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(reason_code)
         self.exit_code = int(exit_code)
         self.reason_code = reason_code
@@ -40,17 +49,34 @@ def _read_json(path: Path, max_bytes: int, where: str) -> Any:
     try:
         b = path.read_bytes()
     except FileNotFoundError as e:
-        raise StubError(2, "INFRA_MISSING_INPUT", f"{where}:file_not_found", {"path": str(path)}) from e
+        raise StubError(
+            2, "INFRA_MISSING_INPUT", f"{where}:file_not_found", {"path": str(path)}
+        ) from e
     except Exception as e:
-        raise StubError(2, "INFRA_IO_ERROR", f"{where}:read_error:{type(e).__name__}", {"path": str(path)}) from e
+        raise StubError(
+            2,
+            "INFRA_IO_ERROR",
+            f"{where}:read_error:{type(e).__name__}",
+            {"path": str(path)},
+        ) from e
 
     if len(b) > max_bytes:
-        raise StubError(1, "FAIL_OVERSIZED_INPUT", f"{where}:bytes:{len(b)}", {"path": str(path), "max_bytes": max_bytes})
+        raise StubError(
+            1,
+            "FAIL_OVERSIZED_INPUT",
+            f"{where}:bytes:{len(b)}",
+            {"path": str(path), "max_bytes": max_bytes},
+        )
 
     try:
         return json.loads(b.decode("utf-8-sig"))
     except Exception as e:
-        raise StubError(1, "FAIL_CONTRACT_JSON_INVALID", f"{where}:json_parse_error:{type(e).__name__}", {"path": str(path)}) from e
+        raise StubError(
+            1,
+            "FAIL_CONTRACT_JSON_INVALID",
+            f"{where}:json_parse_error:{type(e).__name__}",
+            {"path": str(path)},
+        ) from e
 
 
 def _norm_path_for_compare(p: str) -> str:
@@ -83,21 +109,33 @@ def main() -> int:
     details: dict[str, Any] = {}
 
     try:
-        req = _read_json(Path(args.JobRequest), max_bytes=500_000, where="job_request_file")
+        req = _read_json(
+            Path(args.JobRequest), max_bytes=500_000, where="job_request_file"
+        )
 
         run_id = str(req.get("run_id", "UNKNOWN_RUN_ID"))
         allowed_paths_ref = req.get("allowed_paths_ref")
         if not isinstance(allowed_paths_ref, str) or not allowed_paths_ref.strip():
-            raise StubError(1, "FAIL_CONTRACT_MISSING_FIELD", "job_request:allowed_paths_ref")
+            raise StubError(
+                1, "FAIL_CONTRACT_MISSING_FIELD", "job_request:allowed_paths_ref"
+            )
 
-        allowed_ref = _read_json(repo_root / Path(allowed_paths_ref), max_bytes=200_000, where="allowed_paths_ref")
+        allowed_ref = _read_json(
+            repo_root / Path(allowed_paths_ref),
+            max_bytes=200_000,
+            where="allowed_paths_ref",
+        )
         allowed_paths = allowed_ref.get("allowed_paths")
         if not isinstance(allowed_paths, list) or not allowed_paths:
-            raise StubError(1, "FAIL_CONTRACT_TYPE_INVALID", "allowed_paths_ref:allowed_paths")
+            raise StubError(
+                1, "FAIL_CONTRACT_TYPE_INVALID", "allowed_paths_ref:allowed_paths"
+            )
 
         target = allowed_paths[0]
         if not isinstance(target, str) or not target.strip():
-            raise StubError(1, "FAIL_CONTRACT_TYPE_INVALID", "allowed_paths_ref:allowed_paths[0]")
+            raise StubError(
+                1, "FAIL_CONTRACT_TYPE_INVALID", "allowed_paths_ref:allowed_paths[0]"
+            )
 
         # Deterministic content
         patch_line = f"STUB_PATCH|{run_id}\n"
@@ -120,7 +158,11 @@ def main() -> int:
                     }
                 ],
             },
-            "diagnostics": {"tokens_in": 0, "tokens_out": 0, "notes": "offline_stub_v0"},
+            "diagnostics": {
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "notes": "offline_stub_v0",
+            },
             "model_id": "stub_v0",
         }
 
@@ -138,7 +180,9 @@ def main() -> int:
         reason_code = se.reason_code
         child_reason_code = se.child_reason_code
         details = se.details
-        err_text = _json_compact({"error": reason_code, "child": child_reason_code, "details": details})
+        err_text = _json_compact(
+            {"error": reason_code, "child": child_reason_code, "details": details}
+        )
     except Exception as e:
         exit_code = 2
         reason_code = "INFRA_EXCEPTION"
@@ -169,4 +213,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

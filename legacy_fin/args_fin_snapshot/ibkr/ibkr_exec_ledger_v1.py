@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 SCHEMA_VERSION = "ibkr_exec_ledger_v1"
 
@@ -19,11 +19,20 @@ def _stable_json(obj: Any) -> str:
 
 
 _VOLATILE_KEYS = {
-    "ts", "timestamp", "created_at", "updated_at",
-    "order_id", "orderId", "permId", "clientId",
-    "run_id", "runId",
-    "cursor", "last_used_order_id",
-    "would_send", "decision",
+    "ts",
+    "timestamp",
+    "created_at",
+    "updated_at",
+    "order_id",
+    "orderId",
+    "permId",
+    "clientId",
+    "run_id",
+    "runId",
+    "cursor",
+    "last_used_order_id",
+    "would_send",
+    "decision",
 }
 
 

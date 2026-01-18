@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -6,7 +6,6 @@ import sys
 import threading
 import time
 import uuid
-import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +17,6 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 
 
-
 # Ensure ibapi serializer doesn't crash: some ibapi versions read order.nbboPriceCap unconditionally.
 try:
     from ibapi.common import UNSET_DOUBLE  # type: ignore
@@ -27,6 +25,7 @@ except Exception:
 
 try:
     from ibapi.order import Order as _IbOrder  # type: ignore
+
     if not hasattr(_IbOrder, "nbboPriceCap"):
         setattr(_IbOrder, "nbboPriceCap", UNSET_DOUBLE)
 except Exception:
@@ -147,9 +146,15 @@ def _stop_flag_path(repo: Path) -> Path:
     return repo / "args" / "logs" / "stop.flag"
 
 
-def _gate(cp: Dict[str, Any], scenario: str, repo: Path, confirm_paper: bool) -> GateResult:
+def _gate(
+    cp: Dict[str, Any], scenario: str, repo: Path, confirm_paper: bool
+) -> GateResult:
     if not _stop_flag_path(repo).exists():
-        return GateResult(False, EXIT_EXEC_DISABLED, f"STOP_FLAG_REQUIRED: create {_stop_flag_path(repo)}")
+        return GateResult(
+            False,
+            EXIT_EXEC_DISABLED,
+            f"STOP_FLAG_REQUIRED: create {_stop_flag_path(repo)}",
+        )
 
     execution_mode = _u(cp.get("execution_mode"))
     global_mode = _u(cp.get("global_mode"))
@@ -162,11 +167,19 @@ def _gate(cp: Dict[str, Any], scenario: str, repo: Path, confirm_paper: bool) ->
     # extra safety: non-exit test orders only under HALT
     if scenario in ("scenario_cancelled_v1", "scenario_rejected_v1"):
         if global_mode and global_mode != "HALT":
-            return GateResult(False, EXIT_EXEC_DISABLED, f"GLOBAL_MODE_NOT_SAFE_FOR_TEST: {global_mode} (need HALT)")
+            return GateResult(
+                False,
+                EXIT_EXEC_DISABLED,
+                f"GLOBAL_MODE_NOT_SAFE_FOR_TEST: {global_mode} (need HALT)",
+            )
     else:
         # fill is usually exit-only; allow ONLY_EXITS or HALT here; we will enforce HALT later if roundtrip is used
         if global_mode and global_mode not in ("ONLY_EXITS", "HALT"):
-            return GateResult(False, EXIT_EXEC_DISABLED, f"GLOBAL_MODE_NOT_SAFE_FOR_EXIT: {global_mode} (need ONLY_EXITS/HALT)")
+            return GateResult(
+                False,
+                EXIT_EXEC_DISABLED,
+                f"GLOBAL_MODE_NOT_SAFE_FOR_EXIT: {global_mode} (need ONLY_EXITS/HALT)",
+            )
 
     return GateResult(True, EXIT_OK, "OK")
 
@@ -195,8 +208,19 @@ class _App(EWrapper, EClient):
             self._cv.notify_all()
         self._emit("nextValidId", {"orderId": int(orderId)})
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:  # noqa: N802
-        rec = {"reqId": int(reqId), "code": int(errorCode), "msg": str(errorString), "advanced": str(advancedOrderRejectJson or "")}
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:  # noqa: N802
+        rec = {
+            "reqId": int(reqId),
+            "code": int(errorCode),
+            "msg": str(errorString),
+            "advanced": str(advancedOrderRejectJson or ""),
+        }
         if reqId > 0:
             self.order_errors.setdefault(int(reqId), []).append(rec)
         self._emit("error", {"orderId": int(reqId), **rec})
@@ -204,13 +228,30 @@ class _App(EWrapper, EClient):
             self._cv.notify_all()
 
     def openOrder(self, orderId, contract, order, orderState) -> None:  # noqa: N802
-        rec = {"orderId": int(orderId), "permId": int(getattr(order, "permId", 0) or 0), "status": str(getattr(orderState, "status", "") or "")}
+        rec = {
+            "orderId": int(orderId),
+            "permId": int(getattr(order, "permId", 0) or 0),
+            "status": str(getattr(orderState, "status", "") or ""),
+        }
         self.open_orders.setdefault(int(orderId), []).append(rec)
         self._emit("openOrder", rec)
         with self._cv:
             self._cv.notify_all()
 
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:  # noqa: N802,E501
+    def orderStatus(
+        self,
+        orderId,
+        status,
+        filled,
+        remaining,
+        avgFillPrice,
+        permId,
+        parentId,
+        lastFillPrice,
+        clientId,
+        whyHeld,
+        mktCapPrice,
+    ) -> None:  # noqa: N802,E501
         rec = {
             "orderId": int(orderId),
             "status": str(status),
@@ -290,7 +331,9 @@ class _App(EWrapper, EClient):
         }
 
 
-def _classify_order_errors(errs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _classify_order_errors(
+    errs: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     warns: List[Dict[str, Any]] = []
     fails: List[Dict[str, Any]] = []
     for e in errs:
@@ -318,9 +361,15 @@ def _default_contract_candidates(repo: Path) -> List[Path]:
     return sorted(data_dir.glob("ibkr*contract*.json"))
 
 
-def _load_contract_item(repo: Path, contract_json: Optional[str], symbol_hint: str) -> Dict[str, Any]:
+def _load_contract_item(
+    repo: Path, contract_json: Optional[str], symbol_hint: str
+) -> Dict[str, Any]:
     if contract_json:
-        p = (repo / contract_json).resolve() if not Path(contract_json).is_absolute() else Path(contract_json)
+        p = (
+            (repo / contract_json).resolve()
+            if not Path(contract_json).is_absolute()
+            else Path(contract_json)
+        )
         obj = _read_json(p)
         return _contract_from_any(obj)
 
@@ -351,7 +400,12 @@ def _load_control_plane(repo: Path, control_plane_rel: str) -> Dict[str, Any]:
     return _read_json(cp_path)
 
 
-def _resolve_conn(cp: Dict[str, Any], host: Optional[str], port: Optional[int], client_id: Optional[int]) -> Tuple[str, int, int]:
+def _resolve_conn(
+    cp: Dict[str, Any],
+    host: Optional[str],
+    port: Optional[int],
+    client_id: Optional[int],
+) -> Tuple[str, int, int]:
     h = host or str(cp.get("ib_host") or cp.get("host") or "localhost")
     p = int(port or cp.get("port") or 7497)
     cid = int(client_id or cp.get("client_id") or 79)
@@ -391,7 +445,11 @@ def _is_filled(snap: Dict[str, Any]) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
-    ap.add_argument("--scenario", required=True, choices=["scenario_cancelled_v1", "scenario_rejected_v1", "scenario_fill_v1"])
+    ap.add_argument(
+        "--scenario",
+        required=True,
+        choices=["scenario_cancelled_v1", "scenario_rejected_v1", "scenario_fill_v1"],
+    )
     ap.add_argument("--control-plane", default="args/data/control_plane.json")
 
     ap.add_argument("--host", default=None)
@@ -402,8 +460,14 @@ def main() -> int:
     ap.add_argument("--symbol", default="", help="Symbol hint (e.g. MHG)")
 
     ap.add_argument("--confirm-paper", action="store_true")
-    ap.add_argument("--confirm-fill", default="NO", help="Must be YES for scenario_fill_v1")
-    ap.add_argument("--confirm-roundtrip", default="NO", help="Must be YES to allow roundtrip when position==0")
+    ap.add_argument(
+        "--confirm-fill", default="NO", help="Must be YES for scenario_fill_v1"
+    )
+    ap.add_argument(
+        "--confirm-roundtrip",
+        default="NO",
+        help="Must be YES to allow roundtrip when position==0",
+    )
     ap.add_argument("--roundtrip-qty", type=float, default=1.0)
 
     ap.add_argument("--listen-after-place-s", type=float, default=2.5)
@@ -476,11 +540,21 @@ def main() -> int:
             o.lmtPrice = float(args.lmt_price if args.lmt_price is not None else 1.0)
             san = sanitize_order_v0(o)
 
-            order_spec.update({"action": o.action, "type": o.orderType, "qty": o.totalQuantity, "lmtPrice": o.lmtPrice, "sanitized": san})
+            order_spec.update(
+                {
+                    "action": o.action,
+                    "type": o.orderType,
+                    "qty": o.totalQuantity,
+                    "lmtPrice": o.lmtPrice,
+                    "sanitized": san,
+                }
+            )
             _write_json(evidence_dir / "order_spec.json", order_spec)
 
             app.placeOrder(oid, contract_obj, o)
-            snap0 = app.wait_first_signal(oid, timeout_s=float(args.listen_after_place_s))
+            snap0 = app.wait_first_signal(
+                oid, timeout_s=float(args.listen_after_place_s)
+            )
             warns, fails = _classify_order_errors(list(snap0.get("errors") or []))
             if fails:
                 raise RuntimeError(f"UNEXPECTED_REJECT_ON_CANCELLED: {fails[:1]}")
@@ -491,15 +565,26 @@ def main() -> int:
                 timeout_s=float(args.cancel_wait_s),
                 predicate=lambda s: (
                     s.get("orderStatus")
-                    and str(s["orderStatus"].get("status", "")).lower().startswith("cancel")
-                ) or (s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0),
+                    and str(s["orderStatus"].get("status", ""))
+                    .lower()
+                    .startswith("cancel")
+                )
+                or (
+                    s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0
+                ),
             )
             warns1, fails1 = _classify_order_errors(list(snap1.get("errors") or []))
-            st = (snap1.get("orderStatus") or {}).get("status") if snap1.get("orderStatus") else None
+            st = (
+                (snap1.get("orderStatus") or {}).get("status")
+                if snap1.get("orderStatus")
+                else None
+            )
             if fails1:
                 raise RuntimeError(f"CANCELLED_FAILED_ERRORS: {fails1[:1]}")
             if not st or not str(st).lower().startswith("cancel"):
-                raise RuntimeError(f"CANCELLED_NOT_CONFIRMED: orderStatus={snap1.get('orderStatus')}")
+                raise RuntimeError(
+                    f"CANCELLED_NOT_CONFIRMED: orderStatus={snap1.get('orderStatus')}"
+                )
 
             terminal_state = "CANCELLED"
             out_order_ids = [oid]
@@ -513,14 +598,23 @@ def main() -> int:
             o.tif = "DAY"
             san = sanitize_order_v0(o)
 
-            order_spec.update({"action": o.action, "type": o.orderType, "qty": o.totalQuantity, "sanitized": san})
+            order_spec.update(
+                {
+                    "action": o.action,
+                    "type": o.orderType,
+                    "qty": o.totalQuantity,
+                    "sanitized": san,
+                }
+            )
             _write_json(evidence_dir / "order_spec.json", order_spec)
 
             app.placeOrder(oid, contract_obj, o)
             snap = app.wait_until(
                 oid,
                 timeout_s=max(6.0, float(args.listen_after_place_s)),
-                predicate=lambda s: (s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0),
+                predicate=lambda s: (
+                    s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0
+                ),
             )
             warns, fails = _classify_order_errors(list(snap.get("errors") or []))
             if not fails:
@@ -535,7 +629,9 @@ def main() -> int:
 
             pos = _load_positions_snapshot(repo)
             if not pos and str(args.confirm_roundtrip).strip().upper() != "YES":
-                raise RuntimeError("POSITIONS_SNAPSHOT_MISSING: write args/data/ibkr_positions_snapshot_v0.json OR pass --confirm-roundtrip YES")
+                raise RuntimeError(
+                    "POSITIONS_SNAPSHOT_MISSING: write args/data/ibkr_positions_snapshot_v0.json OR pass --confirm-roundtrip YES"
+                )
 
             sym = str(contract_item.get("symbol") or args.symbol or "")
             if not sym:
@@ -553,20 +649,35 @@ def main() -> int:
                 o.action = "SELL" if qty_pos > 0 else "BUY"
                 san = sanitize_order_v0(o)
 
-                order_spec.update({"mode": "EXIT_ONLY", "action": o.action, "type": o.orderType, "qty": o.totalQuantity, "pos_qty": qty_pos, "sanitized": san})
+                order_spec.update(
+                    {
+                        "mode": "EXIT_ONLY",
+                        "action": o.action,
+                        "type": o.orderType,
+                        "qty": o.totalQuantity,
+                        "pos_qty": qty_pos,
+                        "sanitized": san,
+                    }
+                )
                 _write_json(evidence_dir / "order_spec.json", order_spec)
 
                 app.placeOrder(oid, contract_obj, o)
                 snap = app.wait_until(
                     oid,
                     timeout_s=float(args.fill_wait_s),
-                    predicate=lambda s: _is_filled(s) or (s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0),
+                    predicate=lambda s: _is_filled(s)
+                    or (
+                        s.get("errors")
+                        and len(_classify_order_errors(s["errors"])[1]) > 0
+                    ),
                 )
                 warns, fails = _classify_order_errors(list(snap.get("errors") or []))
                 if fails:
                     raise RuntimeError(f"FILL_FAILED_ERRORS: {fails[:1]}")
                 if not _is_filled(snap):
-                    raise RuntimeError(f"FILL_NOT_CONFIRMED: orderStatus={snap.get('orderStatus')} execDetails={len(snap.get('execDetails') or [])}")
+                    raise RuntimeError(
+                        f"FILL_NOT_CONFIRMED: orderStatus={snap.get('orderStatus')} execDetails={len(snap.get('execDetails') or [])}"
+                    )
 
                 terminal_state = "FILLED"
                 out_order_ids = [oid]
@@ -574,9 +685,13 @@ def main() -> int:
             else:
                 # Position==0 -> Roundtrip requires HALT + explicit confirm-roundtrip
                 if _u(cp.get("global_mode")) != "HALT":
-                    raise RuntimeError(f"ROUNDTRIP_REQUIRES_HALT: global_mode={_u(cp.get('global_mode'))}")
+                    raise RuntimeError(
+                        f"ROUNDTRIP_REQUIRES_HALT: global_mode={_u(cp.get('global_mode'))}"
+                    )
                 if str(args.confirm_roundtrip).strip().upper() != "YES":
-                    raise RuntimeError("ROUNDTRIP_CONFIRM_REQUIRED: pass --confirm-roundtrip YES")
+                    raise RuntimeError(
+                        "ROUNDTRIP_CONFIRM_REQUIRED: pass --confirm-roundtrip YES"
+                    )
 
                 q = float(args.roundtrip_qty or 1.0)
                 if q <= 0:
@@ -593,7 +708,9 @@ def main() -> int:
                 o1.totalQuantity = q
                 o1.action = "BUY"
                 san1 = sanitize_order_v0(o1)
-                legs.append({"leg": "BUY", "orderId": oid1, "qty": q, "sanitized": san1})
+                legs.append(
+                    {"leg": "BUY", "orderId": oid1, "qty": q, "sanitized": san1}
+                )
                 out_order_ids.append(oid1)
 
                 # LEG2 SELL
@@ -604,17 +721,30 @@ def main() -> int:
                 o2.totalQuantity = q
                 o2.action = "SELL"
                 san2 = sanitize_order_v0(o2)
-                legs.append({"leg": "SELL", "orderId": oid2, "qty": q, "sanitized": san2})
+                legs.append(
+                    {"leg": "SELL", "orderId": oid2, "qty": q, "sanitized": san2}
+                )
                 out_order_ids.append(oid2)
 
-                order_spec.update({"mode": "ROUNDTRIP", "symbol": sym, "roundtrip_qty": q, "legs": legs})
+                order_spec.update(
+                    {
+                        "mode": "ROUNDTRIP",
+                        "symbol": sym,
+                        "roundtrip_qty": q,
+                        "legs": legs,
+                    }
+                )
                 _write_json(evidence_dir / "order_spec.json", order_spec)
 
                 app.placeOrder(oid1, contract_obj, o1)
                 snap1 = app.wait_until(
                     oid1,
                     timeout_s=float(args.fill_wait_s),
-                    predicate=lambda s: _is_filled(s) or (s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0),
+                    predicate=lambda s: _is_filled(s)
+                    or (
+                        s.get("errors")
+                        and len(_classify_order_errors(s["errors"])[1]) > 0
+                    ),
                 )
                 warns1, fails1 = _classify_order_errors(list(snap1.get("errors") or []))
                 if fails1:
@@ -628,7 +758,11 @@ def main() -> int:
                 snap2 = app.wait_until(
                     oid2,
                     timeout_s=float(args.fill_wait_s),
-                    predicate=lambda s: _is_filled(s) or (s.get("errors") and len(_classify_order_errors(s["errors"])[1]) > 0),
+                    predicate=lambda s: _is_filled(s)
+                    or (
+                        s.get("errors")
+                        and len(_classify_order_errors(s["errors"])[1]) > 0
+                    ),
                 )
                 warns2, fails2 = _classify_order_errors(list(snap2.get("errors") or []))
                 if fails2:
@@ -651,7 +785,9 @@ def main() -> int:
             "conn": {"host": host, "port": port, "client_id": client_id},
             "evidence_dir": str(evidence_dir),
             "written": {
-                "control_plane_snapshot": str(evidence_dir / "control_plane_snapshot.json"),
+                "control_plane_snapshot": str(
+                    evidence_dir / "control_plane_snapshot.json"
+                ),
                 "contract_item": str(evidence_dir / "contract_item.json"),
                 "order_spec": str(evidence_dir / "order_spec.json"),
                 "ib_events": str(events_jsonl),
@@ -685,8 +821,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
-

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -109,7 +109,14 @@ def main() -> int:
     try:
         require_engine_repo(repo_root)
     except Exception as e:
-        dump({"schema": "watchdog_v0", "ok": False, "exit_code": EXIT_INFRA, "error": str(e)})
+        dump(
+            {
+                "schema": "watchdog_v0",
+                "ok": False,
+                "exit_code": EXIT_INFRA,
+                "error": str(e),
+            }
+        )
         return EXIT_INFRA
 
     releases_dir = (repo_root / Path(args.releases_dir)).resolve()

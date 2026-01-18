@@ -17,6 +17,7 @@ Notes:
 - This is intentionally deterministic: count-based retention, no cloud deps.
 - Rotation is best-effort. Any move failures are reported and result in non-zero exit code.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,7 +57,9 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 @dataclass(frozen=True)
@@ -172,10 +175,14 @@ def _extract_run_id_from_data_artifact(path: Path) -> Optional[str]:
 
 
 def _sorted_by_mtime_desc(paths: Iterable[Path]) -> List[Path]:
-    return sorted(paths, key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
+    return sorted(
+        paths, key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True
+    )
 
 
-def _split_keep(paths_sorted_desc: Sequence[Path], keep_n: int) -> Tuple[List[Path], List[Path]]:
+def _split_keep(
+    paths_sorted_desc: Sequence[Path], keep_n: int
+) -> Tuple[List[Path], List[Path]]:
     keep_n = max(0, int(keep_n))
     keep = list(paths_sorted_desc[:keep_n])
     drop = list(paths_sorted_desc[keep_n:])
@@ -189,7 +196,9 @@ def _age_days(path: Path, now_ts: float) -> float:
         return 0.0
 
 
-def _should_archive_by_age(path: Path, *, now_ts: float, max_age_days: Optional[int]) -> bool:
+def _should_archive_by_age(
+    path: Path, *, now_ts: float, max_age_days: Optional[int]
+) -> bool:
     if max_age_days is None:
         return True  # age filter disabled => archive allowed
     return _age_days(path, now_ts) > float(max_age_days)
@@ -220,7 +229,8 @@ def _write_latest_pointers(*, logs_dir: Path, data_dir: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {"ok": False}
 
     run_reports = [
-        p for p in logs_dir.glob("run_report_*.json")
+        p
+        for p in logs_dir.glob("run_report_*.json")
         if p.is_file() and _is_run_report(p)
     ]
     run_reports = _sorted_by_mtime_desc(run_reports)
@@ -306,7 +316,9 @@ def _run_rotation(
         return result
 
     # 1) ops step logs (ONLY per-cycle logs, not ops_stage*.log etc)
-    ops_step_logs = [p for p in logs_dir.glob("ops_*.log") if p.is_file() and _is_ops_step_log(p)]
+    ops_step_logs = [
+        p for p in logs_dir.glob("ops_*.log") if p.is_file() and _is_ops_step_log(p)
+    ]
     ops_step_logs = _sorted_by_mtime_desc(ops_step_logs)
     ops_keep, ops_drop = _split_keep(ops_step_logs, cfg.keep_ops_logs)
     result["kept"]["ops_logs"] = len(ops_keep)
@@ -319,10 +331,16 @@ def _run_rotation(
             result["moved"]["logs"] += 1
         except Exception as e:
             result["ok"] = False
-            result["errors"].append({"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)})
+            result["errors"].append(
+                {"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)}
+            )
 
     # 2) run reports
-    run_reports = [p for p in logs_dir.glob("run_report_*.json") if p.is_file() and _is_run_report(p)]
+    run_reports = [
+        p
+        for p in logs_dir.glob("run_report_*.json")
+        if p.is_file() and _is_run_report(p)
+    ]
     run_reports = _sorted_by_mtime_desc(run_reports)
     reports_keep, reports_drop = _split_keep(run_reports, cfg.keep_run_reports)
     result["kept"]["run_reports"] = len(reports_keep)
@@ -348,7 +366,9 @@ def _run_rotation(
             result["moved"]["logs"] += 1
         except Exception as e:
             result["ok"] = False
-            result["errors"].append({"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)})
+            result["errors"].append(
+                {"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)}
+            )
 
     # 3) per-run data artifacts (allowlist prefixes only)
     candidates: List[Path] = []
@@ -378,16 +398,30 @@ def _run_rotation(
             result["moved"]["data"] += 1
         except Exception as e:
             result["ok"] = False
-            result["errors"].append({"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)})
+            result["errors"].append(
+                {"kind": "MOVE_FAIL", "path": str(p), "err": repr(e)}
+            )
 
     return result
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m args.ops.rotate_logs_v0")
-    parser.add_argument("--dry-run", action="store_true", help="Do not move files; only print what would happen.")
-    parser.add_argument("--print-only", action="store_true", help="Alias for --dry-run (backward compat).")
-    parser.add_argument("--control-state", default=None, help="Path to control_state.json (default: args/data/control_state.json)")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not move files; only print what would happen.",
+    )
+    parser.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Alias for --dry-run (backward compat).",
+    )
+    parser.add_argument(
+        "--control-state",
+        default=None,
+        help="Path to control_state.json (default: args/data/control_state.json)",
+    )
     args = parser.parse_args(argv)
 
     dry_run = bool(args.dry_run or args.print_only)
@@ -399,7 +433,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logs_dir = args_dir / "logs"
     data_dir = args_dir / "data"
 
-    control_state_path = Path(args.control_state) if args.control_state else (data_dir / "control_state.json")
+    control_state_path = (
+        Path(args.control_state)
+        if args.control_state
+        else (data_dir / "control_state.json")
+    )
     cfg = _load_rotate_cfg(control_state_path)
 
     started = time.time()
@@ -424,7 +462,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Step B: rotation
     try:
-        rot = _run_rotation(logs_dir=logs_dir, data_dir=data_dir, cfg=cfg, dry_run=dry_run)
+        rot = _run_rotation(
+            logs_dir=logs_dir, data_dir=data_dir, cfg=cfg, dry_run=dry_run
+        )
         out["steps"].append({"name": "rotation", **rot})
     except Exception as e:
         out["steps"].append({"name": "rotation", "ok": False, "err": repr(e)})

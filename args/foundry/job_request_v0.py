@@ -16,7 +16,18 @@ def utc_ts() -> str:
 
 
 def fail(msg: str, code: int = 1) -> int:
-    print(json.dumps({"schema": SCHEMA, "ok": False, "exit_code": code, "ts_utc": utc_ts(), "error": msg}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "ok": False,
+                "exit_code": code,
+                "ts_utc": utc_ts(),
+                "error": msg,
+            },
+            ensure_ascii=False,
+        )
+    )
     return code
 
 
@@ -35,7 +46,9 @@ def validate(data: dict[str, Any]) -> tuple[bool, str | None]:
     # optional: allowed file edits (whitelist)
     allowed = data.get("allowed_paths")
     if allowed is not None:
-        if not isinstance(allowed, list) or not all(isinstance(x, str) for x in allowed):
+        if not isinstance(allowed, list) or not all(
+            isinstance(x, str) for x in allowed
+        ):
             return False, "allowed_paths must be an array of strings"
 
     return True, None
@@ -59,7 +72,18 @@ def main() -> int:
     if not ok:
         return fail(err or "invalid job_request", 1)
 
-    print(json.dumps({"schema": SCHEMA, "ok": True, "exit_code": 0, "ts_utc": utc_ts(), "product_id": data["product_id"]}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "ok": True,
+                "exit_code": 0,
+                "ts_utc": utc_ts(),
+                "product_id": data["product_id"],
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

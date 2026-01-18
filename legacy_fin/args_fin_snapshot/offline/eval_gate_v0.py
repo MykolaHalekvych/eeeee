@@ -34,7 +34,11 @@ def _read_json_first_obj(path: Path) -> Dict[str, Any]:
 def _latest_model_dir() -> Path:
     if not MODELS_DIR.exists():
         raise FileNotFoundError(f"models dir missing: {MODELS_DIR}")
-    cands = [p for p in MODELS_DIR.iterdir() if p.is_dir() and (p / "model_manifest.json").exists()]
+    cands = [
+        p
+        for p in MODELS_DIR.iterdir()
+        if p.is_dir() and (p / "model_manifest.json").exists()
+    ]
     if not cands:
         raise FileNotFoundError("no model_manifest.json under args/offline/models")
     cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -66,12 +70,29 @@ def eval_gate(
 ) -> Tuple[bool, Dict[str, Any]]:
     metrics = manifest.get("metrics")
     if not isinstance(metrics, dict):
-        return False, {"reason": "NO_METRICS", "checks": {}, "fails": {"metrics": "NO_METRICS"}, "warnings": {}}
+        return False, {
+            "reason": "NO_METRICS",
+            "checks": {},
+            "fails": {"metrics": "NO_METRICS"},
+            "warnings": {},
+        }
 
     rows = _as_int(metrics.get("rows"), 0)
-    payload_kind = metrics.get("payload_kind") if isinstance(metrics.get("payload_kind"), dict) else {}
-    ma_decision = metrics.get("ma_decision") if isinstance(metrics.get("ma_decision"), dict) else {}
-    missing = metrics.get("missing_ratio_top10") if isinstance(metrics.get("missing_ratio_top10"), dict) else {}
+    payload_kind = (
+        metrics.get("payload_kind")
+        if isinstance(metrics.get("payload_kind"), dict)
+        else {}
+    )
+    ma_decision = (
+        metrics.get("ma_decision")
+        if isinstance(metrics.get("ma_decision"), dict)
+        else {}
+    )
+    missing = (
+        metrics.get("missing_ratio_top10")
+        if isinstance(metrics.get("missing_ratio_top10"), dict)
+        else {}
+    )
 
     # payload order share
     po = _as_int(payload_kind.get("PAYLOAD_ORDER"), 0)
@@ -131,22 +152,40 @@ def eval_gate(
 
 
 def _write_json(path: Path, obj: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser("eval_gate_v0")
 
-    ap.add_argument("--model", default="", help="Model dir name under args/offline/models (default: latest)")
+    ap.add_argument(
+        "--model",
+        default="",
+        help="Model dir name under args/offline/models (default: latest)",
+    )
     ap.add_argument("--min-rows", type=int, default=1000)
     ap.add_argument("--payload-order-share-gte", type=float, default=0.0)
-    ap.add_argument("--allow-all-no-trade", action="store_true", help="Allow dataset where all decisions are NO_TRADE (adds warning)")
+    ap.add_argument(
+        "--allow-all-no-trade",
+        action="store_true",
+        help="Allow dataset where all decisions are NO_TRADE (adds warning)",
+    )
     ap.add_argument("--max-missing-reason", type=float, default=1.0)
     ap.add_argument("--max-missing-gate-reason", type=float, default=1.0)
 
     # Stage 8.5 evidence history
-    ap.add_argument("--evidence-dir", default="args/offline/evidence/eval_gate", help="Evidence history dir (timestamped + latest.json)")
-    ap.add_argument("--no-evidence", action="store_true", help="Disable evidence history writes (not recommended)")
+    ap.add_argument(
+        "--evidence-dir",
+        default="args/offline/evidence/eval_gate",
+        help="Evidence history dir (timestamped + latest.json)",
+    )
+    ap.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Disable evidence history writes (not recommended)",
+    )
 
     args = ap.parse_args(argv)
     generated_at_utc = _utc_now_iso()
@@ -156,7 +195,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         # Resolve model dir
-        model_dir = (MODELS_DIR / args.model.strip()) if args.model.strip() else _latest_model_dir()
+        model_dir = (
+            (MODELS_DIR / args.model.strip())
+            if args.model.strip()
+            else _latest_model_dir()
+        )
 
         mf_path = model_dir / "model_manifest.json"
         man = _read_json_first_obj(mf_path)

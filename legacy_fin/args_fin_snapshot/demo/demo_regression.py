@@ -29,13 +29,17 @@ def main() -> int:
 
     report = run_regression(case_paths, str(policy_path))
 
-    print(f"REGRESSION total={report['total']} passed={report['passed']} failed={report['failed']}")
+    print(
+        f"REGRESSION total={report['total']} passed={report['passed']} failed={report['failed']}"
+    )
 
     if report["failed"] > 0:
         print("FAILED CASES:")
         for r in report["results"]:
             if not r["passed"]:
-                print(f"- {r['case_name']}: {r['reason']} expected={r['expected']} actual={r['actual']}")
+                print(
+                    f"- {r['case_name']}: {r['reason']} expected={r['expected']} actual={r['actual']}"
+                )
 
     return 2 if report["failed"] > 0 else 0
 

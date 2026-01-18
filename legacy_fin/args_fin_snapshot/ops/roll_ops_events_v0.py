@@ -27,6 +27,7 @@ Exit codes:
 - 0 OK / NOOP
 - 2 error
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,7 +56,9 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 @dataclass(frozen=True)
@@ -95,8 +98,8 @@ def _load_cfg(control_state_path: Path) -> EventsRollCfg:
 
     return EventsRollCfg(
         enabled=enabled,
-        max_bytes=max(1_000_000, max_bytes),         # guardrail: 1MB+
-        keep_tail_lines=max(100, keep_tail_lines),   # guardrail: >=100 lines
+        max_bytes=max(1_000_000, max_bytes),  # guardrail: 1MB+
+        keep_tail_lines=max(100, keep_tail_lines),  # guardrail: >=100 lines
         archive_dir=archive_dir,
     )
 
@@ -111,8 +114,14 @@ def _read_tail_lines(path: Path, keep_tail_lines: int) -> deque[str]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m args.ops.roll_ops_events_v0")
-    parser.add_argument("--dry-run", action="store_true", help="Do not move/write; only report.")
-    parser.add_argument("--control-state", default=None, help="Path to control_state.json (default: args/data/control_state.json)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Do not move/write; only report."
+    )
+    parser.add_argument(
+        "--control-state",
+        default=None,
+        help="Path to control_state.json (default: args/data/control_state.json)",
+    )
     args = parser.parse_args(argv)
 
     dry_run = bool(args.dry_run)
@@ -123,7 +132,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logs_dir = args_dir / "logs"
     data_dir = args_dir / "data"
 
-    control_state_path = Path(args.control_state) if args.control_state else (data_dir / "control_state.json")
+    control_state_path = (
+        Path(args.control_state)
+        if args.control_state
+        else (data_dir / "control_state.json")
+    )
     cfg = _load_cfg(control_state_path)
 
     events_path = logs_dir / "ops_events.jsonl"
@@ -178,10 +191,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         arch_path = arch_dir / f"ops_events_{ts}.jsonl"
 
         out["action"] = "ROLL"
-        out["details"].update({
-            "archive_path": str(arch_path),
-            "archive_dir": str(arch_dir),
-        })
+        out["details"].update(
+            {
+                "archive_path": str(arch_path),
+                "archive_dir": str(arch_dir),
+            }
+        )
 
         # Read tail before moving
         tail = _read_tail_lines(events_path, cfg.keep_tail_lines)

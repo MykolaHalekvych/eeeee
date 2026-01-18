@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import uuid
@@ -24,7 +24,10 @@ def _write_mode(mode: str) -> None:
         json.dumps(
             {
                 "mode": mode,
-                "updated_ts_utc": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "updated_ts_utc": dt.datetime.utcnow()
+                .replace(microsecond=0)
+                .isoformat()
+                + "Z",
                 "note": "demo_exec_guard_v0",
             },
             ensure_ascii=False,

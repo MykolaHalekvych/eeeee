@@ -16,7 +16,11 @@ _RX_PAYLOAD = re.compile(r"^orders_payload_(?P<rid>.+)\.jsonl$", re.IGNORECASE)
 
 # Payload kinds we understand at this stage.
 _PAYLOAD_KIND_NONE = {"PAYLOAD_NONE", "", "UNKNOWN"}
-_PAYLOAD_KIND_IBKR_ORDER = {"PAYLOAD_IBKR_ORDER", "IBKR_ORDER", "PAYLOAD_KIND_IBKR_ORDER"}
+_PAYLOAD_KIND_IBKR_ORDER = {
+    "PAYLOAD_IBKR_ORDER",
+    "IBKR_ORDER",
+    "PAYLOAD_KIND_IBKR_ORDER",
+}
 
 # Plan kinds we produce.
 PLAN_KIND_NONE = "SENDPLAN_NONE"
@@ -55,13 +59,16 @@ class JsonlReadStats:
     """
     Streaming JSONL reader stats (mutable).
     """
+
     lines_seen: int = 0
     dicts_seen: int = 0
     parse_errors: int = 0
     truncated: bool = False
 
 
-def _iter_jsonl_dicts(path: Path, stats: JsonlReadStats, *, max_lines: int = 250_000) -> Iterator[Dict[str, Any]]:
+def _iter_jsonl_dicts(
+    path: Path, stats: JsonlReadStats, *, max_lines: int = 250_000
+) -> Iterator[Dict[str, Any]]:
     """
     Stream JSONL dicts while updating `stats`.
     """
@@ -92,7 +99,11 @@ def _write_jsonl_atomic(out_path: Path, rows: Iterable[Dict[str, Any]]) -> int:
     n = 0
     with tmp.open("w", encoding="utf-8") as f:
         for obj in rows:
-            f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            f.write(
+                json.dumps(
+                    obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+            )
             f.write("\n")
             n += 1
     tmp.replace(out_path)
@@ -124,19 +135,18 @@ def _mk_plan(
         "instrument": payload.get("instrument"),
         "timeframe": payload.get("timeframe"),
         "env": payload.get("env"),
-
         # Executor gating bits:
         "execute": bool(execute),  # sendplan-level arming (CLI-level)
         "payload_execute": bool(payload.get("execute", False)),  # payload-level marker
-
         # Context for execution guard and audit:
         "ma_decision": payload.get("ma_decision") or payload.get("decision"),
         "intent_kind": payload.get("intent_kind") or payload.get("kind"),
         "mode": payload.get("mode"),
         "mode_source": payload.get("mode_source"),
         "gate_reason": payload.get("gate_reason"),
-        "rule_ids": payload.get("rule_ids") if isinstance(payload.get("rule_ids"), list) else [],
-
+        "rule_ids": payload.get("rule_ids")
+        if isinstance(payload.get("rule_ids"), list)
+        else [],
         # Identity:
         "payload_id": payload.get("payload_id"),
         "payload_kind": pk,
@@ -303,7 +313,7 @@ def build_sendplan(
             "plan_kinds": dict(counts),
         }
 
-    all_none = (counts.get(PLAN_KIND_NONE, 0) == written)
+    all_none = counts.get(PLAN_KIND_NONE, 0) == written
     if all_none:
         return {
             "ok": False,
@@ -347,10 +357,18 @@ def build_sendplan(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Build orders_sendplan_<run_id>.jsonl from orders_payload_<run_id>.jsonl")
-    ap.add_argument("--payload", required=True, help="Path to orders_payload_<run_id>.jsonl")
+    ap = argparse.ArgumentParser(
+        description="Build orders_sendplan_<run_id>.jsonl from orders_payload_<run_id>.jsonl"
+    )
+    ap.add_argument(
+        "--payload", required=True, help="Path to orders_payload_<run_id>.jsonl"
+    )
     ap.add_argument("--out", default="", help="Optional output path")
-    ap.add_argument("--execute", default="0", help="0/1 (executor will attempt only if 1 and plan_kind actionable)")
+    ap.add_argument(
+        "--execute",
+        default="0",
+        help="0/1 (executor will attempt only if 1 and plan_kind actionable)",
+    )
     ap.add_argument(
         "--force-one-plan",
         "--force_one_plan",
@@ -366,7 +384,9 @@ def main() -> int:
         default=0,
         help="0/1. Engineering smoke: force ALLOW for the first PLAN_IBKR_PLACE_ORDER. Requires --force-one-plan 1.",
     )
-    ap.add_argument("--max-lines", "--max_lines", dest="max_lines", type=int, default=250_000)
+    ap.add_argument(
+        "--max-lines", "--max_lines", dest="max_lines", type=int, default=250_000
+    )
 
     a = ap.parse_args()
 

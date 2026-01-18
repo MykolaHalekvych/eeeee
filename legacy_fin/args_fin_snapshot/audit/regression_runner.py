@@ -80,10 +80,12 @@ def run_regression(case_paths: List[str], policy_path: str) -> Dict[str, Any]:
 
         act_decision = actual_result.get("ma_decision")
         act_env = actual_result.get("risk_envelope", {})
-        act_enforced = act_env.get("enforced_no_trade") if isinstance(act_env, dict) else None
+        act_enforced = (
+            act_env.get("enforced_no_trade") if isinstance(act_env, dict) else None
+        )
 
-        ok_decision = (exp_decision == act_decision)
-        ok_enforced = (exp_enforced == act_enforced)
+        ok_decision = exp_decision == act_decision
+        ok_enforced = exp_enforced == act_enforced
 
         if ok_decision and ok_enforced:
             passed += 1
@@ -91,8 +93,14 @@ def run_regression(case_paths: List[str], policy_path: str) -> Dict[str, Any]:
                 CaseResult(
                     case_name=case_name,
                     passed=True,
-                    expected={"ma_decision": exp_decision, "enforced_no_trade": exp_enforced},
-                    actual={"ma_decision": act_decision, "enforced_no_trade": act_enforced},
+                    expected={
+                        "ma_decision": exp_decision,
+                        "enforced_no_trade": exp_enforced,
+                    },
+                    actual={
+                        "ma_decision": act_decision,
+                        "enforced_no_trade": act_enforced,
+                    },
                 )
             )
         else:
@@ -106,8 +114,14 @@ def run_regression(case_paths: List[str], policy_path: str) -> Dict[str, Any]:
                 CaseResult(
                     case_name=case_name,
                     passed=False,
-                    expected={"ma_decision": exp_decision, "enforced_no_trade": exp_enforced},
-                    actual={"ma_decision": act_decision, "enforced_no_trade": act_enforced},
+                    expected={
+                        "ma_decision": exp_decision,
+                        "enforced_no_trade": exp_enforced,
+                    },
+                    actual={
+                        "ma_decision": act_decision,
+                        "enforced_no_trade": act_enforced,
+                    },
                     reason="; ".join(reason),
                 )
             )

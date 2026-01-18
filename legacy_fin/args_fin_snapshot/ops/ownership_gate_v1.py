@@ -109,7 +109,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     global_mode = _u(cp.get("global_mode"))
 
     # Snapshots (authoritative)
-    pos = snapshot_positions(args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s)
+    pos = snapshot_positions(
+        args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s
+    )
     if not pos.get("ok"):
         out = {
             "schema": SCHEMA,
@@ -122,7 +124,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
         return 2
 
-    oo = snapshot_open_orders(args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s)
+    oo = snapshot_open_orders(
+        args.host, args.port, args.client_id, args.connect_timeout_s, args.timeout_s
+    )
     if not oo.get("ok"):
         out = {
             "schema": SCHEMA,
@@ -147,13 +151,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         sym = str(r.get("symbol") or "")
         ls = str(r.get("localSymbol") or "")
         if not _is_allowlisted(sym, ls, allowlist):
-            unknown_positions.append({
-                "symbol": sym,
-                "localSymbol": ls,
-                "secType": str(r.get("secType") or ""),
-                "conId": int(r.get("conId") or 0),
-                "position": p,
-            })
+            unknown_positions.append(
+                {
+                    "symbol": sym,
+                    "localSymbol": ls,
+                    "secType": str(r.get("secType") or ""),
+                    "conId": int(r.get("conId") or 0),
+                    "position": p,
+                }
+            )
 
     # Orders: any non-terminal with orderId<=0 is MANUAL_UNTRACKED
     for r in oo.get("rows", []):
@@ -193,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if forbidden_orders:
         reasons.append("FORBIDDEN_ORDERS_PRESENT_ONLY_EXITS")
 
-    ok_gate = (len(reasons) == 0)
+    ok_gate = len(reasons) == 0
 
     out = {
         "schema": SCHEMA,
@@ -222,4 +228,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

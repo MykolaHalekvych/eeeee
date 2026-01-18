@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .control_plane_v0 import ControlPlane
-from .execution_v1 import BrokerAdapter, BrokerEvent, Engine, EventType, OrderIntent, OrderSpec
+from .execution_v1 import (
+    BrokerAdapter,
+    BrokerEvent,
+    Engine,
+    EventType,
+    OrderIntent,
+    OrderSpec,
+)
 
 
 class FakeBroker(BrokerAdapter):
@@ -16,7 +23,9 @@ class FakeBroker(BrokerAdapter):
     - This matches Engine.step() order: poll_events() happens before drain_actions().
     """
 
-    def __init__(self, *, scenario: str, positions: Optional[Dict[str, float]] = None) -> None:
+    def __init__(
+        self, *, scenario: str, positions: Optional[Dict[str, float]] = None
+    ) -> None:
         self._connected = False
         self.scenario = scenario
         self.positions = dict(positions or {})
@@ -30,7 +39,9 @@ class FakeBroker(BrokerAdapter):
     def is_connected(self) -> bool:
         return self._connected
 
-    def place_order(self, order_id: int, order: OrderSpec, client_order_id: str) -> None:
+    def place_order(
+        self, order_id: int, order: OrderSpec, client_order_id: str
+    ) -> None:
         # created_tick is the tick at the time of placement; age = current_tick - created_tick
         self.orders[order_id] = {
             "order_id": int(order_id),
@@ -52,13 +63,15 @@ class FakeBroker(BrokerAdapter):
         if o["status"] in {"Filled", "Cancelled", "Rejected"}:
             return
         o["status"] = "Cancelled"
-        self._events.append(BrokerEvent(
-            event_type=EventType.CANCELLED,
-            order_id=int(order_id),
-            client_order_id=str(o["client_order_id"]),
-            symbol=str(o["symbol"]),
-            reason="sim_cancelled",
-        ))
+        self._events.append(
+            BrokerEvent(
+                event_type=EventType.CANCELLED,
+                order_id=int(order_id),
+                client_order_id=str(o["client_order_id"]),
+                symbol=str(o["symbol"]),
+                reason="sim_cancelled",
+            )
+        )
 
     def replace_order(self, order_id: int, new_order: OrderSpec) -> None:
         o = self.orders.get(int(order_id))
@@ -73,12 +86,14 @@ class FakeBroker(BrokerAdapter):
         o["status"] = "Submitted"
 
         # Emit an ACK-like event for amend
-        self._events.append(BrokerEvent(
-            event_type=EventType.ACK,
-            order_id=int(order_id),
-            client_order_id=str(o["client_order_id"]),
-            symbol=str(o["symbol"]),
-        ))
+        self._events.append(
+            BrokerEvent(
+                event_type=EventType.ACK,
+                order_id=int(order_id),
+                client_order_id=str(o["client_order_id"]),
+                symbol=str(o["symbol"]),
+            )
+        )
 
     def poll_events(self) -> List[BrokerEvent]:
         self._tick += 1
@@ -87,30 +102,36 @@ class FakeBroker(BrokerAdapter):
             if o["status"] in {"Filled", "Cancelled", "Rejected"}:
                 continue
 
-            age = int(self._tick) - int(o.get("created_tick", 0))  # 1 means "first poll after placement"
+            age = int(self._tick) - int(
+                o.get("created_tick", 0)
+            )  # 1 means "first poll after placement"
 
             # REJECT scenario
             if self.scenario == "reject":
                 if age == 1:
-                    self._events.append(BrokerEvent(
-                        event_type=EventType.REJECT,
-                        order_id=int(oid),
-                        client_order_id=str(o["client_order_id"]),
-                        symbol=str(o["symbol"]),
-                        reason="sim_reject",
-                    ))
+                    self._events.append(
+                        BrokerEvent(
+                            event_type=EventType.REJECT,
+                            order_id=int(oid),
+                            client_order_id=str(o["client_order_id"]),
+                            symbol=str(o["symbol"]),
+                            reason="sim_reject",
+                        )
+                    )
                     o["status"] = "Rejected"
                 continue
 
             # Non-reject: send ACK once at age==1 (optional but useful)
             if age == 1 and not bool(o.get("ack_sent", False)):
                 o["ack_sent"] = True
-                self._events.append(BrokerEvent(
-                    event_type=EventType.ACK,
-                    order_id=int(oid),
-                    client_order_id=str(o["client_order_id"]),
-                    symbol=str(o["symbol"]),
-                ))
+                self._events.append(
+                    BrokerEvent(
+                        event_type=EventType.ACK,
+                        order_id=int(oid),
+                        client_order_id=str(o["client_order_id"]),
+                        symbol=str(o["symbol"]),
+                    )
+                )
 
             if self.scenario == "fill":
                 if age == 2:
@@ -161,14 +182,16 @@ class FakeBroker(BrokerAdapter):
         if remaining <= 0:
             o["status"] = "Filled"
 
-        self._events.append(BrokerEvent(
-            event_type=EventType.FILL,
-            order_id=int(oid),
-            client_order_id=str(o["client_order_id"]),
-            symbol=sym,
-            filled_qty=float(fill_qty),
-            remaining_qty=max(0.0, remaining),
-        ))
+        self._events.append(
+            BrokerEvent(
+                event_type=EventType.FILL,
+                order_id=int(oid),
+                client_order_id=str(o["client_order_id"]),
+                symbol=sym,
+                filled_qty=float(fill_qty),
+                remaining_qty=max(0.0, remaining),
+            )
+        )
 
     def snapshot(self) -> Dict[str, Any]:
         open_orders = {}
@@ -201,7 +224,17 @@ def _find_control_plane(repo: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
-    ap.add_argument("--scenario", required=True, choices=["fill", "reject", "partial_then_fill", "partial_then_cancel", "replace_then_fill"])
+    ap.add_argument(
+        "--scenario",
+        required=True,
+        choices=[
+            "fill",
+            "reject",
+            "partial_then_fill",
+            "partial_then_cancel",
+            "replace_then_fill",
+        ],
+    )
     ap.add_argument("--run-id", default=None)
     args = ap.parse_args()
 
@@ -210,10 +243,16 @@ def main() -> int:
     run_id = args.run_id or f"demo_stage5_{args.scenario}_{int(time.time())}"
 
     broker = FakeBroker(scenario=args.scenario, positions={"AAPL": 2.0})
-    eng = Engine(repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=broker)
+    eng = Engine(
+        repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=broker
+    )
 
     intent_id = "intent_aapl_exit_2"
-    eng.submit_intent(OrderIntent(intent_id=intent_id, order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)))
+    eng.submit_intent(
+        OrderIntent(
+            intent_id=intent_id, order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)
+        )
+    )
 
     for _ in range(60):
         eng.step()
@@ -230,14 +269,16 @@ def main() -> int:
             break
 
     t = eng.state.tickets[intent_id]
-    print({
-        "run_dir": str(eng.run_dir),
-        "terminal": t.terminal.value if t.terminal else None,
-        "terminal_reason": t.terminal_reason,
-        "final_position_aapl": broker.snapshot()["positions"].get("AAPL"),
-        "counters": eng.state.counters,
-        "reconcile_last_ratio": eng.state.reconcile_last_ratio,
-    })
+    print(
+        {
+            "run_dir": str(eng.run_dir),
+            "terminal": t.terminal.value if t.terminal else None,
+            "terminal_reason": t.terminal_reason,
+            "final_position_aapl": broker.snapshot()["positions"].get("AAPL"),
+            "counters": eng.state.counters,
+            "reconcile_last_ratio": eng.state.reconcile_last_ratio,
+        }
+    )
     return 0
 
 

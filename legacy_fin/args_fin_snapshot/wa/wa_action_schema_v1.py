@@ -25,11 +25,11 @@ def _as_int(x: Any, default: int = 1) -> int:
 
 @dataclass(frozen=True)
 class WAActionV1:
-    side: str                 # BUY/SELL
-    qty: int                  # positive int
-    orderType: str            # MKT/LMT
-    tif: str                  # DAY/GTC etc
-    reason: str               # audit
+    side: str  # BUY/SELL
+    qty: int  # positive int
+    orderType: str  # MKT/LMT
+    tif: str  # DAY/GTC etc
+    reason: str  # audit
     schema: str = SCHEMA_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
@@ -70,7 +70,9 @@ def _direction_to_side(direction: str) -> Optional[str]:
     return None
 
 
-def _read_test_spec(control_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _read_test_spec(
+    control_state: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     """
     Control-plane test hook (safe-by-default).
     Expected shape:
@@ -175,7 +177,9 @@ def derive_wa_action_v1(
         tif = _u(test.get("tif") or "DAY") or "DAY"
         reason = str(test.get("reason") or "WA_TEST_SPEC")
 
-        return WAActionV1(side=side, qty=qty, orderType=ot, tif=tif, reason=reason), "OK_TEST"
+        return WAActionV1(
+            side=side, qty=qty, orderType=ot, tif=tif, reason=reason
+        ), "OK_TEST"
 
     # Production path (future AS v1 should populate direction)
     direction = _extract_direction_from_intent(intent)
@@ -187,7 +191,9 @@ def derive_wa_action_v1(
         return None, f"BAD_DIRECTION:{direction}"
 
     # v1: fixed qty=1 until sizing module exists
-    return WAActionV1(side=side, qty=1, orderType="MKT", tif="DAY", reason="AS_DIRECTION"), "OK_AS"
+    return WAActionV1(
+        side=side, qty=1, orderType="MKT", tif="DAY", reason="AS_DIRECTION"
+    ), "OK_AS"
 
 
 def apply_wa_action_schema_v1(
@@ -207,7 +213,9 @@ def apply_wa_action_schema_v1(
     """
     out = dict(intent)
 
-    action, why = derive_wa_action_v1(out, mode=mode, position_size=position_size, control_state=control_state)
+    action, why = derive_wa_action_v1(
+        out, mode=mode, position_size=position_size, control_state=control_state
+    )
 
     out["wa_action_schema"] = SCHEMA_VERSION
     out["wa_action_reason"] = why
@@ -221,4 +229,3 @@ def apply_wa_action_schema_v1(
 
     out["wa_action"] = action.to_dict()
     return out
-

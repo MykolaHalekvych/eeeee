@@ -264,7 +264,11 @@ def py_compile_tree(root: Path) -> Dict[str, Any]:
     try:
         py_files = sorted(root.rglob("*.py"))
     except Exception as e:
-        return {"files": [], "errors": [{"file": str(root), "error": "RGLOB_ERROR:" + repr(e)}], "ok": False}
+        return {
+            "files": [],
+            "errors": [{"file": str(root), "error": "RGLOB_ERROR:" + repr(e)}],
+            "ok": False,
+        }
 
     for f in py_files:
         try:
@@ -272,7 +276,11 @@ def py_compile_tree(root: Path) -> Dict[str, Any]:
         except Exception as e:
             errors.append({"file": str(f), "error": repr(e)})
 
-    return {"files": [str(p) for p in py_files], "errors": errors, "ok": len(errors) == 0}
+    return {
+        "files": [str(p) for p in py_files],
+        "errors": errors,
+        "ok": len(errors) == 0,
+    }
 
 
 def build_runbook(exe_name: str, is_server: bool) -> str:
@@ -909,37 +917,101 @@ def ensure_entrypoint_overlay(product_id: str, entry_script: Path) -> Dict[str, 
     try:
         current = entry_script.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return {"ok": False, "reason_code": "INFRA_ENTRY_READ_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+        return {
+            "ok": False,
+            "reason_code": "INFRA_ENTRY_READ_FAILED",
+            "error": repr(e),
+            "entrypoint": str(entry_script),
+        }
 
     if product_id == "web_dashboard_v0":
-        if (marker_web in current) and (placeholder_web not in current) and (required_stdout in current):
-            return {"ok": True, "reason_code": "OK", "action": "already_server_contract", "entrypoint": str(entry_script)}
+        if (
+            (marker_web in current)
+            and (placeholder_web not in current)
+            and (required_stdout in current)
+        ):
+            return {
+                "ok": True,
+                "reason_code": "OK",
+                "action": "already_server_contract",
+                "entrypoint": str(entry_script),
+            }
 
-        if (marker_web not in FALLBACK_WEB_DASHBOARD_APP_PY) or (required_stdout not in FALLBACK_WEB_DASHBOARD_APP_PY):
-            return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
+        if (marker_web not in FALLBACK_WEB_DASHBOARD_APP_PY) or (
+            required_stdout not in FALLBACK_WEB_DASHBOARD_APP_PY
+        ):
+            return {
+                "ok": False,
+                "reason_code": "INFRA_FALLBACK_BAD",
+                "entrypoint": str(entry_script),
+            }
 
         try:
-            entry_script.write_text(FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n")
+            entry_script.write_text(
+                FALLBACK_WEB_DASHBOARD_APP_PY, encoding="utf-8", newline="\n"
+            )
         except Exception as e:
-            return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+            return {
+                "ok": False,
+                "reason_code": "INFRA_ENTRY_WRITE_FAILED",
+                "error": repr(e),
+                "entrypoint": str(entry_script),
+            }
 
-        return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
+        return {
+            "ok": True,
+            "reason_code": "OK",
+            "action": "overwrote_from_fallback",
+            "entrypoint": str(entry_script),
+        }
 
     if product_id == "cicd_release_pack_v0":
-        if (marker_cicd in current) and (placeholder_cicd not in current) and (required_stdout in current):
-            return {"ok": True, "reason_code": "OK", "action": "already_cli_contract", "entrypoint": str(entry_script)}
+        if (
+            (marker_cicd in current)
+            and (placeholder_cicd not in current)
+            and (required_stdout in current)
+        ):
+            return {
+                "ok": True,
+                "reason_code": "OK",
+                "action": "already_cli_contract",
+                "entrypoint": str(entry_script),
+            }
 
-        if (marker_cicd not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY) or (required_stdout not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY):
-            return {"ok": False, "reason_code": "INFRA_FALLBACK_BAD", "entrypoint": str(entry_script)}
+        if (marker_cicd not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY) or (
+            required_stdout not in FALLBACK_CICD_RELEASE_PACK_MAIN_PY
+        ):
+            return {
+                "ok": False,
+                "reason_code": "INFRA_FALLBACK_BAD",
+                "entrypoint": str(entry_script),
+            }
 
         try:
-            entry_script.write_text(FALLBACK_CICD_RELEASE_PACK_MAIN_PY, encoding="utf-8", newline="\n")
+            entry_script.write_text(
+                FALLBACK_CICD_RELEASE_PACK_MAIN_PY, encoding="utf-8", newline="\n"
+            )
         except Exception as e:
-            return {"ok": False, "reason_code": "INFRA_ENTRY_WRITE_FAILED", "error": repr(e), "entrypoint": str(entry_script)}
+            return {
+                "ok": False,
+                "reason_code": "INFRA_ENTRY_WRITE_FAILED",
+                "error": repr(e),
+                "entrypoint": str(entry_script),
+            }
 
-        return {"ok": True, "reason_code": "OK", "action": "overwrote_from_fallback", "entrypoint": str(entry_script)}
+        return {
+            "ok": True,
+            "reason_code": "OK",
+            "action": "overwrote_from_fallback",
+            "entrypoint": str(entry_script),
+        }
 
-    return {"ok": True, "reason_code": "OK", "action": "skip_not_target", "entrypoint": str(entry_script)}
+    return {
+        "ok": True,
+        "reason_code": "OK",
+        "action": "skip_not_target",
+        "entrypoint": str(entry_script),
+    }
 
 
 def _stdout_ok(res: Dict[str, Any]) -> bool:
@@ -981,14 +1053,23 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         version = "0.0.0"
         config_src = ws / "config.example.json"
         if not config_src.exists():
-            raise FileNotFoundError(f"config.example.json not found in workspace: {config_src}")
+            raise FileNotFoundError(
+                f"config.example.json not found in workspace: {config_src}"
+            )
         src_root = ws
-        inputs = {"mode": "workspace", "product_id": product_id, "workspace": str(ws), "entrypoint": str(entry_script)}
+        inputs = {
+            "mode": "workspace",
+            "product_id": product_id,
+            "workspace": str(ws),
+            "entrypoint": str(entry_script),
+        }
 
     if not entry_script.exists():
         raise FileNotFoundError(f"entrypoint not found: {entry_script}")
 
-    out_dir = Path(args.out_dir).resolve() if args.out_dir else (repo / "dist" / product_id)
+    out_dir = (
+        Path(args.out_dir).resolve() if args.out_dir else (repo / "dist" / product_id)
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     steps: List[Dict[str, Any]] = []
@@ -996,7 +1077,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
     def add_step(s: Dict[str, Any]) -> None:
         nonlocal last_child_reason
-        s["child_reason_code"] = safe_reason(s.get("child_reason_code"), "INFRA_CHILD_REASON_MISSING")
+        s["child_reason_code"] = safe_reason(
+            s.get("child_reason_code"), "INFRA_CHILD_REASON_MISSING"
+        )
         steps.append(s)
         last_child_reason = s["child_reason_code"]
 
@@ -1011,7 +1094,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         "ok": bool(overlay.get("ok") is True),
         "exit_code": 0 if overlay.get("ok") is True else 1,
         "reason_code": "OK" if overlay.get("ok") is True else "FAIL_ENTRYPOINT_OVERLAY",
-        "child_reason_code": safe_reason(str(overlay.get("reason_code")), "FAIL_ENTRYPOINT_OVERLAY"),
+        "child_reason_code": safe_reason(
+            str(overlay.get("reason_code")), "FAIL_ENTRYPOINT_OVERLAY"
+        ),
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
@@ -1066,7 +1151,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
     # STEP 03: ruff
     so, se, ss = step_paths(out_dir, "03", "ruff")
-    ruff = run_cmd([sys.executable, "-m", "ruff", "check", str(src_root)], timeout_s=120)
+    ruff = run_cmd(
+        [sys.executable, "-m", "ruff", "check", str(src_root)], timeout_s=120
+    )
     write_text(so, ruff.get("stdout", ""))
     write_text(se, ruff.get("stderr", ""))
     s3 = {
@@ -1094,20 +1181,46 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
 
-    smoke_help = run_cmd([sys.executable, str(entry_script), "--help"], cwd=src_root, env=env, timeout_s=60)
+    smoke_help = run_cmd(
+        [sys.executable, str(entry_script), "--help"],
+        cwd=src_root,
+        env=env,
+        timeout_s=60,
+    )
     smoke_ver: Optional[Dict[str, Any]] = None
     chosen = "help"
     ok_smoke = _stdout_ok(smoke_help)
 
     if not ok_smoke:
-        smoke_ver = run_cmd([sys.executable, str(entry_script), "version"], cwd=src_root, env=env, timeout_s=60)
+        smoke_ver = run_cmd(
+            [sys.executable, str(entry_script), "version"],
+            cwd=src_root,
+            env=env,
+            timeout_s=60,
+        )
         chosen = "version"
         ok_smoke = _stdout_ok(smoke_ver)
 
-    smoke_obj = {"chosen": chosen, "help": smoke_help, "version": smoke_ver, "cwd": str(src_root), "py_path": env["PYTHONPATH"]}
+    smoke_obj = {
+        "chosen": chosen,
+        "help": smoke_help,
+        "version": smoke_ver,
+        "cwd": str(src_root),
+        "py_path": env["PYTHONPATH"],
+    }
 
-    write_text(so, (smoke_help.get("stdout", "") or "") + "\n---\n" + ((smoke_ver or {}).get("stdout", "") or ""))
-    write_text(se, (smoke_help.get("stderr", "") or "") + "\n---\n" + ((smoke_ver or {}).get("stderr", "") or ""))
+    write_text(
+        so,
+        (smoke_help.get("stdout", "") or "")
+        + "\n---\n"
+        + ((smoke_ver or {}).get("stdout", "") or ""),
+    )
+    write_text(
+        se,
+        (smoke_help.get("stderr", "") or "")
+        + "\n---\n"
+        + ((smoke_ver or {}).get("stderr", "") or ""),
+    )
 
     child_reason = "OK"
     if not ok_smoke:
@@ -1147,7 +1260,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         "platform": platform.platform(),
         "pip": run_cmd([sys.executable, "-m", "pip", "--version"], timeout_s=60),
         "ruff": run_cmd([sys.executable, "-m", "ruff", "--version"], timeout_s=60),
-        "pyinstaller": run_cmd([sys.executable, "-m", "PyInstaller", "--version"], timeout_s=60),
+        "pyinstaller": run_cmd(
+            [sys.executable, "-m", "PyInstaller", "--version"], timeout_s=60
+        ),
     }
     write_text(so, json.dumps(toolchain, ensure_ascii=False, indent=2))
     write_text(se, "")
@@ -1167,7 +1282,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     write_json(ss, s5)
     add_step(s5)
     if not s5["ok"]:
-        raise RuntimeError("PyInstaller is not available. Run scripts/bootstrap_tools_v1.ps1 first.")
+        raise RuntimeError(
+            "PyInstaller is not available. Run scripts/bootstrap_tools_v1.ps1 first."
+        )
 
     exe_base = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
     exe_path = out_dir / exe_name
@@ -1217,7 +1334,9 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
         "ok": pyinstaller_res["rc"] == 0,
         "exit_code": 0 if pyinstaller_res["rc"] == 0 else 1,
         "reason_code": "OK" if pyinstaller_res["rc"] == 0 else "FAIL_PYINSTALLER",
-        "child_reason_code": "OK" if pyinstaller_res["rc"] == 0 else "FAIL_PYINSTALLER_RC",
+        "child_reason_code": "OK"
+        if pyinstaller_res["rc"] == 0
+        else "FAIL_PYINSTALLER_RC",
         "ts_utc": utc_ts(),
         "stdout_path": str(so),
         "stderr_path": str(se),
@@ -1254,8 +1373,18 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
     post_help = run_cmd([str(exe_path), "--help"], cwd=out_dir, timeout_s=30)
     post_ver = run_cmd([str(exe_path), "version"], cwd=out_dir, timeout_s=30)
 
-    write_text(so, (post_help.get("stdout", "") or "") + "\n---\n" + (post_ver.get("stdout", "") or ""))
-    write_text(se, (post_help.get("stderr", "") or "") + "\n---\n" + (post_ver.get("stderr", "") or ""))
+    write_text(
+        so,
+        (post_help.get("stdout", "") or "")
+        + "\n---\n"
+        + (post_ver.get("stdout", "") or ""),
+    )
+    write_text(
+        se,
+        (post_help.get("stderr", "") or "")
+        + "\n---\n"
+        + (post_ver.get("stderr", "") or ""),
+    )
 
     ok_help = _stdout_ok(post_help)
     ok_ver = _stdout_ok(post_ver)
@@ -1263,9 +1392,17 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 
     child_post = "OK"
     if not ok_help:
-        child_post = "FAIL_POSTCHECK_HELP_RC" if post_help.get("rc") != 0 else "FAIL_POSTCHECK_HELP_STDOUT_EMPTY"
+        child_post = (
+            "FAIL_POSTCHECK_HELP_RC"
+            if post_help.get("rc") != 0
+            else "FAIL_POSTCHECK_HELP_STDOUT_EMPTY"
+        )
     elif not ok_ver:
-        child_post = "FAIL_POSTCHECK_VERSION_RC" if post_ver.get("rc") != 0 else "FAIL_POSTCHECK_VERSION_STDOUT_EMPTY"
+        child_post = (
+            "FAIL_POSTCHECK_VERSION_RC"
+            if post_ver.get("rc") != 0
+            else "FAIL_POSTCHECK_VERSION_STDOUT_EMPTY"
+        )
 
     s7 = {
         "id": "07_postcheck",
@@ -1349,12 +1486,21 @@ def main_inner(args: argparse.Namespace) -> Tuple[Dict[str, Any], int, Path]:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
-    ap = _ArgParser(description="Build Windows portable EXE for a product (EXE Pack v0)", add_help=False)
+    ap = _ArgParser(
+        description="Build Windows portable EXE for a product (EXE Pack v0)",
+        add_help=False,
+    )
     ap.add_argument("--repo", default=".", help="Repo root")
     ap.add_argument("--product-id", required=False)
     ap.add_argument("--out-dir", default=None, help="Override dist/<product_id>")
-    ap.add_argument("--workspace", default=None, help="Build directly from a workspace directory")
-    ap.add_argument("--entrypoint", default=None, help="Entrypoint relative to workspace (e.g., src/main.py)")
+    ap.add_argument(
+        "--workspace", default=None, help="Build directly from a workspace directory"
+    )
+    ap.add_argument(
+        "--entrypoint",
+        default=None,
+        help="Entrypoint relative to workspace (e.g., src/main.py)",
+    )
 
     out_dir: Optional[Path] = None
 
@@ -1376,7 +1522,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         code = RC_INFRA
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         if out_dir is None:
-            out_dir = (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+            out_dir = Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts
             out_dir.mkdir(parents=True, exist_ok=True)
 
         _ = write_exception_step(out_dir, e, code)
@@ -1398,7 +1544,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         code = classify_exit_code(e)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         if out_dir is None:
-            out_dir = (Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts)
+            out_dir = Path(".").resolve() / "dist" / "_build_exe_v0_error" / ts
             out_dir.mkdir(parents=True, exist_ok=True)
 
         _ = write_exception_step(out_dir, e, code)

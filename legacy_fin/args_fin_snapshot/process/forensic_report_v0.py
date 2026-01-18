@@ -31,14 +31,20 @@ def _git_info(root: Path) -> Dict[str, Any]:
 
     def _run(cmd: Sequence[str]) -> Tuple[int, str]:
         try:
-            p = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, shell=False)
+            p = subprocess.run(
+                cmd, cwd=str(root), capture_output=True, text=True, shell=False
+            )
             return p.returncode, p.stdout.strip()
         except Exception:
             return 1, ""
 
     rc, head = _run(["git", "rev-parse", "HEAD"])
     rc2, por = _run(["git", "status", "--porcelain"])
-    return {"is_git_repo": True, "head": head if rc == 0 else None, "dirty": bool(por) if rc2 == 0 else None}
+    return {
+        "is_git_repo": True,
+        "head": head if rc == 0 else None,
+        "dirty": bool(por) if rc2 == 0 else None,
+    }
 
 
 def _safe_rel(path: Path, root: Path) -> str:
@@ -55,7 +61,9 @@ def _load_latest_run_id(root: Path) -> Optional[str]:
     return p.read_text(encoding="utf-8", errors="replace").strip() or None
 
 
-def _collect_files(root: Path, run_id: str, *, include_archives: bool, max_files: int) -> List[Path]:
+def _collect_files(
+    root: Path, run_id: str, *, include_archives: bool, max_files: int
+) -> List[Path]:
     base = [
         root / "args" / "data" / "control_state.json",
         root / "args" / "data" / "latest_run_id.txt",
@@ -71,7 +79,11 @@ def _collect_files(root: Path, run_id: str, *, include_archives: bool, max_files
     out = [p for p in base if p.exists()]
     seen = {p.resolve() for p in out}
 
-    search_dirs = [root / "args" / "logs", root / "args" / "data", root / "args" / "offline"]
+    search_dirs = [
+        root / "args" / "logs",
+        root / "args" / "data",
+        root / "args" / "offline",
+    ]
     if include_archives:
         search_dirs.append(root / "args" / "logs" / "archive")
 
@@ -92,7 +104,9 @@ def _collect_files(root: Path, run_id: str, *, include_archives: bool, max_files
     return out
 
 
-def _ops_events_excerpt(run_id: str, paths: Sequence[Path], *, tail: int) -> List[Dict[str, Any]]:
+def _ops_events_excerpt(
+    run_id: str, paths: Sequence[Path], *, tail: int
+) -> List[Dict[str, Any]]:
     q: Deque[Dict[str, Any]] = deque(maxlen=tail)
     for p in paths:
         if not p.exists():
@@ -107,7 +121,9 @@ def _ops_events_excerpt(run_id: str, paths: Sequence[Path], *, tail: int) -> Lis
                         obj = json.loads(s)
                     except Exception:
                         continue
-                    if isinstance(obj, dict) and str(obj.get("run_id", "")) == str(run_id):
+                    if isinstance(obj, dict) and str(obj.get("run_id", "")) == str(
+                        run_id
+                    ):
                         q.append(obj)
         except Exception:
             continue
@@ -125,7 +141,9 @@ def _file_inventory(root: Path, paths: Sequence[Path]) -> List[Dict[str, Any]]:
             {
                 "path": _safe_rel(p, root),
                 "bytes": st.st_size,
-                "mtime_utc": utc_iso(datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)),
+                "mtime_utc": utc_iso(
+                    datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+                ),
                 "sha256": sha256_file(p),
             }
         )
@@ -156,17 +174,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     root = find_repo_root()
     run_id = ns.run_id or (_load_latest_run_id(root) if ns.latest else None)
     if not run_id:
-        print("FAIL: run_id not resolved (missing args/data/latest_run_id.txt?)", file=sys.stderr)
+        print(
+            "FAIL: run_id not resolved (missing args/data/latest_run_id.txt?)",
+            file=sys.stderr,
+        )
         return 2
 
     now = utc_now()
     ts = utc_compact(now)
 
-    out_dir = (root / ns.out_dir) if not Path(ns.out_dir).is_absolute() else Path(ns.out_dir)
+    out_dir = (
+        (root / ns.out_dir) if not Path(ns.out_dir).is_absolute() else Path(ns.out_dir)
+    )
     run_dir = out_dir / str(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    files = _collect_files(root, str(run_id), include_archives=bool(ns.include_archives), max_files=int(ns.max_files))
+    files = _collect_files(
+        root,
+        str(run_id),
+        include_archives=bool(ns.include_archives),
+        max_files=int(ns.max_files),
+    )
 
     ops_paths = []
     cur = root / "args" / "logs" / "ops_events.jsonl"
@@ -183,7 +211,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if eval_latest.exists():
         try:
             ptr = load_json_tolerant(eval_latest)
-            eval_block = {"found": True, "latest_pointer_path": _safe_rel(eval_latest, root), "latest_pointer": ptr}
+            eval_block = {
+                "found": True,
+                "latest_pointer_path": _safe_rel(eval_latest, root),
+                "latest_pointer": ptr,
+            }
             rp = ptr.get("latest_report_path") if isinstance(ptr, dict) else None
             if isinstance(rp, str) and rp.strip():
                 report_abs = (root / rp) if not Path(rp).is_absolute() else Path(rp)
@@ -200,9 +232,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         "kind": "forensic_report_v0",
         "generated_at_utc": utc_iso(now),
         "run_id": str(run_id),
-        "host": {"platform": platform.platform(), "python": sys.version, "pid": os.getpid()},
+        "host": {
+            "platform": platform.platform(),
+            "python": sys.version,
+            "pid": os.getpid(),
+        },
         "repo": {"root": str(root), "git": _git_info(root)},
-        "inputs": {"include_archives": bool(ns.include_archives), "max_files": int(ns.max_files), "ops_events_tail": int(ns.ops_events_tail)},
+        "inputs": {
+            "include_archives": bool(ns.include_archives),
+            "max_files": int(ns.max_files),
+            "ops_events_tail": int(ns.ops_events_tail),
+        },
         "eval_evidence": eval_block,
         "ops_events_excerpt": excerpt,
         "files": _file_inventory(root, files),

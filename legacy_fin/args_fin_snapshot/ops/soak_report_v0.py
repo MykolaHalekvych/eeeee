@@ -66,8 +66,14 @@ def _consecutive_max(flags: List[bool]) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Compute PASS/WARN/FAIL over soak_history window.")
-    ap.add_argument("--history", default="", help="History JSONL (default args/logs/soak_history.jsonl)")
+    ap = argparse.ArgumentParser(
+        description="Compute PASS/WARN/FAIL over soak_history window."
+    )
+    ap.add_argument(
+        "--history",
+        default="",
+        help="History JSONL (default args/logs/soak_history.jsonl)",
+    )
     ap.add_argument("--window-hours", type=int, default=24)
     ap.add_argument("--expected-interval-s", type=int, default=900)
 
@@ -89,13 +95,27 @@ def main() -> int:
         help="If only low sample coverage would FAIL and there are 0 FAIL samples -> downgrade to WARN",
     )
 
-    ap.add_argument("--out", default="", help="Write report JSON (default args/data/soak_report.json)")
-    ap.add_argument("--archive", action="store_true", help="Also write timestamped copy under args/logs/soak_reports/")
+    ap.add_argument(
+        "--out",
+        default="",
+        help="Write report JSON (default args/data/soak_report.json)",
+    )
+    ap.add_argument(
+        "--archive",
+        action="store_true",
+        help="Also write timestamped copy under args/logs/soak_reports/",
+    )
     args = ap.parse_args()
 
     repo = _repo_root()
-    history = Path(args.history) if args.history else (repo / "args" / "logs" / "soak_history.jsonl")
-    out_path = Path(args.out) if args.out else (repo / "args" / "data" / "soak_report.json")
+    history = (
+        Path(args.history)
+        if args.history
+        else (repo / "args" / "logs" / "soak_history.jsonl")
+    )
+    out_path = (
+        Path(args.out) if args.out else (repo / "args" / "data" / "soak_report.json")
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc)
@@ -202,7 +222,7 @@ def main() -> int:
     if args.bootstrap_low_sample_warn:
         if low_sample_fail and fail_count == 0:
             # if other fail reasons exist besides LOW_SAMPLE_COVERAGE_FAIL, do not downgrade
-            only_low_sample = (set(reasons_fail) == {"LOW_SAMPLE_COVERAGE_FAIL"})
+            only_low_sample = set(reasons_fail) == {"LOW_SAMPLE_COVERAGE_FAIL"}
             if only_low_sample:
                 reasons_fail = []
                 reasons_warn.append("LOW_SAMPLE_COVERAGE_BOOTSTRAP_WARN")
@@ -225,7 +245,11 @@ def main() -> int:
     report: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "ts_utc": _iso(now),
-        "window": {"hours": args.window_hours, "from_utc": _iso(t_min), "to_utc": _iso(now)},
+        "window": {
+            "hours": args.window_hours,
+            "from_utc": _iso(t_min),
+            "to_utc": _iso(now),
+        },
         "ok": (exit_code != 2),
         "level": level,
         "exit_code": exit_code,
@@ -276,7 +300,9 @@ def main() -> int:
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
         arch_path = arch_dir / f"soak_report_{stamp}_{args.window_hours}h.json"
         try:
-            arch_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            arch_path.write_text(
+                json.dumps(report, ensure_ascii=False), encoding="utf-8"
+            )
         except Exception:
             pass
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import datetime as _dt
 import json
@@ -49,13 +49,22 @@ def is_stop_flag_present(repo_root: Path) -> bool:
         return False
 
 
-def _looks_like_exit_action(intent_kind_u: str, plan_kind_u: str, payload_kind_u: str, item: Dict[str, Any]) -> bool:
-    if intent_kind_u and any(tok in intent_kind_u for tok in ("EXIT", "REDUCE", "CANCEL", "FLATTEN", "CLOSE", "TAKE_PROFIT", "TP")):
+def _looks_like_exit_action(
+    intent_kind_u: str, plan_kind_u: str, payload_kind_u: str, item: Dict[str, Any]
+) -> bool:
+    if intent_kind_u and any(
+        tok in intent_kind_u
+        for tok in ("EXIT", "REDUCE", "CANCEL", "FLATTEN", "CLOSE", "TAKE_PROFIT", "TP")
+    ):
         return True
-    if plan_kind_u and any(tok in plan_kind_u for tok in ("CANCEL", "CLOSE", "EXIT", "FLATTEN", "REDUCE")):
+    if plan_kind_u and any(
+        tok in plan_kind_u for tok in ("CANCEL", "CLOSE", "EXIT", "FLATTEN", "REDUCE")
+    ):
         return True
     action_class = _norm_u(item.get("action_class"))
-    if action_class and any(tok in action_class for tok in ("EXIT", "REDUCE", "CANCEL", "FLATTEN", "CLOSE")):
+    if action_class and any(
+        tok in action_class for tok in ("EXIT", "REDUCE", "CANCEL", "FLATTEN", "CLOSE")
+    ):
         return True
     return False
 
@@ -107,7 +116,9 @@ def is_action_allowed(
     return True, "ALLOW_FULL"
 
 
-def apply_block_to_sendplan_inplace(item: Dict[str, Any], reason_code: str, note: str) -> None:
+def apply_block_to_sendplan_inplace(
+    item: Dict[str, Any], reason_code: str, note: str
+) -> None:
     if "plan_kind_intended" not in item and "plan_kind" in item:
         item["plan_kind_intended"] = item.get("plan_kind")
     if "payload_kind_intended" not in item and "payload_kind" in item:

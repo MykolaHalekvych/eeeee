@@ -12,17 +12,28 @@ class TestStage5MorePaths(unittest.TestCase):
         td = tempfile.TemporaryDirectory()
         repo = Path(td.name)
         (repo / "runs").mkdir(parents=True, exist_ok=True)
-        cp = ControlPlane(global_mode="ONLY_EXITS", run_root="runs", cool_down_seconds=1)
+        cp = ControlPlane(
+            global_mode="ONLY_EXITS", run_root="runs", cool_down_seconds=1
+        )
         cp_path = repo / "control_plane.json"
         cp.save(cp_path)
         broker = FakeBroker(scenario=scenario, positions={"AAPL": 2.0})
-        eng = Engine(repo_root=repo, run_id=f"r_{scenario}", control_plane_path=cp_path, broker=broker)
+        eng = Engine(
+            repo_root=repo,
+            run_id=f"r_{scenario}",
+            control_plane_path=cp_path,
+            broker=broker,
+        )
         return td, repo, eng, broker, cp_path
 
     def test_reject_goes_failed(self):
         td, repo, eng, broker, _ = self._mk("reject")
         try:
-            eng.submit_intent(OrderIntent(intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)))
+            eng.submit_intent(
+                OrderIntent(
+                    intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)
+                )
+            )
             for _ in range(10):
                 eng.step()
                 t = eng.state.tickets["i1"]
@@ -37,7 +48,11 @@ class TestStage5MorePaths(unittest.TestCase):
     def test_partial_then_cancel_goes_cancelled(self):
         td, repo, eng, broker, _ = self._mk("partial_then_cancel")
         try:
-            eng.submit_intent(OrderIntent(intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)))
+            eng.submit_intent(
+                OrderIntent(
+                    intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)
+                )
+            )
             for _ in range(30):
                 eng.step()
                 t = eng.state.tickets["i1"]
@@ -54,7 +69,11 @@ class TestStage5MorePaths(unittest.TestCase):
     def test_partial_then_fill_goes_done_and_flat(self):
         td, repo, eng, broker, _ = self._mk("partial_then_fill")
         try:
-            eng.submit_intent(OrderIntent(intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)))
+            eng.submit_intent(
+                OrderIntent(
+                    intent_id="i1", order=OrderSpec(symbol="AAPL", side="SELL", qty=2.0)
+                )
+            )
             for _ in range(30):
                 eng.step()
                 t = eng.state.tickets["i1"]
@@ -63,7 +82,9 @@ class TestStage5MorePaths(unittest.TestCase):
             t = eng.state.tickets["i1"]
             self.assertTrue(t.is_terminal())
             self.assertEqual(t.terminal.value, "DONE")
-            self.assertAlmostEqual(float(broker.snapshot()["positions"]["AAPL"]), 0.0, places=9)
+            self.assertAlmostEqual(
+                float(broker.snapshot()["positions"]["AAPL"]), 0.0, places=9
+            )
         finally:
             td.cleanup()
 

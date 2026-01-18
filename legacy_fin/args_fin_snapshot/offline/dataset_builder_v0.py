@@ -1,13 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 # -----------------------------
 # Paths
@@ -19,7 +18,12 @@ DATASETS_DIR = REPO_ROOT / "args" / "offline" / "datasets"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -29,10 +33,12 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return obj
 
 
-
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8"
+    )
+
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
@@ -145,7 +151,11 @@ def _extract_row(
         row["reason"] = orders_paper_row.get("reason")
         wa_action = orders_paper_row.get("wa_action")
         if isinstance(wa_action, dict):
-            row["intent_kind"] = wa_action.get("notes", {}).get("intent") if isinstance(wa_action.get("notes"), dict) else None
+            row["intent_kind"] = (
+                wa_action.get("notes", {}).get("intent")
+                if isinstance(wa_action.get("notes"), dict)
+                else None
+            )
 
     # From events stream (optional)
     if isinstance(events_row, dict):
@@ -163,7 +173,9 @@ def _extract_row(
     return row
 
 
-def _coerce_payload_features(payload_row: Dict[str, Any], out_row: Dict[str, Any]) -> None:
+def _coerce_payload_features(
+    payload_row: Dict[str, Any], out_row: Dict[str, Any]
+) -> None:
     """
     Attach minimal payload fields if present.
     """
@@ -224,7 +236,12 @@ def build_dataset(
                 payload_by_idx[idx] = pl
 
         # union of indices (prefer paper backbone)
-        indices: List[Any] = sorted(set(paper_by_idx.keys()) | set(payload_by_idx.keys()) | set(events_by_idx.keys()), key=lambda x: int(x) if str(x).isdigit() else 0)
+        indices: List[Any] = sorted(
+            set(paper_by_idx.keys())
+            | set(payload_by_idx.keys())
+            | set(events_by_idx.keys()),
+            key=lambda x: int(x) if str(x).isdigit() else 0,
+        )
 
         for idx in indices:
             base = _extract_row(
@@ -247,11 +264,19 @@ def build_dataset(
                 "report_path": str(report_path),
                 "report_sha256": _sha256_file(report_path),
                 "events_path": str(events_path) if events_path.exists() else None,
-                "events_sha256": _sha256_file(events_path) if events_path.exists() else None,
-                "orders_paper_path": str(orders_paper_path) if orders_paper_path.exists() else None,
-                "orders_paper_sha256": _sha256_file(orders_paper_path) if orders_paper_path.exists() else None,
+                "events_sha256": _sha256_file(events_path)
+                if events_path.exists()
+                else None,
+                "orders_paper_path": str(orders_paper_path)
+                if orders_paper_path.exists()
+                else None,
+                "orders_paper_sha256": _sha256_file(orders_paper_path)
+                if orders_paper_path.exists()
+                else None,
                 "payload_path": str(payload_path) if payload_path.exists() else None,
-                "payload_sha256": _sha256_file(payload_path) if payload_path.exists() else None,
+                "payload_sha256": _sha256_file(payload_path)
+                if payload_path.exists()
+                else None,
             }
         )
 
@@ -289,9 +314,15 @@ def build_dataset(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser("dataset_builder_v0")
-    ap.add_argument("--latest", type=int, default=20, help="Use latest N run_report_*_paper.json")
-    ap.add_argument("--out", default="", help="Output dataset directory name (default auto)")
-    ap.add_argument("--fields", default="", help="Comma-separated list of fields (default v0)")
+    ap.add_argument(
+        "--latest", type=int, default=20, help="Use latest N run_report_*_paper.json"
+    )
+    ap.add_argument(
+        "--out", default="", help="Output dataset directory name (default auto)"
+    )
+    ap.add_argument(
+        "--fields", default="", help="Comma-separated list of fields (default v0)"
+    )
     args = ap.parse_args(argv)
 
     n = max(1, int(args.latest))
@@ -317,10 +348,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out_name = args.out.strip() or f"ds_{dataset_id}"
     out_dir = DATASETS_DIR / out_name
 
-    manifest = build_dataset(run_ids=run_ids, out_dir=out_dir, include_fields=include_fields)
+    manifest = build_dataset(
+        run_ids=run_ids, out_dir=out_dir, include_fields=include_fields
+    )
 
     print("DATASET_BUILDER_V0")
-    print(json.dumps({"ok": True, "out_dir": str(out_dir), "manifest_path": str(out_dir / "dataset_manifest.json"), "rows": manifest.get("rows"), "run_ids": run_ids}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "out_dir": str(out_dir),
+                "manifest_path": str(out_dir / "dataset_manifest.json"),
+                "rows": manifest.get("rows"),
+                "run_ids": run_ids,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

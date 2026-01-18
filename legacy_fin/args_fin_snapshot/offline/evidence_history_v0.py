@@ -113,9 +113,15 @@ def record_json_evidence(
     return ptr
 
 
-def verify_latest_pointer(latest_pointer_path: Path, *, repo_root: Optional[Path] = None) -> Tuple[bool, str]:
+def verify_latest_pointer(
+    latest_pointer_path: Path, *, repo_root: Optional[Path] = None
+) -> Tuple[bool, str]:
     root = repo_root or find_repo_root()
-    lp = latest_pointer_path if latest_pointer_path.is_absolute() else (root / latest_pointer_path)
+    lp = (
+        latest_pointer_path
+        if latest_pointer_path.is_absolute()
+        else (root / latest_pointer_path)
+    )
     if not lp.exists():
         return False, f"latest pointer not found: {lp}"
 
@@ -143,14 +149,18 @@ def verify_latest_pointer(latest_pointer_path: Path, *, repo_root: Optional[Path
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="ARGS offline evidence history helper (v0)")
+    ap = argparse.ArgumentParser(
+        description="ARGS offline evidence history helper (v0)"
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_v = sub.add_parser("verify", help="Verify latest pointer + report SHA256")
     p_v.add_argument("--latest_pointer", required=True)
 
     p_st = sub.add_parser("selftest", help="Create dummy evidence and verify it")
-    p_st.add_argument("--evidence_dir", default="args/offline/evidence/_selftest_eval_gate")
+    p_st.add_argument(
+        "--evidence_dir", default="args/offline/evidence/_selftest_eval_gate"
+    )
 
     ns = ap.parse_args(argv)
 
@@ -160,8 +170,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0 if ok else 2
 
     if ns.cmd == "selftest":
-        sample = {"kind": "eval_gate_report_v0", "status": "PASS", "model_id": "selftest"}
-        record_json_evidence(kind="eval_gate", report_obj=sample, evidence_dir=Path(ns.evidence_dir), report_basename="eval_gate_report.json")
+        sample = {
+            "kind": "eval_gate_report_v0",
+            "status": "PASS",
+            "model_id": "selftest",
+        }
+        record_json_evidence(
+            kind="eval_gate",
+            report_obj=sample,
+            evidence_dir=Path(ns.evidence_dir),
+            report_basename="eval_gate_report.json",
+        )
         ok, msg = verify_latest_pointer(Path(ns.evidence_dir) / "latest.json")
         print(msg)
         return 0 if ok else 2

@@ -9,7 +9,9 @@ from args.ibkr.ibkr_sender_real_v1 import real_sender, DATA_DIR
 
 def write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -41,19 +43,39 @@ def main() -> None:
             "kind": "SENDPLAN_ORDER",
             "run_id": run_id,
             "idempotency_key": "SYNTH-ORDER-1",
-            "contract": {"conId": 123, "localSymbol": "MHG", "secType": "FUT", "exchange": "COMEX", "currency": "USD"},
-            "order": {"action": "BUY", "orderType": "MKT", "totalQuantity": 1, "tif": "DAY", "transmit": False},
+            "contract": {
+                "conId": 123,
+                "localSymbol": "MHG",
+                "secType": "FUT",
+                "exchange": "COMEX",
+                "currency": "USD",
+            },
+            "order": {
+                "action": "BUY",
+                "orderType": "MKT",
+                "totalQuantity": 1,
+                "tif": "DAY",
+                "transmit": False,
+            },
             "reason": "stage55_synth",
         }
     ]
     write_jsonl(sendplan_path, rows)
 
     print("=== Stage 5.5 synth run #1 ===")
-    r1 = real_sender(sendplan_path=sendplan_path, run_report_path=run_report_path, control_state_path=control_state_path)
+    r1 = real_sender(
+        sendplan_path=sendplan_path,
+        run_report_path=run_report_path,
+        control_state_path=control_state_path,
+    )
     print(json.dumps(r1, ensure_ascii=False, indent=2))
 
     print("\n=== Stage 5.5 synth run #2 (should DEDUPE) ===")
-    r2 = real_sender(sendplan_path=sendplan_path, run_report_path=run_report_path, control_state_path=control_state_path)
+    r2 = real_sender(
+        sendplan_path=sendplan_path,
+        run_report_path=run_report_path,
+        control_state_path=control_state_path,
+    )
     print(json.dumps(r2, ensure_ascii=False, indent=2))
 
     # Assertions

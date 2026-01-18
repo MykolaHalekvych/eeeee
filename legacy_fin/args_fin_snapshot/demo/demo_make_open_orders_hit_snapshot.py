@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional
 
 
 def _now_utc_iso() -> str:
@@ -91,7 +91,10 @@ def _score_contract(d: Dict[str, Any]) -> int:
         score += 3
     if d.get("multiplier") is not None:
         score += 1
-    if isinstance(d.get("lastTradeDateOrContractMonth"), str) and str(d.get("lastTradeDateOrContractMonth")).strip():
+    if (
+        isinstance(d.get("lastTradeDateOrContractMonth"), str)
+        and str(d.get("lastTradeDateOrContractMonth")).strip()
+    ):
         score += 1
 
     return score
@@ -165,7 +168,9 @@ def main() -> int:
 
     contract = _pick_best_contract(candidates)
     if contract is None:
-        raise RuntimeError("Cannot locate any contract-like dict (conId/localSymbol/symbol) in sendplan or resolver")
+        raise RuntimeError(
+            "Cannot locate any contract-like dict (conId/localSymbol/symbol) in sendplan or resolver"
+        )
 
     contract = _normalize_contract_for_signature(contract)
 
@@ -196,7 +201,13 @@ def main() -> int:
         "tag": tag,
         "order_id": int(args.order_id),
         "contract": contract,
-        "order": {"action": "BUY", "totalQuantity": 1, "orderType": "MKT", "tif": "DAY", "transmit": False},
+        "order": {
+            "action": "BUY",
+            "totalQuantity": 1,
+            "orderType": "MKT",
+            "tif": "DAY",
+            "transmit": False,
+        },
         "order_state": {"status": "Submitted"},
         "source": "IBKR_OPEN_ORDERS_SNAPSHOT_V0",
     }

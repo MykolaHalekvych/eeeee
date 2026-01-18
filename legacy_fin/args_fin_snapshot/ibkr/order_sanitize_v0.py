@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 try:
     from ibapi.common import UNSET_DOUBLE  # type: ignore
@@ -8,12 +8,14 @@ except Exception:
 # Ensure serializer compatibility: some ibapi versions expect Order.nbboPriceCap to exist.
 try:
     from ibapi.order import Order as _IbOrder  # type: ignore
+
     if not hasattr(_IbOrder, "nbboPriceCap"):
         setattr(_IbOrder, "nbboPriceCap", UNSET_DOUBLE)
 except Exception:
     pass
 
 from typing import Any, Dict
+
 
 def sanitize_order_v0(o: Any) -> Dict[str, Any]:
     """
@@ -53,5 +55,3 @@ def sanitize_order_v0(o: Any) -> Dict[str, Any]:
         pass
 
     return applied
-
-

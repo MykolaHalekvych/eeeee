@@ -8,7 +8,6 @@ import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -97,7 +96,13 @@ class _App(EWrapper, EClient):
         self.next_order_id = int(orderId)
         self._next_valid_id_evt.set()
 
-    def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
+    def error(
+        self,
+        reqId: int,
+        errorCode: int,
+        errorString: str,
+        advancedOrderRejectJson: str = "",
+    ) -> None:
         msg = f"reqId={reqId} code={errorCode} msg={errorString}"
         if advancedOrderRejectJson:
             msg += f" adv={advancedOrderRejectJson}"
@@ -127,7 +132,9 @@ class _App(EWrapper, EClient):
         s2 = _u(s)
         return s2 in {"FILLED", "CANCELLED", "INACTIVE"}  # IB statuses
 
-    def wait_all_terminal(self, order_ids: List[int], timeout_s: float) -> Tuple[bool, Dict[int, str]]:
+    def wait_all_terminal(
+        self, order_ids: List[int], timeout_s: float
+    ) -> Tuple[bool, Dict[int, str]]:
         t0 = time.time()
         while time.time() - t0 < timeout_s:
             with self._lock:
@@ -177,7 +184,6 @@ def _build_contract(it: Dict[str, Any]) -> Contract:
 
     c.localSymbol = str(it.get("localSymbol") or "")
     return c
-
 
     # Futures need expiry/contract month sometimes
     ltd = str(it.get("lastTradeDateOrContractMonth") or "")
@@ -256,7 +262,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             warnings.append(f"global_mode={global_mode} (expected ONLY_EXITS)")
 
         # HARD BLOCK: until user explicitly enables + confirm flag
-        can_execute = (execution_mode == "PAPER") and enable_paper and bool(args.confirm_paper)
+        can_execute = (
+            (execution_mode == "PAPER") and enable_paper and bool(args.confirm_paper)
+        )
         if not can_execute:
             out = {
                 "schema": SCHEMA,
@@ -274,7 +282,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "reset_items_unknown": unknown,
                     "reset_items_allowlist": allow,
                 },
-                "warnings": warnings + [
+                "warnings": warnings
+                + [
                     "No orders sent. To allow real placing, set execution_mode=PAPER, enable_paper_execution=true AND run with --confirm-paper AND (in chat) issue ENABLE PAPER EXECUTION."
                 ],
             }
@@ -356,7 +365,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             order_ids.append(oid)
             time.sleep(0.2)
 
-        ok_terminal, statuses = app.wait_all_terminal(order_ids, timeout_s=float(args.order_timeout_s))
+        ok_terminal, statuses = app.wait_all_terminal(
+            order_ids, timeout_s=float(args.order_timeout_s)
+        )
 
         try:
             app.disconnect()

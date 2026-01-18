@@ -1,4 +1,3 @@
-
 # args/ops/reset_executor_v0.py
 from __future__ import annotations
 
@@ -9,7 +8,7 @@ import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from args.ibkr.ibkr_positions_snapshotter_v0 import snapshot_positions
 
@@ -102,8 +101,8 @@ def _is_allowlisted(symbol: str, local_symbol: str, allowlist_norm: List[str]) -
 
 @dataclass
 class ResetItem:
-    priority: int                 # 0 unknown first, 1 allowlist next
-    kind: str                     # CLOSE_UNKNOWN / CLOSE_ALLOWLIST
+    priority: int  # 0 unknown first, 1 allowlist next
+    kind: str  # CLOSE_UNKNOWN / CLOSE_ALLOWLIST
     symbol: str
     secType: str
     currency: str
@@ -111,12 +110,14 @@ class ResetItem:
     conId: int
     localSymbol: str
     lastTradeDateOrContractMonth: str
-    action: str                   # BUY/SELL
+    action: str  # BUY/SELL
     qty: float
     reason: str
 
 
-def build_reset_plan(positions_snapshot: Dict[str, Any], allowlist_norm: List[str]) -> Dict[str, Any]:
+def build_reset_plan(
+    positions_snapshot: Dict[str, Any], allowlist_norm: List[str]
+) -> Dict[str, Any]:
     items: List[ResetItem] = []
     for r in positions_snapshot.get("rows", []):
         pos = float(r.get("position") or 0.0)
@@ -167,7 +168,9 @@ def build_reset_plan(positions_snapshot: Dict[str, Any], allowlist_norm: List[st
     }
 
 
-def build_preview(plan: Dict[str, Any], control_plane: Dict[str, Any]) -> Dict[str, Any]:
+def build_preview(
+    plan: Dict[str, Any], control_plane: Dict[str, Any]
+) -> Dict[str, Any]:
     reqs: List[Dict[str, Any]] = []
     for it in plan.get("items", []):
         contract = {
@@ -200,7 +203,9 @@ def build_preview(plan: Dict[str, Any], control_plane: Dict[str, Any]) -> Dict[s
         "ts_utc": _utc_now_iso(),
         "execution_mode": control_plane.get("execution_mode", ""),
         "global_mode": control_plane.get("global_mode", ""),
-        "enable_paper_execution": bool(control_plane.get("enable_paper_execution", False)),
+        "enable_paper_execution": bool(
+            control_plane.get("enable_paper_execution", False)
+        ),
         "requests": reqs,
         "notes": [
             "DRYRUN mode emits preview only; no IBKR orders are sent.",
@@ -217,7 +222,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--connect-timeout-s", type=float, default=8.0)
     ap.add_argument("--timeout-s", type=float, default=25.0)
     ap.add_argument("--control-plane", default=str(DATA_DIR / "control_plane.json"))
-    ap.add_argument("--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json"))
+    ap.add_argument(
+        "--positions-out", default=str(DATA_DIR / "ibkr_positions_live.json")
+    )
     ap.add_argument("--plan-out", default=str(DATA_DIR / "reset_plan.json"))
     ap.add_argument("--preview-out", default=str(DATA_DIR / "reset_preview.json"))
 
@@ -256,10 +263,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
 
         if global_mode and global_mode != "ONLY_EXITS":
-            warnings.append(f"control_plane.global_mode={global_mode} (expected ONLY_EXITS for reset)")
+            warnings.append(
+                f"control_plane.global_mode={global_mode} (expected ONLY_EXITS for reset)"
+            )
 
         if not allowlist_norm:
-            warnings.append("allowlist_empty: all positions will be treated as UNKNOWN (fix control_plane.json)")
+            warnings.append(
+                "allowlist_empty: all positions will be treated as UNKNOWN (fix control_plane.json)"
+            )
 
         plan = build_reset_plan(snap, allowlist_norm=allowlist_norm)
         _write_json(Path(args.plan_out), plan)
@@ -272,12 +283,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         executed = False
         if execution_mode == "PAPER" and enable_paper:
             block_reason = "PAPER_EXECUTION_BLOCKED_UNTIL_CHAT_COMMAND"
-            warnings.append("paper execution requested by config but blocked by invariant (chat command missing).")
+            warnings.append(
+                "paper execution requested by config but blocked by invariant (chat command missing)."
+            )
         else:
             block_reason = "PAPER_EXECUTION_DISABLED"
 
-        unknown_count = sum(1 for i in plan.get("items", []) if i.get("kind") == "CLOSE_UNKNOWN")
-        allow_count = sum(1 for i in plan.get("items", []) if i.get("kind") == "CLOSE_ALLOWLIST")
+        unknown_count = sum(
+            1 for i in plan.get("items", []) if i.get("kind") == "CLOSE_UNKNOWN"
+        )
+        allow_count = sum(
+            1 for i in plan.get("items", []) if i.get("kind") == "CLOSE_ALLOWLIST"
+        )
 
         if unknown_count > 0:
             warnings.append(f"unknown_positions_to_close={unknown_count}")

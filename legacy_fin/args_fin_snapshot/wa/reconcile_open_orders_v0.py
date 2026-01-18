@@ -63,7 +63,9 @@ def _parse_iso_z(s: str) -> Optional[datetime]:
 def choose_latest_snapshot(repo_root: Path) -> Optional[Path]:
     data_dir = repo_root / "args" / "data"
     try:
-        files = sorted(data_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(
+            data_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True
+        )
         return files[0] if files else None
     except Exception:
         return None
@@ -88,7 +90,9 @@ def _fut_yyyymm(c: Dict[str, Any]) -> str:
       - supports YYYYMM or YYYYMMDD (use first 6 digits)
       - returns "" if not available / not parseable
     """
-    raw = str(c.get("lastTradeDateOrContractMonth") or c.get("contractMonth") or "").strip()
+    raw = str(
+        c.get("lastTradeDateOrContractMonth") or c.get("contractMonth") or ""
+    ).strip()
     d = _digits(raw)
     if len(d) >= 6:
         return d[:6]
@@ -124,7 +128,9 @@ def _sig_strict(c: Dict[str, Any]) -> Optional[str]:
     return f"{core}|{ex}"
 
 
-def _filter_hits_contract_sensitive(contract_dict: Dict[str, Any], hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _filter_hits_contract_sensitive(
+    contract_dict: Dict[str, Any], hits: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """
     Contract-sensitive filtering on candidate hits.
     Currently: FUT month guard
@@ -222,7 +228,11 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if kind == "IBKR_SNAPSHOT_START":
                 has_start = True
                 sv = obj.get("schema_version")
-                if isinstance(sv, str) and sv.strip() and sv.strip() != SNAPSHOT_SCHEMA_VERSION:
+                if (
+                    isinstance(sv, str)
+                    and sv.strip()
+                    and sv.strip() != SNAPSHOT_SCHEMA_VERSION
+                ):
                     schema_ok = False
                 ts = obj.get("ts") or obj.get("ts_utc")
                 if isinstance(ts, str):
@@ -239,9 +249,15 @@ def load_open_orders_snapshot(path: Path) -> SnapshotIndex:
             if kind != "IBKR_OPEN_ORDER":
                 continue
 
-            contract = obj.get("contract") if isinstance(obj.get("contract"), dict) else {}
+            contract = (
+                obj.get("contract") if isinstance(obj.get("contract"), dict) else {}
+            )
             order = obj.get("order") if isinstance(obj.get("order"), dict) else {}
-            order_state = obj.get("order_state") if isinstance(obj.get("order_state"), dict) else {}
+            order_state = (
+                obj.get("order_state")
+                if isinstance(obj.get("order_state"), dict)
+                else {}
+            )
 
             oo: Dict[str, Any] = {
                 "order_id": obj.get("order_id"),
@@ -325,7 +341,9 @@ def snapshot_validity(idx: SnapshotIndex) -> Tuple[bool, str]:
     return True, ""
 
 
-def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tuple[bool, str, List[Dict[str, Any]]]:
+def match_open_orders(
+    idx: SnapshotIndex, contract_dict: Dict[str, Any]
+) -> Tuple[bool, str, List[Dict[str, Any]]]:
     """
     Match priority (standard / Stage5E.2):
       1) conId
@@ -374,6 +392,7 @@ def match_open_orders(idx: SnapshotIndex, contract_dict: Dict[str, Any]) -> Tupl
 # Optional CLI (debug helper)
 # ---------------------------
 
+
 def _read_contract_json(path: Path) -> Dict[str, Any]:
     obj = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     if not isinstance(obj, dict):
@@ -383,8 +402,16 @@ def _read_contract_json(path: Path) -> Dict[str, Any]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog=SCHEMA)
-    p.add_argument("--snapshot", default="", help="Path to ibkr_open_orders_*.jsonl (default: latest in args/data)")
-    p.add_argument("--contract-json", default="", help="Path to contract JSON (dict) to match against snapshot")
+    p.add_argument(
+        "--snapshot",
+        default="",
+        help="Path to ibkr_open_orders_*.jsonl (default: latest in args/data)",
+    )
+    p.add_argument(
+        "--contract-json",
+        default="",
+        help="Path to contract JSON (dict) to match against snapshot",
+    )
     args = p.parse_args(argv)
 
     repo_root = _repo_root()
@@ -396,7 +423,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         sp = choose_latest_snapshot(repo_root)
 
     if sp is None or not sp.exists():
-        out = {"schema": SCHEMA, "ts_utc": _utc_now_iso(), "ok": False, "exit_code": 2, "error": "snapshot_not_found"}
+        out = {
+            "schema": SCHEMA,
+            "ts_utc": _utc_now_iso(),
+            "ok": False,
+            "exit_code": 2,
+            "error": "snapshot_not_found",
+        }
         print(json.dumps(out, ensure_ascii=False))
         return 2
 

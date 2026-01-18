@@ -1,10 +1,9 @@
-
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable
 
 
 # Stage A: canonical no-action decisions (include live_safety NO_DECISION)
@@ -19,7 +18,14 @@ KIND_EXIT = "INTENT_EXIT"
 KIND_REDUCE = "INTENT_REDUCE"
 KIND_TAKE_PROFIT = "INTENT_TAKE_PROFIT"
 
-_ALLOWED_KINDS = {KIND_NONE, KIND_CANCEL_ALL, KIND_ENTRY, KIND_EXIT, KIND_REDUCE, KIND_TAKE_PROFIT}
+_ALLOWED_KINDS = {
+    KIND_NONE,
+    KIND_CANCEL_ALL,
+    KIND_ENTRY,
+    KIND_EXIT,
+    KIND_REDUCE,
+    KIND_TAKE_PROFIT,
+}
 
 
 @dataclass(frozen=True)
@@ -69,7 +75,9 @@ def iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        f.write(
+            json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
         f.write("\n")
 
 
@@ -313,7 +321,11 @@ from args.wa.mode_gate_v1 import apply_mode_gate_from_report
 def enforce_mode_gate(intent: dict, run_report: dict) -> dict:
     # fail-safe: if shapes are wrong -> no trade
     if not isinstance(intent, dict):
-        return {"kind": KIND_NONE, "kind_raw": str(intent), "gate_reason": "intent_not_dict"}
+        return {
+            "kind": KIND_NONE,
+            "kind_raw": str(intent),
+            "gate_reason": "intent_not_dict",
+        }
     if not isinstance(run_report, dict):
         run_report = {}
     return apply_mode_gate_from_report(intent, run_report)

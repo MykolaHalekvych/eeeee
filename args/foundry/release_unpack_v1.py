@@ -68,7 +68,11 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
-    releases_dir = Path(args.releases_dir).resolve() if args.releases_dir.strip() else (repo / "dist" / "releases")
+    releases_dir = (
+        Path(args.releases_dir).resolve()
+        if args.releases_dir.strip()
+        else (repo / "dist" / "releases")
+    )
 
     release_id = str(args.release_id).strip()
     release_zip = releases_dir / f"{release_id}.zip"
@@ -119,7 +123,10 @@ def main_inner() -> Tuple[Dict[str, Any], int]:
 
     if out_report is not None:
         out_report.parent.mkdir(parents=True, exist_ok=True)
-        out_report.write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        out_report.write_text(
+            json.dumps(report, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
 
     payload = {
         "schema": "release_unpack_v1",

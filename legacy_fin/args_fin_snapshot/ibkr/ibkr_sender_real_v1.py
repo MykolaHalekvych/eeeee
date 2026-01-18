@@ -18,7 +18,9 @@ from args.ibkr.order_sanitize_v0 import sanitize_order_v0
 # If import fails for any reason, we fall back to local safe readers (DRY_RUN default).
 try:
     from args.control.execution_mode_v0 import get_execution_mode as _get_execution_mode  # type: ignore
-    from args.control.execution_mode_v0 import is_stop_flag_present as _is_stop_flag_present  # type: ignore
+    from args.control.execution_mode_v0 import (
+        is_stop_flag_present as _is_stop_flag_present,
+    )  # type: ignore
 except Exception:
     _get_execution_mode = None
     _is_stop_flag_present = None
@@ -30,12 +32,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "args" / "data"
 LOGS_DIR = REPO_ROOT / "args" / "logs"
 
-EXEC_MODE_PATH = DATA_DIR / "execution_mode.json"  # DRY_RUN / EXIT_ONLY / FULL (safe-by-default)
+EXEC_MODE_PATH = (
+    DATA_DIR / "execution_mode.json"
+)  # DRY_RUN / EXIT_ONLY / FULL (safe-by-default)
 STOP_FLAG_PATH = DATA_DIR / "stop.flag"
 
 # Guardrails
-K_LIMIT_ORDERS_DEFAULT = 1           # per invocation
-RUN_LIMIT_ORDERS_DEFAULT = 1         # per run_id across repeated ARMED runs (safety!)
+K_LIMIT_ORDERS_DEFAULT = 1  # per invocation
+RUN_LIMIT_ORDERS_DEFAULT = 1  # per run_id across repeated ARMED runs (safety!)
 CURSOR_PATH = DATA_DIR / "ibkr_order_id_cursor_v1.json"
 
 # Safety: never start order ids from tiny numbers
@@ -94,10 +98,17 @@ def _get_exec_mode(repo_root: Path) -> str:
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
-def _decorate_ibkr_error_details(*, error_code: int, error_string: str) -> Dict[str, Any]:
+def _decorate_ibkr_error_details(
+    *, error_code: int, error_string: str
+) -> Dict[str, Any]:
     """
     Adds actionable operator hints for known IBKR errors.
     Keep it small and deterministic.
@@ -141,7 +152,9 @@ def _parse_iso_dt_utc(value: Any) -> Optional[datetime]:
 def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     tmp.replace(path)
 
 
@@ -194,10 +207,14 @@ def _load_stage5_override_cfg(control: Dict[str, Any]) -> _Stage5OverrideCfg:
         or control.get("stage5_test_override_until_utc")
     )
     expires_at = _parse_iso_dt_utc(expires_raw)
-    return _Stage5OverrideCfg(enabled=enabled, autoreset=autoreset, expires_at_utc=expires_at)
+    return _Stage5OverrideCfg(
+        enabled=enabled, autoreset=autoreset, expires_at_utc=expires_at
+    )
 
 
-def _detect_stop_flag(repo_root: Path, control: Dict[str, Any]) -> Tuple[bool, Optional[Path]]:
+def _detect_stop_flag(
+    repo_root: Path, control: Dict[str, Any]
+) -> Tuple[bool, Optional[Path]]:
     """
     Returns (present, path_if_known).
     Checks:
@@ -261,7 +278,7 @@ def _try_autoreset_stage5_override(control_state_path: Path, *, reason: str) -> 
 # -----------------------------
 @dataclass(frozen=True, slots=True)
 class _IbkrErrorClass:
-    severity: str          # INFO / WARNING / ERROR
+    severity: str  # INFO / WARNING / ERROR
     count_as_error_head: bool
     kind: str
 
@@ -272,10 +289,16 @@ _IBKR_WARNING_CODES: Set[int] = {399, 2103, 2105, 2157, 2107, 2108}
 
 def _classify_ibkr_error(*, req_id: Any, code: int, msg: str) -> _IbkrErrorClass:
     if int(code) in _IBKR_INFO_CODES:
-        return _IbkrErrorClass(severity="INFO", count_as_error_head=False, kind="IBKR_INFO_CODE")
+        return _IbkrErrorClass(
+            severity="INFO", count_as_error_head=False, kind="IBKR_INFO_CODE"
+        )
     if int(code) in _IBKR_WARNING_CODES:
-        return _IbkrErrorClass(severity="WARNING", count_as_error_head=False, kind="IBKR_WARNING_CODE")
-    return _IbkrErrorClass(severity="ERROR", count_as_error_head=True, kind="IBKR_ERROR")
+        return _IbkrErrorClass(
+            severity="WARNING", count_as_error_head=False, kind="IBKR_WARNING_CODE"
+        )
+    return _IbkrErrorClass(
+        severity="ERROR", count_as_error_head=True, kind="IBKR_ERROR"
+    )
 
 
 # -----------------------------
@@ -379,7 +402,9 @@ def iter_jsonl_strict(path: Path) -> Tuple[Iterable[Dict[str, Any]], Dict[str, i
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        f.write(
+            json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
         f.write("\n")
 
 
@@ -463,7 +488,14 @@ def _ledger_has(ledger: Dict[str, Any], send_key: str) -> bool:
     return isinstance(items, dict) and send_key in items
 
 
-def _ledger_mark(ledger: Dict[str, Any], send_key: str, *, state: str, order_id: Optional[int], simulate: bool) -> None:
+def _ledger_mark(
+    ledger: Dict[str, Any],
+    send_key: str,
+    *,
+    state: str,
+    order_id: Optional[int],
+    simulate: bool,
+) -> None:
     items = ledger.get("items")
     if not isinstance(items, dict):
         items = {}
@@ -550,7 +582,9 @@ def _load_cursor() -> Dict[str, Any]:
 
 def _save_cursor(obj: Dict[str, Any]) -> None:
     CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CURSOR_PATH.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    CURSOR_PATH.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def _get_cursor_last(conn: IbkrConn) -> int:
@@ -583,23 +617,35 @@ def _require(cond: bool, msg: str, errors: List[str]) -> None:
         errors.append(msg)
 
 
-def _validate_sendplan_record(rec: Dict[str, Any], errors: List[str], *, expected_run_id: str) -> None:
+def _validate_sendplan_record(
+    rec: Dict[str, Any], errors: List[str], *, expected_run_id: str
+) -> None:
     """
     Sender-level strict validation.
     - Each JSONL record MUST contain run_id and it MUST match expected_run_id.
     - SENDPLAN_ORDER MUST have transmit=False in the plan.
     """
     kind = str(rec.get("kind") or "").strip().upper()
-    _require(kind in {"SENDPLAN_ORDER", "SENDPLAN_CANCEL_ALL"}, f"unknown sendplan kind: {kind}", errors)
+    _require(
+        kind in {"SENDPLAN_ORDER", "SENDPLAN_CANCEL_ALL"},
+        f"unknown sendplan kind: {kind}",
+        errors,
+    )
 
     rid = str(rec.get("run_id") or "").strip()
     _require(bool(rid), "missing run_id in sendplan record", errors)
     if rid:
-        _require(rid == str(expected_run_id), f"sendplan.run_id mismatch: {rid} != {expected_run_id}", errors)
+        _require(
+            rid == str(expected_run_id),
+            f"sendplan.run_id mismatch: {rid} != {expected_run_id}",
+            errors,
+        )
 
     if kind == "SENDPLAN_ORDER":
         key = rec.get("idempotency_key")
-        _require(isinstance(key, str) and key.strip(), "missing idempotency_key", errors)
+        _require(
+            isinstance(key, str) and key.strip(), "missing idempotency_key", errors
+        )
 
         contract = rec.get("contract")
         _require(isinstance(contract, dict), "contract not dict", errors)
@@ -608,8 +654,16 @@ def _validate_sendplan_record(rec: Dict[str, Any], errors: List[str], *, expecte
         _require(isinstance(order, dict), "order not dict", errors)
 
         if isinstance(order, dict):
-            _require("transmit" in order, "order.transmit missing (sendplan expects False)", errors)
-            _require(order.get("transmit") is False, "order.transmit must be False in sendplan", errors)
+            _require(
+                "transmit" in order,
+                "order.transmit missing (sendplan expects False)",
+                errors,
+            )
+            _require(
+                order.get("transmit") is False,
+                "order.transmit must be False in sendplan",
+                errors,
+            )
 
 
 # -----------------------------
@@ -714,7 +768,9 @@ class _IbkrApp:
                 _log({"event": "nextValidId", "order_id": int(orderId)})
                 self._outer._connected.set()
 
-            def error(self, reqId, errorCode, errorString, advancedOrderRejectJson="") -> None:
+            def error(
+                self, reqId, errorCode, errorString, advancedOrderRejectJson=""
+            ) -> None:
                 try:
                     rid: Any = int(reqId) if str(reqId).lstrip("-").isdigit() else reqId
                 except Exception:
@@ -736,7 +792,9 @@ class _IbkrApp:
                     "severity": cls.severity,
                     "error_class": cls.kind,
                     "count_as_error_head": bool(cls.count_as_error_head),
-                    "details": _decorate_ibkr_error_details(error_code=code_i, error_string=msg_s),
+                    "details": _decorate_ibkr_error_details(
+                        error_code=code_i, error_string=msg_s
+                    ),
                 }
 
                 # best-effort: if reqId looks like orderId, attach send_key
@@ -754,7 +812,9 @@ class _IbkrApp:
 
                 # Only treat true ERRORs as "errors_head" / blockers
                 if cls.count_as_error_head:
-                    self._outer._errors.append({"reqId": rid, "code": code_i, "msg": msg_s})
+                    self._outer._errors.append(
+                        {"reqId": rid, "code": code_i, "msg": msg_s}
+                    )
 
                 _log(rec)
 
@@ -786,13 +846,19 @@ class _IbkrApp:
                     "status": st,
                     "filled": float(filled) if filled is not None else None,
                     "remaining": float(remaining) if remaining is not None else None,
-                    "avgFillPrice": float(avgFillPrice) if avgFillPrice is not None else None,
-                    "lastFillPrice": float(lastFillPrice) if lastFillPrice is not None else None,
+                    "avgFillPrice": float(avgFillPrice)
+                    if avgFillPrice is not None
+                    else None,
+                    "lastFillPrice": float(lastFillPrice)
+                    if lastFillPrice is not None
+                    else None,
                     "permId": int(permId) if str(permId).isdigit() else permId,
                     "parentId": int(parentId) if str(parentId).isdigit() else parentId,
                     "clientId": int(clientId) if str(clientId).isdigit() else clientId,
                     "whyHeld": str(whyHeld) if whyHeld is not None else "",
-                    "mktCapPrice": float(mktCapPrice) if mktCapPrice is not None else None,
+                    "mktCapPrice": float(mktCapPrice)
+                    if mktCapPrice is not None
+                    else None,
                 }
 
                 sk = self._outer._order_to_sendkey.get(oid)
@@ -838,7 +904,11 @@ class _IbkrApp:
                     "ts": _utc_now_z(),
                     "run_id": self._run_id,
                     "event": "connect_attempt",
-                    "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                    "conn": {
+                        "host": conn.host,
+                        "port": conn.port,
+                        "client_id": conn.client_id,
+                    },
                 },
             )
 
@@ -855,7 +925,11 @@ class _IbkrApp:
                         "ts": _utc_now_z(),
                         "run_id": self._run_id,
                         "event": "connect_timeout",
-                        "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                        "conn": {
+                            "host": conn.host,
+                            "port": conn.port,
+                            "client_id": conn.client_id,
+                        },
                         "operator_hint": (
                             "TWS/IB Gateway не ответил nextValidId. Проверь что запущен, порт верный, "
                             "API разрешён, firewall не блокирует."
@@ -881,7 +955,12 @@ class _IbkrApp:
             with self._lock:
                 _append_exec(
                     self._exec_path,
-                    {"kind": "IBKR_EVENT", "ts": _utc_now_z(), "run_id": self._run_id, "event": "disconnect"},
+                    {
+                        "kind": "IBKR_EVENT",
+                        "ts": _utc_now_z(),
+                        "run_id": self._run_id,
+                        "event": "disconnect",
+                    },
                 )
 
     def place_order(self, order_id: int, contract, order) -> None:
@@ -930,10 +1009,15 @@ def _fallback_compute_perms(exec_mode: str, run_mode: str, *, reason: str) -> _P
     )
 
 
-def _fallback_allowed_sendplan_record(perms: _Perms, rec: Dict[str, Any]) -> Tuple[bool, str]:
+def _fallback_allowed_sendplan_record(
+    perms: _Perms, rec: Dict[str, Any]
+) -> Tuple[bool, str]:
     kind = str(rec.get("kind") or "").strip().upper()
     if kind == "SENDPLAN_CANCEL_ALL":
-        return (bool(perms.allow_cancel_all), "CANCEL_ALL_ALLOWED" if perms.allow_cancel_all else "CANCEL_ALL_BLOCKED")
+        return (
+            bool(perms.allow_cancel_all),
+            "CANCEL_ALL_ALLOWED" if perms.allow_cancel_all else "CANCEL_ALL_BLOCKED",
+        )
     if kind == "SENDPLAN_ORDER":
         # safest: block all orders in fallback mode
         return (False, "ORDERS_BLOCKED_FALLBACK")
@@ -987,11 +1071,15 @@ def real_sender(
         )
         _allowed_sendplan_record = allowed_sendplan_record
     except Exception as e:
-        perms = _fallback_compute_perms(exec_mode, run_mode, reason=f"IMPORT_FAIL:{type(e).__name__}")
+        perms = _fallback_compute_perms(
+            exec_mode, run_mode, reason=f"IMPORT_FAIL:{type(e).__name__}"
+        )
         _allowed_sendplan_record = None
 
     # DRY_RUN does NOT disarm — it forces simulation
-    effective_simulate = bool(simulate_cfg) or bool(perms.force_simulate) or (exec_mode == "DRY_RUN")
+    effective_simulate = (
+        bool(simulate_cfg) or bool(perms.force_simulate) or (exec_mode == "DRY_RUN")
+    )
 
     # Stage 5 engineering override (STRICT, opt-in)
     override_cfg = _load_stage5_override_cfg(control)
@@ -1040,7 +1128,11 @@ def real_sender(
 
     # per invocation limit
     try:
-        k_limit_i = int(control.get("k_limit_orders")) if control.get("k_limit_orders") is not None else K_LIMIT_ORDERS_DEFAULT
+        k_limit_i = (
+            int(control.get("k_limit_orders"))
+            if control.get("k_limit_orders") is not None
+            else K_LIMIT_ORDERS_DEFAULT
+        )
     except Exception:
         k_limit_i = K_LIMIT_ORDERS_DEFAULT
     if k_limit_i < 1:
@@ -1048,7 +1140,11 @@ def real_sender(
 
     # per run_id limit across repeated ARMED runs
     try:
-        run_limit_i = int(control.get("run_limit_orders")) if control.get("run_limit_orders") is not None else RUN_LIMIT_ORDERS_DEFAULT
+        run_limit_i = (
+            int(control.get("run_limit_orders"))
+            if control.get("run_limit_orders") is not None
+            else RUN_LIMIT_ORDERS_DEFAULT
+        )
     except Exception:
         run_limit_i = RUN_LIMIT_ORDERS_DEFAULT
     if run_limit_i < 1:
@@ -1077,7 +1173,9 @@ def real_sender(
             "stage5_test_override": bool(override_cfg.enabled),
             "stage5_test_override_active": bool(override_cfg.active),
             "stage5_test_override_autoreset": bool(override_cfg.autoreset),
-            "stage5_test_override_expires_at_utc": override_cfg.expires_at_utc.isoformat() if override_cfg.expires_at_utc else None,
+            "stage5_test_override_expires_at_utc": override_cfg.expires_at_utc.isoformat()
+            if override_cfg.expires_at_utc
+            else None,
             "stage5_test_max_lmt_price": float(stage5_max_lmt_price),
             "perms": {
                 "force_simulate": bool(perms.force_simulate),
@@ -1134,7 +1232,9 @@ def real_sender(
     parse_errors = int(stats.get("parse_errors") or 0)
 
     # helper: emit would_send + exec event
-    def emit_would(rec: Dict[str, Any], *, reason: str, status: str = "WOULD_SEND") -> None:
+    def emit_would(
+        rec: Dict[str, Any], *, reason: str, status: str = "WOULD_SEND"
+    ) -> None:
         nonlocal would
         kind = str(rec.get("kind") or "").strip().upper()
         send_key = compute_send_key(run_id, rec)
@@ -1174,7 +1274,9 @@ def real_sender(
 
     # If sendplan has any parse/validation error -> block everything (safe)
     if parse_errors > 0 or errors:
-        disarm_reason = f"SENDPLAN_INVALID parse_errors={parse_errors} errors={len(errors)}"
+        disarm_reason = (
+            f"SENDPLAN_INVALID parse_errors={parse_errors} errors={len(errors)}"
+        )
         for rec in plans:
             emit_would(rec, reason=disarm_reason, status="BLOCKED_SENDPLAN_INVALID")
         return {
@@ -1244,7 +1346,9 @@ def real_sender(
 
         # STOP_FLAG policy: allow only CANCEL ops (no submits)
         if stop_flag_present and kind == "SENDPLAN_ORDER":
-            emit_would(rec, reason="STOP_FLAG blocks order submit", status="BLOCKED_STOP_FLAG")
+            emit_would(
+                rec, reason="STOP_FLAG blocks order submit", status="BLOCKED_STOP_FLAG"
+            )
             skipped += 1
             continue
 
@@ -1284,8 +1388,16 @@ def real_sender(
         skipped += 1
 
     # Split plans
-    cancel_plans = [p for p in allowed_plans if str(p.get("kind") or "").strip().upper() == "SENDPLAN_CANCEL_ALL"]
-    order_plans_list = [p for p in allowed_plans if str(p.get("kind") or "").strip().upper() == "SENDPLAN_ORDER"]
+    cancel_plans = [
+        p
+        for p in allowed_plans
+        if str(p.get("kind") or "").strip().upper() == "SENDPLAN_CANCEL_ALL"
+    ]
+    order_plans_list = [
+        p
+        for p in allowed_plans
+        if str(p.get("kind") or "").strip().upper() == "SENDPLAN_ORDER"
+    ]
 
     # -----------------------------
     # ARMED + SIMULATE (no live IBKR calls)
@@ -1351,7 +1463,11 @@ def real_sender(
             ik = rec.get("idempotency_key")
 
             if (already_sent_count + executed_orders) >= run_limit_i:
-                emit_would(rec, reason=f"RUN_LIMIT_REACHED={run_limit_i}", status="BLOCKED_RUN_LIMIT")
+                emit_would(
+                    rec,
+                    reason=f"RUN_LIMIT_REACHED={run_limit_i}",
+                    status="BLOCKED_RUN_LIMIT",
+                )
                 skipped += 1
                 continue
 
@@ -1360,7 +1476,9 @@ def real_sender(
                 skipped += 1
                 continue
 
-            if _ledger_has(ledger, send_key) or (isinstance(ik, str) and ik.strip() in seen_sent_keys):
+            if _ledger_has(ledger, send_key) or (
+                isinstance(ik, str) and ik.strip() in seen_sent_keys
+            ):
                 _append_exec(
                     exec_path,
                     {
@@ -1380,7 +1498,9 @@ def real_sender(
             next_oid += 1
             last_oid_used = oid
 
-            _ledger_mark(ledger, send_key, state="RESERVED", order_id=oid, simulate=True)
+            _ledger_mark(
+                ledger, send_key, state="RESERVED", order_id=oid, simulate=True
+            )
             _save_ledger_atomic(ledger_path, ledger)
 
             _append_exec(
@@ -1410,7 +1530,9 @@ def real_sender(
                 },
             )
 
-            _ledger_mark(ledger, send_key, state="SENT_SIM", order_id=oid, simulate=True)
+            _ledger_mark(
+                ledger, send_key, state="SENT_SIM", order_id=oid, simulate=True
+            )
             _save_ledger_atomic(ledger_path, ledger)
 
             append_jsonl(
@@ -1492,7 +1614,11 @@ def real_sender(
                 "exec_mode": exec_mode,
                 "run_mode": run_mode,
                 "stop_flag": True,
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                },
             },
         )
         return {
@@ -1534,7 +1660,9 @@ def real_sender(
             continue
         if sendable_orders >= k_limit_i:
             continue
-        if _ledger_has(ledger, send_key) or (isinstance(ik, str) and ik.strip() in seen_sent_keys):
+        if _ledger_has(ledger, send_key) or (
+            isinstance(ik, str) and ik.strip() in seen_sent_keys
+        ):
             continue
         sendable_orders += 1
 
@@ -1556,7 +1684,11 @@ def real_sender(
                 "exec_mode": exec_mode,
                 "run_mode": run_mode,
                 "stop_flag": bool(stop_flag_present),
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                },
             },
         )
         return {
@@ -1649,7 +1781,9 @@ def real_sender(
         }
 
     try:
-        nxt = preflight_next_valid_id(IbkrEndpoint(conn.host, conn.port, conn.client_id), timeout_s)
+        nxt = preflight_next_valid_id(
+            IbkrEndpoint(conn.host, conn.port, conn.client_id), timeout_s
+        )
         _append_exec(
             exec_path,
             {
@@ -1662,7 +1796,11 @@ def real_sender(
                 "exec_mode": exec_mode,
                 "run_mode": run_mode,
                 "server_next_valid_id": int(nxt),
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                },
             },
         )
     except Exception as e:
@@ -1679,7 +1817,11 @@ def real_sender(
                 "exec_mode": exec_mode,
                 "run_mode": run_mode,
                 "error": err,
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                },
             },
         )
         disarm_reason = f"PREFLIGHT_FAILED:{type(e).__name__}"
@@ -1728,7 +1870,9 @@ def real_sender(
         server_next_valid_id = app.connect_and_start(conn, timeout_s=timeout_s)
 
         # start order id = max(server next, cursor_last+1, ORDER_ID_FLOOR)
-        start_order_id = max(int(server_next_valid_id), int(cursor_last_before) + 1, int(ORDER_ID_FLOOR))
+        start_order_id = max(
+            int(server_next_valid_id), int(cursor_last_before) + 1, int(ORDER_ID_FLOOR)
+        )
         app.set_next_id(start_order_id)
 
         _append_exec(
@@ -1745,7 +1889,11 @@ def real_sender(
                 "server_next_valid_id": server_next_valid_id,
                 "cursor_last_before": cursor_last_before,
                 "start_order_id": start_order_id,
-                "conn": {"host": conn.host, "port": conn.port, "client_id": conn.client_id},
+                "conn": {
+                    "host": conn.host,
+                    "port": conn.port,
+                    "client_id": conn.client_id,
+                },
             },
         )
 
@@ -1789,12 +1937,20 @@ def real_sender(
             key = rec.get("idempotency_key")
 
             if stop_flag_present:
-                emit_would(rec, reason="STOP_FLAG blocks order submit (late guard)", status="BLOCKED_STOP_FLAG")
+                emit_would(
+                    rec,
+                    reason="STOP_FLAG blocks order submit (late guard)",
+                    status="BLOCKED_STOP_FLAG",
+                )
                 skipped += 1
                 continue
 
             if (already_sent_count + executed_orders) >= run_limit_i:
-                emit_would(rec, reason=f"RUN_LIMIT_REACHED={run_limit_i}", status="BLOCKED_RUN_LIMIT")
+                emit_would(
+                    rec,
+                    reason=f"RUN_LIMIT_REACHED={run_limit_i}",
+                    status="BLOCKED_RUN_LIMIT",
+                )
                 skipped += 1
                 continue
 
@@ -1804,7 +1960,9 @@ def real_sender(
                 continue
 
             # Strong dedupe: ledger first, then sent-log keys
-            if _ledger_has(ledger, send_key) or (isinstance(key, str) and key.strip() and key.strip() in seen_sent_keys):
+            if _ledger_has(ledger, send_key) or (
+                isinstance(key, str) and key.strip() and key.strip() in seen_sent_keys
+            ):
                 _append_exec(
                     exec_path,
                     {
@@ -1864,7 +2022,9 @@ def real_sender(
 
             # Reserve in ledger before placeOrder (idempotency anchor)
             oid = app.next_order_id()
-            _ledger_mark(ledger, send_key, state="RESERVED", order_id=int(oid), simulate=False)
+            _ledger_mark(
+                ledger, send_key, state="RESERVED", order_id=int(oid), simulate=False
+            )
             _save_ledger_atomic(ledger_path, ledger)
 
             _append_exec(
@@ -1888,7 +2048,11 @@ def real_sender(
             last_oid_used = int(oid)
 
             # auto-reset override after first successful submit (real)
-            if (not override_autoreset_done) and override_cfg.enabled and override_cfg.autoreset:
+            if (
+                (not override_autoreset_done)
+                and override_cfg.enabled
+                and override_cfg.autoreset
+            ):
                 did = _try_autoreset_stage5_override(
                     control_state_path,
                     reason=f"autoreset_after_successful_submit run_id={run_id} send_key={send_key}",
@@ -1931,7 +2095,9 @@ def real_sender(
             )
 
             # Mark as sent in ledger
-            _ledger_mark(ledger, send_key, state="SENT_REAL", order_id=int(oid), simulate=False)
+            _ledger_mark(
+                ledger, send_key, state="SENT_REAL", order_id=int(oid), simulate=False
+            )
             _save_ledger_atomic(ledger_path, ledger)
 
             append_jsonl(
@@ -2031,7 +2197,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--run-id", required=True)
     args = p.parse_args(argv)
 
-    sendplan_path, run_report_path, control_state_path = _resolve_paths_for_run_id(REPO_ROOT, args.run_id)
+    sendplan_path, run_report_path, control_state_path = _resolve_paths_for_run_id(
+        REPO_ROOT, args.run_id
+    )
 
     ts = _utc_now_z()
     try:

@@ -7,20 +7,27 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 SCHEMA_VERSION = "ibkr_account_snapshot_v0"
 
 
 def _utc_now_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _atomic_write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
     tmp.replace(path)
 
 
@@ -58,9 +65,13 @@ class _App:
                     {
                         "ts": _utc_now_z(),
                         "reqId": reqId,
-                        "code": int(errorCode) if str(errorCode).lstrip("-").isdigit() else errorCode,
+                        "code": int(errorCode)
+                        if str(errorCode).lstrip("-").isdigit()
+                        else errorCode,
                         "msg": str(errorString),
-                        "advanced": str(advancedOrderRejectJson) if isinstance(advancedOrderRejectJson, str) else "",
+                        "advanced": str(advancedOrderRejectJson)
+                        if isinstance(advancedOrderRejectJson, str)
+                        else "",
                     }
                 )
 
@@ -110,7 +121,9 @@ class _App:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="IBKR account summary snapshot (read-only).")
+    ap = argparse.ArgumentParser(
+        description="IBKR account summary snapshot (read-only)."
+    )
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=7497)
     ap.add_argument("--client-id", type=int, default=17)
@@ -124,10 +137,19 @@ def main() -> int:
     a = ap.parse_args()
 
     repo_root = Path(__file__).resolve().parents[2]
-    out_name = f"ibkr_account_{a.run_id}.json" if str(a.run_id).strip() else f"ibkr_account_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+    out_name = (
+        f"ibkr_account_{a.run_id}.json"
+        if str(a.run_id).strip()
+        else f"ibkr_account_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+    )
     out_path = repo_root / "args" / "data" / out_name
 
-    ep = Endpoint(host=str(a.host), port=int(a.port), client_id=int(a.client_id), timeout_s=float(a.timeout_s))
+    ep = Endpoint(
+        host=str(a.host),
+        port=int(a.port),
+        client_id=int(a.client_id),
+        timeout_s=float(a.timeout_s),
+    )
     rows, errors = _App(ep).run(tags=str(a.tags))
 
     obj = {
@@ -142,7 +164,17 @@ def main() -> int:
     }
     _atomic_write_json(out_path, obj)
 
-    print(json.dumps({"ok": True, "out_path": str(out_path), "rows": len(rows), "errors": len(errors)}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "out_path": str(out_path),
+                "rows": len(rows),
+                "errors": len(errors),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

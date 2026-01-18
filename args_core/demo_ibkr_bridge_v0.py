@@ -57,13 +57,17 @@ def main() -> int:
     if not cp_path.exists():
         cp_path = repo / "control_plane.json"
 
-    eng = Engine(repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter)
+    eng = Engine(
+        repo_root=repo, run_id=run_id, control_plane_path=cp_path, broker=adapter
+    )
 
     intent_id = f"adopt_{args.adopt_order_id}"
     eng.adopt_order(
         intent_id=intent_id,
         order_id=int(args.adopt_order_id),
-        order=OrderSpec(symbol=args.adopt_symbol, side=args.adopt_side, qty=float(args.adopt_qty)),
+        order=OrderSpec(
+            symbol=args.adopt_symbol, side=args.adopt_side, qty=float(args.adopt_qty)
+        ),
         client_order_id=f"oid_{args.adopt_order_id}",
     )
 
@@ -76,15 +80,17 @@ def main() -> int:
             break
 
     t = eng.state.tickets[intent_id]
-    print({
-        "run_dir": str(eng.run_dir),
-        "intent_id": intent_id,
-        "ticket_state": t.state.value,
-        "terminal": t.terminal.value if t.terminal else None,
-        "terminal_reason": t.terminal_reason,
-        "reconcile_last_ratio": eng.state.reconcile_last_ratio,
-        "events_seen": eng.state.counters.get("events_seen"),
-    })
+    print(
+        {
+            "run_dir": str(eng.run_dir),
+            "intent_id": intent_id,
+            "ticket_state": t.state.value,
+            "terminal": t.terminal.value if t.terminal else None,
+            "terminal_reason": t.terminal_reason,
+            "reconcile_last_ratio": eng.state.reconcile_last_ratio,
+            "events_seen": eng.state.counters.get("events_seen"),
+        }
+    )
     return 0
 
 

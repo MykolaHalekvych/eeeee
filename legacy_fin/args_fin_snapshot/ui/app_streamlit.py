@@ -15,7 +15,9 @@ import yaml
 from args.audit import event_store as _event_store
 from args.ma.ma_runtime import eval_ma
 from args.ma.policy_loader import load_policy
-from args.ui.ops_controls_tab import render_ops_controls  # Stage 6: OPS control plane UI
+from args.ui.ops_controls_tab import (
+    render_ops_controls,
+)  # Stage 6: OPS control plane UI
 from args.ui.ops_watchdog_tab import render_ops_watchdog_tab  # Stage 7: Ops Watchdog UI
 from args.ui.run_explorer_tab import render_run_explorer_tab
 
@@ -327,7 +329,11 @@ def list_logs() -> List[Path]:
     d = REPO_ROOT / "args" / "logs"
     if not d.exists():
         return []
-    return sorted([p for p in d.iterdir() if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(
+        [p for p in d.iterdir() if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
 
 
 def git_porcelain() -> Tuple[int, str]:
@@ -379,7 +385,15 @@ def run_checkpoint(tag: str) -> Tuple[int, str]:
     script = REPO_ROOT / "scripts" / "checkpoint.ps1"
     if not script.exists():
         return 98, f"Missing script: {script}"
-    cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Tag", tag]
+    cmd = [
+        "powershell",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Tag",
+        tag,
+    ]
     return run_cmd(cmd, cwd=REPO_ROOT)
 
 
@@ -433,13 +447,20 @@ def _load_events_jsonl(path: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def _normalize_eval_result(res: Any) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+def _normalize_eval_result(
+    res: Any,
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     decision = "UNKNOWN"
     violations: List[Dict[str, Any]] = []
     risk_envelope: Dict[str, Any] = {}
 
     if isinstance(res, dict):
-        decision = str(res.get("ma_decision") or res.get("decision") or res.get("result") or "UNKNOWN").upper()
+        decision = str(
+            res.get("ma_decision")
+            or res.get("decision")
+            or res.get("result")
+            or "UNKNOWN"
+        ).upper()
         vv = res.get("violations") or res.get("rules") or []
         if isinstance(vv, list):
             violations = [v for v in vv if isinstance(v, dict)]
@@ -514,14 +535,26 @@ def _demo_ctx(policy_meta: Dict[str, Any]) -> Dict[str, Any]:
         "environment": policy_meta.get("environment", "IBKR_PAPER_LABEL"),
         "ctx_snapshot": {
             "env": {"session": "RTH"},
-            "data": {"qc": "OK", "missing_bars": 0, "stale_quotes": False, "timestamp_drift_ms": 0},
+            "data": {
+                "qc": "OK",
+                "missing_bars": 0,
+                "stale_quotes": False,
+                "timestamp_drift_ms": 0,
+            },
             "risk": {"margin_usage": 0.41},
-            "state": {"regime": "TREND", "confidence": 0.62, "liquidity": "NORMAL", "tail_risk": "UNKNOWN"},
+            "state": {
+                "regime": "TREND",
+                "confidence": 0.62,
+                "liquidity": "NORMAL",
+                "tail_risk": "UNKNOWN",
+            },
         },
     }
 
 
-def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None, str, str, float | None]:
+def _extract_snapshot(
+    event: Dict[str, Any],
+) -> Tuple[float | None, float | None, str, str, float | None]:
     ctx = event.get("ctx_snapshot")
     ctx = ctx if isinstance(ctx, dict) else {}
 
@@ -530,18 +563,38 @@ def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None
 
     mu = ctx.get("margin_usage")
     if not isinstance(mu, (int, float)):
-        mu = risk.get("margin_usage") if isinstance(risk.get("margin_usage"), (int, float)) else None
+        mu = (
+            risk.get("margin_usage")
+            if isinstance(risk.get("margin_usage"), (int, float))
+            else None
+        )
 
     ml = ctx.get("margin_limit")
     if not isinstance(ml, (int, float)):
-        ml = ctx.get("margin_max") if isinstance(ctx.get("margin_max"), (int, float)) else None
+        ml = (
+            ctx.get("margin_max")
+            if isinstance(ctx.get("margin_max"), (int, float))
+            else None
+        )
 
-    env = event.get("risk_envelope") if isinstance(event.get("risk_envelope"), dict) else {}
+    env = (
+        event.get("risk_envelope")
+        if isinstance(event.get("risk_envelope"), dict)
+        else {}
+    )
     limits = env.get("limits") if isinstance(env.get("limits"), dict) else {}
     if ml is None:
-        ml = limits.get("margin_max") if isinstance(limits.get("margin_max"), (int, float)) else None
+        ml = (
+            limits.get("margin_max")
+            if isinstance(limits.get("margin_max"), (int, float))
+            else None
+        )
     if ml is None:
-        ml = limits.get("margin_usage_limit") if isinstance(limits.get("margin_usage_limit"), (int, float)) else None
+        ml = (
+            limits.get("margin_usage_limit")
+            if isinstance(limits.get("margin_usage_limit"), (int, float))
+            else None
+        )
 
     tail = (
         ctx.get("tail_risk_state")
@@ -554,9 +607,17 @@ def _extract_snapshot(event: Dict[str, Any]) -> Tuple[float | None, float | None
 
     conf = ctx.get("regime_confidence")
     if not isinstance(conf, (int, float)):
-        conf = ctx.get("confidence") if isinstance(ctx.get("confidence"), (int, float)) else None
+        conf = (
+            ctx.get("confidence")
+            if isinstance(ctx.get("confidence"), (int, float))
+            else None
+        )
     if conf is None:
-        conf = state.get("confidence") if isinstance(state.get("confidence"), (int, float)) else None
+        conf = (
+            state.get("confidence")
+            if isinstance(state.get("confidence"), (int, float))
+            else None
+        )
 
     return (
         float(mu) if isinstance(mu, (int, float)) else None,
@@ -582,11 +643,15 @@ def _infer_active_blocks(violations: Any) -> List[str]:
     return sorted(blocks)
 
 
-def _pick_top_reason(event: Dict[str, Any], mu: float | None, ml: float | None, tail: str) -> str:
+def _pick_top_reason(
+    event: Dict[str, Any], mu: float | None, ml: float | None, tail: str
+) -> str:
     vv = event.get("violations")
     if isinstance(vv, list) and vv:
         v0 = vv[0] if isinstance(vv[0], dict) else {}
-        return str(v0.get("reason") or v0.get("message") or v0.get("rule_id") or "Violation")
+        return str(
+            v0.get("reason") or v0.get("message") or v0.get("rule_id") or "Violation"
+        )
     if mu is not None and ml is not None and mu > ml:
         return "Margin usage above safe threshold."
     if tail == "UNKNOWN":
@@ -602,10 +667,24 @@ def render_args_dashboard(operator_mode: bool) -> None:
     events = _load_events_jsonl(EVENTS_PATH)
     last = events[0] if events else {}
 
-    policy_name = str(last.get("policy_name") or last.get("policy_file") or policy_meta.get("policy_name") or "HG_MA_v0")
-    schema_version = str(last.get("schema_version") or policy_meta.get("schema_version") or policy_meta.get("schema") or "0.1")
+    policy_name = str(
+        last.get("policy_name")
+        or last.get("policy_file")
+        or policy_meta.get("policy_name")
+        or "HG_MA_v0"
+    )
+    schema_version = str(
+        last.get("schema_version")
+        or policy_meta.get("schema_version")
+        or policy_meta.get("schema")
+        or "0.1"
+    )
 
-    decision = str(last.get("ma_decision") or last.get("decision") or "NO_TRADE").upper().replace("-", "_")
+    decision = (
+        str(last.get("ma_decision") or last.get("decision") or "NO_TRADE")
+        .upper()
+        .replace("-", "_")
+    )
     system_mode = _derive_system_mode(decision)
 
     mu, ml, tail, liq, conf = _extract_snapshot(last)
@@ -635,7 +714,7 @@ def render_args_dashboard(operator_mode: bool) -> None:
             f'<div class="metric-value">{_badge_html(decision_display)}</div></div>'
             '<div class="metric-pill"><div class="metric-label">POLICY</div>'
             f'<div class="metric-value" style="font-weight:900;letter-spacing:0.06em;">'
-            f'{_html_escape(policy_name)} | SCHEMA {_html_escape(schema_version)}'
+            f"{_html_escape(policy_name)} | SCHEMA {_html_escape(schema_version)}"
             "</div></div></div>"
         ),
         unsafe_allow_html=True,
@@ -683,13 +762,13 @@ def render_args_dashboard(operator_mode: bool) -> None:
     for b in active_blocks:
         blocks_rows += (
             '<div style="display:flex;align-items:center;justify-content:space-between;'
-            'padding:8px 10px;border-radius:12px;'
-            'border:1px solid rgba(51,65,85,0.35);'
+            "padding:8px 10px;border-radius:12px;"
+            "border:1px solid rgba(51,65,85,0.35);"
             'background:rgba(2,6,23,0.25);margin-bottom:8px;">'
             f'<div style="font-weight:800;color:rgba(226,232,240,0.92);">{_html_escape(b)}: '
             '<span style="color:rgba(248,113,113,1);font-weight:900;">ACTIVE</span></div>'
             '<div style="width:16px;height:16px;border-radius:999px;background:rgba(239,68,68,0.18);'
-            'border:1px solid rgba(239,68,68,0.45);display:flex;align-items:center;justify-content:center;'
+            "border:1px solid rgba(239,68,68,0.45);display:flex;align-items:center;justify-content:center;"
             'color:rgba(248,113,113,1);font-weight:900;">!</div>'
             "</div>"
         )
@@ -723,7 +802,7 @@ def render_args_dashboard(operator_mode: bool) -> None:
         '<div class="kv">'
         '<div class="k">Margin Usage</div>'
         f'<div class="v {("emph-red" if (isinstance(mu, (int, float)) and isinstance(ml, (int, float)) and mu > ml) else "emph-green")}">'
-        f'{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>'
+        f"{_html_escape(mu_pct)} (LIMIT {_html_escape(ml_pct)})</div>"
         '<div class="k">Tail Risk State</div>'
         f'<div class="v {("emph-yellow" if tail == "UNKNOWN" else "emph-blue")}">{_html_escape(tail)}</div>'
         '<div class="k">Liquidity</div>'
@@ -758,7 +837,9 @@ def render_args_dashboard(operator_mode: bool) -> None:
         if operator_mode:
             st.info("Operator mode: EVAL MA is disabled (writes events).")
         else:
-            if st.button("EVAL MA (writes event)", use_container_width=True, key="dash_eval_ma"):
+            if st.button(
+                "EVAL MA (writes event)", use_container_width=True, key="dash_eval_ma"
+            ):
                 policy = load_policy(POLICY_PATH)
                 ctx = _demo_ctx(policy_meta)
                 res = eval_ma(policy, ctx)
@@ -768,9 +849,12 @@ def render_args_dashboard(operator_mode: bool) -> None:
 
                 ev = {
                     "event_id": uuid.uuid4().hex,
-                    "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "ts_utc": _dt.datetime.utcnow().replace(microsecond=0).isoformat()
+                    + "Z",
                     "policy_name": str(policy_meta.get("policy_name") or policy_name),
-                    "schema_version": str(policy_meta.get("schema_version") or schema_version),
+                    "schema_version": str(
+                        policy_meta.get("schema_version") or schema_version
+                    ),
                     "instrument": ctx.get("instrument"),
                     "timeframe": ctx.get("timeframe"),
                     "environment": ctx.get("environment"),
@@ -818,9 +902,17 @@ def render_events_view() -> None:
             key="ev_decision_filter",
         )
     with f2:
-        q = st.text_input("Search (reason/policy/instrument)", value="", key="ev_search").strip().lower()
+        q = (
+            st.text_input(
+                "Search (reason/policy/instrument)", value="", key="ev_search"
+            )
+            .strip()
+            .lower()
+        )
     with f3:
-        limit = st.number_input("Rows", min_value=10, max_value=500, value=80, step=10, key="ev_rows")
+        limit = st.number_input(
+            "Rows", min_value=10, max_value=500, value=80, step=10, key="ev_rows"
+        )
 
     filtered: List[Dict[str, Any]] = []
     for e in events:
@@ -857,7 +949,9 @@ def render_events_view() -> None:
         r = str(e.get("_reason") or "")
         return f"{ts} | {d} | {r[:60]}"
 
-    pick = st.selectbox("Select event", rows, format_func=_label, index=0, key="ev_select_event")
+    pick = st.selectbox(
+        "Select event", rows, format_func=_label, index=0, key="ev_select_event"
+    )
     st.code(json.dumps(pick, ensure_ascii=False, indent=2), language="json")
 
 
@@ -881,8 +975,26 @@ def main() -> None:
     st.session_state["operator_mode"] = bool(operator_mode)
 
     # Tabs (8) -> 8 variables (MUST match)
-    tab_ops, tab_runexp, tab_args, tab_cp, tab_watchdog, tab_logs, tab_events, tab_about = st.tabs(
-        ["OPS Controls", "Run Explorer", "ARGS Dashboard", "Control Panel", "Ops Watchdog", "Logs", "Events", "About"]
+    (
+        tab_ops,
+        tab_runexp,
+        tab_args,
+        tab_cp,
+        tab_watchdog,
+        tab_logs,
+        tab_events,
+        tab_about,
+    ) = st.tabs(
+        [
+            "OPS Controls",
+            "Run Explorer",
+            "ARGS Dashboard",
+            "Control Panel",
+            "Ops Watchdog",
+            "Logs",
+            "Events",
+            "About",
+        ]
     )
 
     with tab_ops:
@@ -903,7 +1015,14 @@ def main() -> None:
                 st.rerun()
         with cB:
             if st.button("Clear results", key="cp_clear_results"):
-                for k in ("sanity_results", "sanity_ts", "neg_result", "neg_ts", "chk_result", "chk_ts"):
+                for k in (
+                    "sanity_results",
+                    "sanity_ts",
+                    "neg_result",
+                    "neg_ts",
+                    "chk_result",
+                    "chk_ts",
+                ):
                     if k in st.session_state:
                         del st.session_state[k]
                 st.rerun()
@@ -913,20 +1032,34 @@ def main() -> None:
         with col1:
             st.subheader("Actions")
 
-            if st.button("Run sanity suite (regression/diff/replay/meta_audit)", key="cp_run_sanity"):
-                st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
+            if st.button(
+                "Run sanity suite (regression/diff/replay/meta_audit)",
+                key="cp_run_sanity",
+            ):
+                st.session_state["sanity_ts"] = _dt.datetime.now().isoformat(
+                    timespec="seconds"
+                )
                 st.session_state["sanity_results"] = run_sanity_suite()
 
             if operator_mode:
                 st.info("Operator mode: Negative test and Checkpoint are hidden.")
             else:
-                if st.button("Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)", key="cp_run_negative"):
-                    st.session_state["neg_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
+                if st.button(
+                    "Run Meta Audit negative test (UNKNOWN→ALLOW, expect FAIL)",
+                    key="cp_run_negative",
+                ):
+                    st.session_state["neg_ts"] = _dt.datetime.now().isoformat(
+                        timespec="seconds"
+                    )
                     st.session_state["neg_result"] = run_negative_test()
 
-                tag = st.text_input("Checkpoint tag", value="stage6_ops", key="cp_checkpoint_tag")
+                tag = st.text_input(
+                    "Checkpoint tag", value="stage6_ops", key="cp_checkpoint_tag"
+                )
                 if st.button("Run checkpoint.ps1", key="cp_run_checkpoint"):
-                    st.session_state["chk_ts"] = _dt.datetime.now().isoformat(timespec="seconds")
+                    st.session_state["chk_ts"] = _dt.datetime.now().isoformat(
+                        timespec="seconds"
+                    )
                     st.session_state["chk_result"] = run_checkpoint(tag)
 
             st.subheader("Open folders")
@@ -960,7 +1093,9 @@ def main() -> None:
                     code, out = st.session_state["neg_result"]
                     st.write(f"Negative test: {st.session_state.get('neg_ts', '')}")
                     if code == 2:
-                        st.success("Negative test: FAIL detected as expected (exit_code=2).")
+                        st.success(
+                            "Negative test: FAIL detected as expected (exit_code=2)."
+                        )
                     elif code == 0:
                         st.error("Negative test: expected exit_code=2 but got 0.")
                     else:
@@ -976,7 +1111,9 @@ def main() -> None:
                         st.error(f"Checkpoint FAIL (code={code})")
                     st.text(out or "(no output)")
             else:
-                if ("neg_result" in st.session_state) or ("chk_result" in st.session_state):
+                if ("neg_result" in st.session_state) or (
+                    "chk_result" in st.session_state
+                ):
                     st.caption("Dev outputs are hidden in Operator mode.")
 
     with tab_watchdog:
@@ -985,14 +1122,25 @@ def main() -> None:
     with tab_logs:
         st.subheader("Logs & Evidence")
 
-        prefix = st.text_input("Filter logs by filename contains", value="", key="logs_filter")
+        prefix = st.text_input(
+            "Filter logs by filename contains", value="", key="logs_filter"
+        )
         logs = list_logs()
         if prefix.strip():
             logs = [p for p in logs if prefix.strip().lower() in p.name.lower()]
 
         if logs:
-            pick = st.selectbox("Select log file", logs, format_func=lambda p: p.name, key="logs_select")
-            n = st.slider("Tail lines", min_value=20, max_value=400, value=120, step=20, key="logs_tail")
+            pick = st.selectbox(
+                "Select log file", logs, format_func=lambda p: p.name, key="logs_select"
+            )
+            n = st.slider(
+                "Tail lines",
+                min_value=20,
+                max_value=400,
+                value=120,
+                step=20,
+                key="logs_tail",
+            )
             st.text(tail_lines(pick, n))
         else:
             st.info("No logs found in args/logs (or filtered to none).")
