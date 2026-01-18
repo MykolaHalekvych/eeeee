@@ -1,6 +1,6 @@
 {
   "baseline_id": "foundry_baseline_v0_0020",
-  "created_utc": "2026-01-18T15:23:25Z",
+  "created_utc": "2026-01-18T21:06:43Z",
   "entries": [
     {
       "bytes": 345,
@@ -43,9 +43,9 @@
       "sha256": "2efaffeef7ef45b48e24f73dff6d08b91c94165538f06d50e69be4d26db4b478"
     },
     {
-      "bytes": 687,
+      "bytes": 689,
       "path": "args/configs/drift_policy_foundry_v0.json",
-      "sha256": "ad2ea48e6da70fa67fc2616e7597f28f5898a016133327a534ca463c6ef15d65"
+      "sha256": "6c861df82a81b5f4824656e58b7d5defa9e928986042b4c8da5cf0b061b8a42e"
     },
     {
       "bytes": 281,
@@ -88,9 +88,9 @@
       "sha256": "cfe8be8957ef10731ba51c345ab4b8e2ed399b2af7d5dd2896b8e4657f3f8df9"
     },
     {
-      "bytes": 10670,
+      "bytes": 14395,
       "path": "args/foundry/build_v0.py",
-      "sha256": "a63b477bd7151e19a5ed20313213078aa158dddd6b810f86391732219b358415"
+      "sha256": "519c2fad1627189d068f5d195c1af7e2aabd9060aeac563739f09adedc1a74ac"
     },
     {
       "bytes": 12554,
@@ -348,9 +348,9 @@
       "sha256": "f5ea14a4ed2ae5931f9a7b455f991be724513f8edaac1fb1f5a0ce7a6f41c8b6"
     },
     {
+      "bytes": 552,
       "path": "manifests/products/ecosystem_console_v0.json",
-      "sha256": "93c3f94a912feeb48c72f837604db939888ac091fdba28208289fa3f154a7aa9",
-      "bytes": 552
+      "sha256": "93c3f94a912feeb48c72f837604db939888ac091fdba28208289fa3f154a7aa9"
     },
     {
       "bytes": 391,
@@ -428,44 +428,44 @@
       "sha256": "e3a9eb8fccb918d9a475986100ca7c872d34424aa048004951abe574cd53d436"
     },
     {
+      "bytes": 35,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/.gitignore",
-      "sha256": "0c1aa49e4b89dad241a73e69e549929053ff23b0202abdb64d2a6acfcedd377b",
-      "bytes": 35
+      "sha256": "0c1aa49e4b89dad241a73e69e549929053ff23b0202abdb64d2a6acfcedd377b"
     },
     {
+      "bytes": 82,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/config.example.json",
-      "sha256": "3f2839884670122eedf496a069a74598cd9a677b5afce2e141f45fc5bb903b04",
-      "bytes": 82
+      "sha256": "3f2839884670122eedf496a069a74598cd9a677b5afce2e141f45fc5bb903b04"
     },
     {
+      "bytes": 939,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/configs/ecosystem_registry_v0.json",
-      "sha256": "441706bd91d27d68dd025355e4ca6d2393cc9cc0c5a7e30c41cbc66251bae6f2",
-      "bytes": 939
+      "sha256": "441706bd91d27d68dd025355e4ca6d2393cc9cc0c5a7e30c41cbc66251bae6f2"
     },
     {
+      "bytes": 1187,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/schemas/ecosystem_registry_v0.schema.json",
-      "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55",
-      "bytes": 1187
+      "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55"
     },
     {
+      "bytes": 7470,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/app.py",
-      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc",
-      "bytes": 7470
+      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc"
     },
     {
+      "bytes": 287,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/canonical_json_v1.py",
-      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306",
-      "bytes": 287
+      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306"
     },
     {
+      "bytes": 912,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/cli.py",
-      "sha256": "784d47b8e89eef003d6a6b0c72edc551c550b14a355c0a5a4153a80a3a9ecf21",
-      "bytes": 912
+      "sha256": "784d47b8e89eef003d6a6b0c72edc551c550b14a355c0a5a4153a80a3a9ecf21"
     },
     {
+      "bytes": 412,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/tests/test_smoke.py",
-      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc",
-      "bytes": 412
+      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc"
     },
     {
       "bytes": 35,
@@ -1158,44 +1158,44 @@
       "sha256": "e4ecdf2f9d763d516d6c32e55472688f579b65abae08957de24dce4ba13e8404"
     },
     {
+      "bytes": 36,
       "path": "templates/ecosystem_console_v0/.gitignore",
-      "sha256": "f5ca3c74da1840ab075b79ddb86fc66abbed3898c7285f11a52d5120da4f9187",
-      "bytes": 36
+      "sha256": "f5ca3c74da1840ab075b79ddb86fc66abbed3898c7285f11a52d5120da4f9187"
     },
     {
+      "bytes": 83,
       "path": "templates/ecosystem_console_v0/config.example.json",
-      "sha256": "87e9da52f131776d73cbb107398e6b2d3673f46964c3cd51f6322bf3151c34e5",
-      "bytes": 83
+      "sha256": "87e9da52f131776d73cbb107398e6b2d3673f46964c3cd51f6322bf3151c34e5"
     },
     {
+      "bytes": 939,
       "path": "templates/ecosystem_console_v0/configs/ecosystem_registry_v0.json",
-      "sha256": "441706bd91d27d68dd025355e4ca6d2393cc9cc0c5a7e30c41cbc66251bae6f2",
-      "bytes": 939
+      "sha256": "441706bd91d27d68dd025355e4ca6d2393cc9cc0c5a7e30c41cbc66251bae6f2"
     },
     {
+      "bytes": 1187,
       "path": "templates/ecosystem_console_v0/schemas/ecosystem_registry_v0.schema.json",
-      "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55",
-      "bytes": 1187
+      "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55"
     },
     {
+      "bytes": 7470,
       "path": "templates/ecosystem_console_v0/src/app.py",
-      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc",
-      "bytes": 7470
+      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc"
     },
     {
+      "bytes": 287,
       "path": "templates/ecosystem_console_v0/src/canonical_json_v1.py",
-      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306",
-      "bytes": 287
+      "sha256": "02edffa8faaefe71927b71aecf3c958cf97be25f1ae88d953444f82c95fda306"
     },
     {
+      "bytes": 1829,
       "path": "templates/ecosystem_console_v0/src/cli.py",
-      "sha256": "250ecaa1d663e45dff71b2c8945b545b434693c037926515be6a1154c4c9f502",
-      "bytes": 1829
+      "sha256": "250ecaa1d663e45dff71b2c8945b545b434693c037926515be6a1154c4c9f502"
     },
     {
+      "bytes": 412,
       "path": "templates/ecosystem_console_v0/tests/test_smoke.py",
-      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc",
-      "bytes": 412
+      "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc"
     },
     {
       "bytes": 36,
@@ -1288,6 +1288,6 @@
       "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc"
     }
   ],
-  "policy_sha256": "cb22618d1d30a342d19711666032abf211dc0c004e22c31ca18cd9526d44a7e3",
+  "policy_sha256": "6c861df82a81b5f4824656e58b7d5defa9e928986042b4c8da5cf0b061b8a42e",
   "schema": "drift_baseline_v0"
 }
