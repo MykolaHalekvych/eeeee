@@ -1,6 +1,6 @@
 {
   "baseline_id": "foundry_baseline_v0_0020",
-  "created_utc": "2026-01-18T21:06:43Z",
+  "created_utc": "2026-01-20T00:25:15Z",
   "entries": [
     {
       "bytes": 345,
@@ -45,7 +45,7 @@
     {
       "bytes": 689,
       "path": "args/configs/drift_policy_foundry_v0.json",
-      "sha256": "6c861df82a81b5f4824656e58b7d5defa9e928986042b4c8da5cf0b061b8a42e"
+      "sha256": "45d14517d5ccec658361b79002a91eff60873d0a6adbefebc100f10d1d777da7"
     },
     {
       "bytes": 281,
@@ -263,9 +263,9 @@
       "sha256": "ce8aa368d31f1941bc8310a5747717d9a874ee516e1f41514834de987327146c"
     },
     {
-      "bytes": 359,
+      "bytes": 381,
       "path": "control_plane.json",
-      "sha256": "74828d4ec9b8e9e6833af3e77bca4c053c034acb993bf9f31fc9bf0c2add352d"
+      "sha256": "2620ba4d829df59658a8c78014727706e60a9c65014690df06ee55ad3876ed1a"
     },
     {
       "bytes": 385,
@@ -448,9 +448,9 @@
       "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55"
     },
     {
-      "bytes": 7470,
+      "bytes": 8745,
       "path": "manifests/template_packs/kit_ecosystem_console_v0/src/app.py",
-      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc"
+      "sha256": "8c64c4eba0c27869af4eb9bfc012d560c1d19441654754fa64c8822bdabefbc3"
     },
     {
       "bytes": 287,
@@ -1178,9 +1178,9 @@
       "sha256": "e63d34d6d268c9ab27937a65d9e10846788db242851b64450a3c17c931bf2c55"
     },
     {
-      "bytes": 7470,
+      "bytes": 8745,
       "path": "templates/ecosystem_console_v0/src/app.py",
-      "sha256": "7d46dcaba94f0757a59b096faec5e0beeb914c7e1e58036c5bc0f97558fda6cc"
+      "sha256": "8c64c4eba0c27869af4eb9bfc012d560c1d19441654754fa64c8822bdabefbc3"
     },
     {
       "bytes": 287,
@@ -1288,6 +1288,6 @@
       "sha256": "e946c56f8a098886fc359734f060378a108229a2ddbb4c52071b7259cf2750bc"
     }
   ],
-  "policy_sha256": "6c861df82a81b5f4824656e58b7d5defa9e928986042b4c8da5cf0b061b8a42e",
+  "policy_sha256": "45d14517d5ccec658361b79002a91eff60873d0a6adbefebc100f10d1d777da7",
   "schema": "drift_baseline_v0"
 }
