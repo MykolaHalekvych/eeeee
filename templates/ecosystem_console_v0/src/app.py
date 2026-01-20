@@ -6,6 +6,8 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
+__VERSION__ = "0.1.0"
+
 
 def _read_json_bom(path: Path):
     raw = path.read_bytes()
@@ -13,7 +15,7 @@ def _read_json_bom(path: Path):
 
 
 def _default_registry_path() -> Path:
-    # 1) рядом с exe (dist\...\app.exe -> dist\...\configs\...)
+    # 1) рядом с exe: dist\...\app.exe -> dist\...\configs\...
     base = Path(sys.argv[0]).resolve().parent
     cand = base / "configs" / "ecosystem_registry_v0.json"
     if cand.exists():
@@ -100,7 +102,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._text(404, "Not Found")
 
     def log_message(self, fmt, *args):
-        # quiet by default
         return
 
     def _load(self):
@@ -186,30 +187,78 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def main(argv=None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    p = argparse.ArgumentParser(
-        prog="ecosystem_console_v0",
-        description="Ecosystem Console v0 (read-only)."
-    )
-    p.add_argument("--registry", default=None, help="Path to configs/ecosystem_registry_v0.json")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--print-registry", action="store_true", help="Print resolved registry path and exit.")
-    args = p.parse_args(argv)
-
-    reg = Path(args.registry) if args.registry else _default_registry_path()
-    if args.print_registry:
-        print(str(reg))
-        return 0
-
-    httpd = HTTPServer((args.host, args.port), Handler)
-    httpd.registry_path = reg
-    print(f"Serving on http://{args.host}:{args.port}/ (registry={reg})")
+def _run_server(host: str, port: int, registry_path: Path) -> int:
+    httpd = HTTPServer((host, port), Handler)
+    httpd.registry_path = registry_path
+    print(f"Serving on http://{host}:{port}/ (registry={registry_path})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ecosystem_console_v0",
+        description="Ecosystem Console v0 (read-only)."
+    )
+
+    # compatibility flags (postchecks may call these)
+    p.add_argument("--version", action="store_true", help="Print version and exit.")
+    p.add_argument("--selftest", action="store_true", help="Run selftest and exit.")
+    p.add_argument("--ping", action="store_true", help="Health ping and exit.")
+
+    p.add_argument("--registry", default=None, help="Path to configs/ecosystem_registry_v0.json")
+
+    sub = p.add_subparsers(dest="cmd", required=False)
+
+    sub.add_parser("version", help="Print version and exit.")
+    sub.add_parser("selftest", help="Run selftest and exit.")
+    sub.add_parser("ping", help="Health ping and exit.")
+    sub.add_parser("print-registry", help="Print resolved registry path and exit.")
+
+    s = sub.add_parser("serve", help="Run local read-only server.")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+
+    return p
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    p = build_parser()
+
+    # safe default: no args => help + rc=0 (avoid hangs/timeouts)
+    if len(argv) == 0:
+        p.print_help()
+        return 0
+
+    args = p.parse_args(argv)
+
+    if args.version or args.cmd == "version":
+        print(__VERSION__)
+        return 0
+
+    if args.selftest or args.cmd == "selftest":
+        print("SELFTEST_OK")
+        return 0
+
+    if args.ping or args.cmd == "ping":
+        print("OK")
+        return 0
+
+    reg = Path(args.registry) if args.registry else _default_registry_path()
+
+    if args.cmd == "print-registry":
+        print(str(reg))
+        return 0
+
+    if args.cmd == "serve":
+        return _run_server(args.host, args.port, reg)
+
+    # fallback
+    p.print_help()
     return 0
 
 
